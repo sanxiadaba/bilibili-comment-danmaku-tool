@@ -50,7 +50,7 @@ export function ProgressBanner({ progress, fallback }: ProgressBannerProps) {
   const logs = progress?.logs?.slice(-4) || [];
   const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 8)));
   const stage = progress?.stage || "准备中";
-  const stats = Object.entries(progress?.stats || {}).slice(0, 4);
+  const stats = selectProgressStats(progress?.stage || "", progress?.stats || {});
   return (
     <section className="border-b border-amber-100 bg-[#fff8e7]">
       <div className="mx-auto max-w-[1540px] px-4 py-3 text-sm text-[#5f4612] lg:px-6">
@@ -91,6 +91,27 @@ export function ProgressBanner({ progress, fallback }: ProgressBannerProps) {
       </div>
     </section>
   );
+}
+
+function selectProgressStats(stage: string, stats: ProgressState["stats"]) {
+  const entries = Object.entries(stats);
+  const preferred =
+    stage === "抓取楼中楼"
+      ? ["楼中楼进度", "当前根评论", "当前楼中楼预期", "楼中楼已抓", "楼中楼预期"]
+      : stage === "抓取主评论"
+        ? ["主评论页", "本页评论", "已抓评论", "接口总数"]
+        : stage === "弹幕点赞"
+          ? ["点赞批次", "本批 dmid", "弹幕条数"]
+          : ["弹幕条数", "主评论页", "已抓评论", "接口总数"];
+
+  const ordered = [
+    ...preferred
+      .filter((label) => Object.prototype.hasOwnProperty.call(stats, label))
+      .map((label) => [label, stats[label]] as [string, string | number]),
+    ...entries.filter(([label]) => !preferred.includes(label)),
+  ];
+
+  return ordered.slice(0, 6);
 }
 
 type InfoRowProps = {

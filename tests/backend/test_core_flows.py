@@ -15,6 +15,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
+from server import progress_percent, progress_stats  # noqa: E402
 from bilibili_comment_danmaku.danmaku import (  # noqa: E402
     decode_response_body,
     parse_danmaku_xml,
@@ -295,7 +296,97 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(len(comments), 1)
         self.assertEqual(len(comment_items), 2)
         self.assertEqual(summary[0]["fetched_count"], 1)
-        self.assertEqual(sleeps, [0.05])
+        self.assertEqual(sleeps, [0.02])
+
+    def test_comment_page_spacing_uses_short_yields_and_periodic_full_delay(self):
+        sleeps = []
+        original_sleep = scraper.time.sleep
+        try:
+            scraper.time.sleep = sleeps.append
+            for page in (1, 2, 20, 21):
+                scraper.sleep_between_pages(0.35, page)
+        finally:
+            scraper.time.sleep = original_sleep
+
+        self.assertEqual(sleeps, [0.02, 0.02, 0.35, 0.02])
+
+    def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
+        class FailingClient:
+            def request_json(self, _url):
+                raise AssertionError("child API should not be called when embedded replies are complete")
+
+        child_reply = {
+            "rpid_str": "2",
+            "oid_str": "123",
+            "type": 1,
+            "mid_str": "100",
+            "root_str": "1",
+            "parent_str": "1",
+            "dialog_str": "0",
+            "ctime": 1700000001,
+            "like": 1,
+            "rcount": 0,
+            "count": 0,
+            "state": 0,
+            "attr": 0,
+            "content": {"message": "embedded child"},
+            "member": {"mid": "100", "uname": "user-100"},
+        }
+        main_reply = {
+            "rpid_str": "1",
+            "oid_str": "123",
+            "type": 1,
+            "mid_str": "42",
+            "root_str": "0",
+            "parent_str": "0",
+            "dialog_str": "0",
+            "ctime": 1700000000,
+            "like": 8,
+            "rcount": 1,
+            "count": 1,
+            "state": 0,
+            "attr": 0,
+            "content": {"message": "parent"},
+            "member": {"mid": "42", "uname": "owner"},
+            "replies": [child_reply],
+        }
+        sleeps = []
+        original_sleep = scraper.time.sleep
+        try:
+            scraper.time.sleep = sleeps.append
+            comments, comment_items, summary = scraper.build_threaded_output(
+                [main_reply],
+                "123",
+                FailingClient(),
+                0.35,
+                lambda _message: None,
+            )
+        finally:
+            scraper.time.sleep = original_sleep
+
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(len(comment_items), 2)
+        self.assertEqual(summary[0]["fetched_count"], 1)
+        self.assertEqual(sleeps, [])
+
+    def test_child_progress_updates_stage_stats_after_main_pages(self):
+        main_stats = progress_stats(
+            "comments",
+            "main page 109: got=17 unique=2177 all_count=9791 next=2995 is_end=False",
+            {},
+        )
+        child_stats = progress_stats(
+            "comments",
+            "fetching children 12/109 root=987654 expected=34",
+            main_stats,
+        )
+        child_percent = progress_percent("comments", "fetching children 12/109 root=987654 expected=34", 65)
+
+        self.assertEqual(child_stats["主评论页"], "109")
+        self.assertEqual(child_stats["楼中楼进度"], "12 / 109")
+        self.assertEqual(child_stats["当前根评论"], "987654")
+        self.assertEqual(child_stats["当前楼中楼预期"], "34")
+        self.assertGreater(child_percent, 65)
 
 
 class LoggingTests(unittest.TestCase):

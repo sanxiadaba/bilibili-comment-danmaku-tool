@@ -842,9 +842,12 @@ def progress_percent(kind, message, current=0):
     if kind == "parse":
         if message.startswith("main page"):
             page = parse_progress_int(message, r"main page\s+(\d+)")
-            return max(current, min(55, 8 + page * 5))
+            return max(current, min(55, 8 + page))
         if "child root" in message or "fetching children" in message:
-            return max(current, min(72, current + 1))
+            index, total = parse_child_root_progress(message)
+            if total:
+                return max(current, min(76, 56 + int((index / total) * 20)))
+            return max(current, min(76, current + 1))
         if "正在抓取弹幕" in message:
             return max(current, 78)
         if "danmaku likes" in message:
@@ -852,8 +855,11 @@ def progress_percent(kind, message, current=0):
     if kind == "comments":
         if message.startswith("main page"):
             page = parse_progress_int(message, r"main page\s+(\d+)")
-            return max(current, min(65, 10 + page * 7))
+            return max(current, min(65, 10 + page))
         if "child root" in message or "fetching children" in message:
+            index, total = parse_child_root_progress(message)
+            if total:
+                return max(current, min(90, 66 + int((index / total) * 24)))
             return max(current, min(90, current + 2))
         if "评论抓取完成" in message:
             return max(current, 92)
@@ -875,6 +881,12 @@ def progress_stats(kind, message, current):
             stats["楼中楼已抓"] = child.group(1)
             if child.group(2) != "None":
                 stats["楼中楼预期"] = child.group(2)
+        child_start = re.search(r"fetching children\s+(\d+)/(\d+)\s+root=([^ ]+)\s+expected=(\d+|None)", message)
+        if child_start:
+            stats["楼中楼进度"] = f"{child_start.group(1)} / {child_start.group(2)}"
+            stats["当前根评论"] = child_start.group(3)
+            if child_start.group(4) != "None":
+                stats["当前楼中楼预期"] = child_start.group(4)
     if kind in {"danmaku", "parse"}:
         parsed = re.search(r"parsed xml items=(\d+)", message)
         if parsed:
@@ -897,6 +909,13 @@ def parse_progress_int(message, pattern):
         return int(match.group(1))
     except ValueError:
         return 0
+
+
+def parse_child_root_progress(message):
+    match = re.search(r"fetching children\s+(\d+)/(\d+)", message)
+    if match:
+        return (int(match.group(1)), int(match.group(2)))
+    return (0, 0)
 
 
 def parse_float(value, default):

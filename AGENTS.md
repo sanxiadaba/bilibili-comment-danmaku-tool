@@ -723,7 +723,8 @@ Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`�
 - B 站评论 API 可能因未登录、cookie 失效、风控、接口变化而返回不完整数据。
 - 没有 cookie 时，代码会继续执行，但会记录 warning。
 - `delay` 用于降低请求频率，默认 0.35 秒。
-- 楼中楼分页内部会按 `delay` 间隔请求；每个根评论之间只做很短让步，避免大视频按根评论数量额外线性放大解析时间。
+- 主评论和楼中楼分页使用轻量让步，默认每页只短暂停顿，并每 20 页执行一次完整 `delay`，避免 9000+ 评论按 20 条/页串行抓取时被固定等待拖慢。
+- 每个楼中楼根评论之间只做很短让步，避免大视频按根评论数量额外线性放大解析时间。
 - `fetch_main_replies` 会去重，避免 top/hot/admin/upper 等来源重复出现。
 - `fetch_child_replies` 同样按 rpid 去重。
 

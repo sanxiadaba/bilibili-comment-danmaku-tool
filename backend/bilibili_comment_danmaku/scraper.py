@@ -15,6 +15,8 @@ from .url_utils import extract_bvid
 DEFAULT_BVID = "BV1LrVS6vE1D"
 DEFAULT_PROXY = "http://127.0.0.1:7890"
 TYPE_VIDEO = 1
+FAST_PAGE_YIELD_SECONDS = 0.02
+FULL_DELAY_EVERY_PAGES = 20
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
     46,
@@ -293,7 +295,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
             break
         seen_cursors.add(next_cursor)
         next_cursor = next_value
-        time.sleep(delay)
+        sleep_between_pages(delay, page_index)
 
     return replies, api_comment_count
 
@@ -351,7 +353,7 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
         if isinstance(expected_count, int) and expected_count > 0 and len(replies) >= expected_count:
             break
         page += 1
-        time.sleep(delay)
+        sleep_between_pages(delay, page - 1)
 
     return replies, api_count
 
@@ -374,7 +376,7 @@ def build_threaded_output(main_replies, oid, client, delay, log):
                 child_seen.add(child_rpid)
                 child_raw.append(child)
 
-        if isinstance(expected_count, int) and expected_count > 0:
+        if isinstance(expected_count, int) and expected_count > len(child_raw):
             log(f"fetching children {index}/{len(main_replies)} root={root_rpid} expected={expected_count}")
             fetched_child_raw, child_api_count = fetch_child_replies(oid, root_rpid, expected_count, client, delay, log)
             for child in fetched_child_raw:
@@ -382,8 +384,7 @@ def build_threaded_output(main_replies, oid, client, delay, log):
                 if child_rpid not in child_seen:
                     child_seen.add(child_rpid)
                     child_raw.append(child)
-            if delay > 0:
-                time.sleep(min(delay, 0.05))
+            sleep_between_roots(delay)
 
         child_items = [{"normalized": normalize_reply(child, level=2), "raw": child} for child in child_raw]
         child_items.sort(key=sort_key)
@@ -410,6 +411,21 @@ def build_threaded_output(main_replies, oid, client, delay, log):
     comments.sort(key=sort_key)
     comment_items.sort(key=sort_key)
     return comments, comment_items, child_fetch_summary
+
+
+def sleep_between_pages(delay, page_index):
+    if delay <= 0:
+        return
+    if page_index > 0 and page_index % FULL_DELAY_EVERY_PAGES == 0:
+        time.sleep(delay)
+        return
+    time.sleep(min(delay, FAST_PAGE_YIELD_SECONDS))
+
+
+def sleep_between_roots(delay):
+    if delay <= 0:
+        return
+    time.sleep(min(delay, FAST_PAGE_YIELD_SECONDS))
 
 
 def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):
