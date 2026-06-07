@@ -3,7 +3,9 @@ import http.cookiejar
 import copy
 import json
 import os
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +21,12 @@ DEFAULT_PROXY = "http://127.0.0.1:7890"
 TYPE_VIDEO = 1
 FAST_PAGE_YIELD_SECONDS = 0.02
 FULL_DELAY_EVERY_PAGES = 20
+CHILD_PAGE_YIELD_SECONDS = 0.12
+CHILD_FULL_DELAY_EVERY_PAGES = 10
 MAX_CHILD_FETCH_WORKERS = 4
+BLOCKED_HTTP_STATUSES = {412, 429}
+BLOCKED_RETRY_DELAYS = (8, 15, 30)
+SIGNED_REQUEST_RETRIES = 3
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
     46,
@@ -90,16 +97,43 @@ MIXIN_KEY_ENC_TAB = [
 WBI_BAD_CHARS = "!'()*"
 
 
+class BilibiliRequestError(RuntimeError):
+    def __init__(self, message, *, status=None, url=None, cause=None):
+        super().__init__(message)
+        self.status = status
+        self.url = url
+        self.__cause__ = cause
+
+
+class RequestBackoff:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.blocked_until = 0
+
+    def wait(self):
+        with self.lock:
+            sleep_for = self.blocked_until - time.monotonic()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+    def block_for(self, seconds):
+        if seconds <= 0:
+            return
+        with self.lock:
+            self.blocked_until = max(self.blocked_until, time.monotonic() + seconds)
+
+
 class BilibiliClient:
-    def __init__(self, headers, use_proxy=False):
+    def __init__(self, headers, use_proxy=False, backoff=None):
         self.headers = headers
         self.use_proxy = use_proxy
+        self.backoff = backoff or RequestBackoff()
         self.cookie_jar = http.cookiejar.CookieJar()
         proxy_handler = urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({})
         self.opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPCookieProcessor(self.cookie_jar))
 
     def clone(self):
-        cloned = BilibiliClient(dict(self.headers), use_proxy=self.use_proxy)
+        cloned = BilibiliClient(dict(self.headers), use_proxy=self.use_proxy, backoff=self.backoff)
         for cookie in self.cookie_jar:
             cloned.cookie_jar.set_cookie(copy.copy(cookie))
         return cloned
@@ -108,6 +142,7 @@ class BilibiliClient:
         last_error = None
         for attempt in range(1, retries + 1):
             try:
+                self.backoff.wait()
                 req = urllib.request.Request(url, headers=self.headers)
                 with self.opener.open(req, timeout=timeout) as resp:
                     body = resp.read().decode("utf-8")
@@ -115,12 +150,33 @@ class BilibiliClient:
                 if data.get("code") != 0 and not allow_api_error:
                     raise RuntimeError(f"API code={data.get('code')} message={data.get('message')}")
                 return data
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if attempt == retries:
+                    break
+                delay = retry_delay_seconds(attempt, status=exc.code)
+                if exc.code in BLOCKED_HTTP_STATUSES:
+                    self.backoff.block_for(delay)
+                time.sleep(delay)
             except Exception as exc:
                 last_error = exc
                 if attempt == retries:
                     break
-                time.sleep(min(2 * attempt, 8))
-        raise RuntimeError(f"Request failed after {retries} attempts: {url}\n{last_error}")
+                time.sleep(retry_delay_seconds(attempt))
+
+        status = getattr(last_error, "code", None)
+        if status:
+            raise BilibiliRequestError(
+                f"HTTP Error {status}: Request failed after {retries} attempts: {url}\n{last_error}",
+                status=status,
+                url=url,
+                cause=last_error,
+            )
+        raise BilibiliRequestError(
+            f"Request failed after {retries} attempts: {url}\n{last_error}",
+            url=url,
+            cause=last_error,
+        )
 
     def warmup(self, bvid):
         req = urllib.request.Request(f"https://www.bilibili.com/video/{bvid}", headers=self.headers)
@@ -182,6 +238,36 @@ def sign_wbi_params(params, mixin_key):
     query = urllib.parse.urlencode(sorted(cleaned.items()))
     cleaned["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
     return cleaned
+
+
+def retry_delay_seconds(attempt, status=None):
+    if status in BLOCKED_HTTP_STATUSES:
+        index = min(max(attempt, 1), len(BLOCKED_RETRY_DELAYS)) - 1
+        return BLOCKED_RETRY_DELAYS[index]
+    return min(2 * attempt, 8)
+
+
+def is_blocked_request_error(exc):
+    return isinstance(exc, BilibiliRequestError) and exc.status in BLOCKED_HTTP_STATUSES
+
+
+def request_signed_json(endpoint, params_factory, client, mixin_key, log):
+    last_error = None
+    for attempt in range(1, SIGNED_REQUEST_RETRIES + 1):
+        params = sign_wbi_params(params_factory(), mixin_key)
+        try:
+            return client.request_json(build_url(endpoint, params), retries=1)
+        except BilibiliRequestError as exc:
+            last_error = exc
+            if not is_blocked_request_error(exc) or attempt == SIGNED_REQUEST_RETRIES:
+                raise
+            delay = retry_delay_seconds(attempt, status=exc.status)
+            log(
+                f"warning: signed request got HTTP {exc.status}; "
+                f"refreshing WBI signature after {delay}s backoff (attempt {attempt}/{SIGNED_REQUEST_RETRIES})"
+            )
+            time.sleep(delay)
+    raise last_error
 
 
 def get_wbi_mixin_key(client, log):
@@ -270,8 +356,8 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
 
     while True:
         page_index += 1
-        params = sign_wbi_params(
-            {
+        def make_params():
+            return {
                 "oid": oid,
                 "type": TYPE_VIDEO,
                 "mode": 2,
@@ -279,10 +365,9 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
                 "ps": 20,
                 "plat": 1,
                 "web_location": 1315875,
-            },
-            mixin_key,
-        )
-        data = client.request_json(build_url(endpoint, params))["data"]
+            }
+
+        data = request_signed_json(endpoint, make_params, client, mixin_key, log)["data"]
         page_replies = collect_main_reply_candidates(data)
         cursor = data.get("cursor") or {}
         api_comment_count = cursor.get("all_count", api_comment_count)
@@ -363,7 +448,7 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
         if isinstance(expected_count, int) and expected_count > 0 and len(replies) >= expected_count:
             break
         page += 1
-        sleep_between_pages(delay, page - 1)
+        sleep_between_child_pages(delay, page - 1)
 
     return replies, api_count
 
@@ -484,7 +569,6 @@ def fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_chi
                 f"total_expected={expected_child_total}"
             )
 
-
 def sleep_between_pages(delay, page_index):
     if delay <= 0:
         return
@@ -492,6 +576,15 @@ def sleep_between_pages(delay, page_index):
         time.sleep(delay)
         return
     time.sleep(min(delay, FAST_PAGE_YIELD_SECONDS))
+
+
+def sleep_between_child_pages(delay, page_index):
+    if delay <= 0:
+        return
+    if page_index > 0 and page_index % CHILD_FULL_DELAY_EVERY_PAGES == 0:
+        time.sleep(delay)
+        return
+    time.sleep(min(delay, CHILD_PAGE_YIELD_SECONDS))
 
 
 def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):

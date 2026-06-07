@@ -775,7 +775,7 @@ def api_error_response(exc):
     if "http error 412" in lower_message:
         return (
             {
-                "error": "Bilibili 接口返回 412，可能是风控、Cookie 失效或请求过快。请稍后重试，或检查 data/cookie.txt。",
+                "error": "Bilibili 接口返回 412，可能是风控、Cookie 失效、请求过快或 WBI 签名短暂失效。已自动退避并重试；如果仍失败，请稍后再试，或检查 data/cookie.txt。",
                 "detail": message,
             },
             502,

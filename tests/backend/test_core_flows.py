@@ -397,6 +397,55 @@ class ScraperPerformanceTests(unittest.TestCase):
 
         self.assertEqual(sleeps, [0.02, 0.02, 0.35, 0.02])
 
+    def test_child_page_spacing_uses_gentler_yields_and_periodic_full_delay(self):
+        sleeps = []
+        original_sleep = scraper.time.sleep
+        try:
+            scraper.time.sleep = sleeps.append
+            for page in (1, 2, 10, 11):
+                scraper.sleep_between_child_pages(0.35, page)
+        finally:
+            scraper.time.sleep = original_sleep
+
+        self.assertEqual(sleeps, [0.12, 0.12, 0.35, 0.12])
+
+    def test_signed_request_refreshes_signature_after_blocked_status(self):
+        class FakeClient:
+            def __init__(self):
+                self.urls = []
+
+            def request_json(self, url, retries=1):
+                self.urls.append(url)
+                if len(self.urls) == 1:
+                    raise scraper.BilibiliRequestError("blocked", status=412, url=url)
+                return {"data": {"ok": True}}
+
+        sleeps = []
+        times = iter([1000, 1030])
+        original_sleep = scraper.time.sleep
+        original_time = scraper.time.time
+        try:
+            scraper.time.sleep = sleeps.append
+            scraper.time.time = lambda: next(times)
+            client = FakeClient()
+            result = scraper.request_signed_json(
+                "https://example.test/reply",
+                lambda: {"oid": 1, "next": 0},
+                client,
+                "0" * 32,
+                lambda _message: None,
+            )
+        finally:
+            scraper.time.sleep = original_sleep
+            scraper.time.time = original_time
+
+        self.assertEqual(result, {"data": {"ok": True}})
+        self.assertEqual(sleeps, [8])
+        self.assertEqual(len(client.urls), 2)
+        self.assertIn("wts=1000", client.urls[0])
+        self.assertIn("wts=1030", client.urls[1])
+        self.assertNotEqual(client.urls[0], client.urls[1])
+
     def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
         class FailingClient:
             def request_json(self, _url):
