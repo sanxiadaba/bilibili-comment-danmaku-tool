@@ -1,4 +1,4 @@
-export type NormalizedUser = {
+﻿export type NormalizedUser = {
   mid: string;
   uname: string;
   sex?: string;
@@ -88,11 +88,11 @@ export type CommentData = {
     title: string;
     fetched_at: string;
     sort: string;
-    api_all_count: number;
-    top_level_count: number;
-    expected_nested_reply_count: number;
-    nested_reply_count: number;
-    flat_total_count: number;
+    api_comment_count: number;
+    top_level_comment_count: number;
+    expected_nested_comment_count: number;
+    nested_comment_count: number;
+    comment_total_count: number;
     active_comment_count?: number;
     deleted_comment_count?: number;
     child_fetch_summary: Array<Record<string, unknown>>;
@@ -120,7 +120,7 @@ export type CommentData = {
     duration?: number;
   } & Record<string, unknown>;
   comments: CommentNode[];
-  flat_comments: CommentNode[];
+  comment_items: CommentNode[];
   refresh?: {
     before_count: number;
     scraped_count?: number;
@@ -193,11 +193,11 @@ export type VideoSummary = {
   stat_view?: number;
   stat_reply?: number;
   stat_like?: number;
-  flat_total_count: number;
+  comment_total_count: number;
   active_comment_count: number;
   deleted_comment_count: number;
-  top_level_count: number;
-  nested_reply_count: number;
+  top_level_comment_count: number;
+  nested_comment_count: number;
   comment_like_count: number;
   latest_comment_ctime?: number;
   danmaku_count: number;
@@ -238,3 +238,4 @@ export type ProgressState = {
 export type SortMode = "time_asc" | "time_desc" | "like_desc" | "reply_desc";
 
 export type LevelFilter = "all" | "top" | "reply" | "owner";
+

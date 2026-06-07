@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "bilibili-comment-danmaku-tool",
   "version": "1.0.0",
   "private": true,
@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --config frontend/vite.config.ts --host 127.0.0.1",
     "server": "python backend/server.py --host 127.0.0.1 --port 8000",
+    "fetch": "python backend/fetch_bilibili_comment_danmaku.py",
     "build": "tsc -p frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",
     "preview": "vite preview --config frontend/vite.config.ts --host 127.0.0.1"
   },
@@ -25,3 +26,4 @@
     "typescript": "^5.9.3"
   }
 }
+

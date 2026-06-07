@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import mimetypes
 import re
@@ -8,20 +8,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from bilibili_comments import (
+from bilibili_comment_danmaku import (
     extract_bvid,
     list_video_summaries,
     load_comment_data,
     load_danmaku_data,
+    prepare_database_path,
     save_danmaku_to_sqlite,
-    save_to_sqlite,
+    save_comments_to_sqlite,
     scrape_comments,
     scrape_danmaku,
 )
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = ROOT / "data" / "comments.db"
+DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
 DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 refresh_lock = threading.Lock()
@@ -42,7 +43,7 @@ progress_state = {
 }
 
 
-class CommentServer(BaseHTTPRequestHandler):
+class CommentDanmakuServer(BaseHTTPRequestHandler):
     db_path = DEFAULT_DB
     static_dir = DEFAULT_STATIC
 
@@ -104,7 +105,7 @@ class CommentServer(BaseHTTPRequestHandler):
             bvid = extract_bvid(video_ref)
             delay = parse_float(body.get("delay"), 0.35)
             try:
-                before = load_comment_data(self.db_path, bvid=bvid)["metadata"]["flat_total_count"]
+                before = load_comment_data(self.db_path, bvid=bvid)["metadata"]["comment_total_count"]
             except LookupError:
                 before = 0
 
@@ -119,7 +120,7 @@ class CommentServer(BaseHTTPRequestHandler):
                 logger=log,
             )
             update_progress("parse", bvid, "评论抓取完成，正在保存评论档案")
-            save_to_sqlite(output_data, self.db_path, replace=True)
+            save_comments_to_sqlite(output_data, self.db_path, replace=True)
             update_progress("parse", bvid, "正在抓取弹幕")
             danmaku_result = scrape_danmaku(
                 output_data["metadata"]["bvid"],
@@ -137,8 +138,8 @@ class CommentServer(BaseHTTPRequestHandler):
                 {
                     "bvid": output_data["metadata"]["bvid"],
                     "before_count": before,
-                    "scraped_count": output_data["metadata"]["flat_total_count"],
-                    "after_count": payload["metadata"]["flat_total_count"],
+                    "scraped_count": output_data["metadata"]["comment_total_count"],
+                    "after_count": payload["metadata"]["comment_total_count"],
                     "active_count": payload["metadata"].get("active_comment_count"),
                     "deleted_count": payload["metadata"].get("deleted_comment_count"),
                     "danmaku_count": len(danmaku_result.get("items") or []),
@@ -157,8 +158,9 @@ class CommentServer(BaseHTTPRequestHandler):
             fail_progress("parse", bvid if "bvid" in locals() else "", str(exc))
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
-            fail_progress("parse", bvid if "bvid" in locals() else "", str(exc))
-            self.send_json({"error": str(exc)}, status=500)
+            payload, status = api_error_response(exc)
+            fail_progress("parse", bvid if "bvid" in locals() else "", payload["error"])
+            self.send_json(payload, status=status)
         finally:
             refresh_lock.release()
 
@@ -200,7 +202,7 @@ class CommentServer(BaseHTTPRequestHandler):
         try:
             current = load_comment_data(self.db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
-            before_count = current["metadata"]["flat_total_count"]
+            before_count = current["metadata"]["comment_total_count"]
             start_progress("comments", current["metadata"]["bvid"], "正在重新抓取评论")
             logs = []
             log = make_progress_logger("comments", current["metadata"]["bvid"], logs)
@@ -211,17 +213,17 @@ class CommentServer(BaseHTTPRequestHandler):
                 delay=delay,
                 logger=log,
             )
-            scraped_count = output_data["metadata"]["flat_total_count"]
+            scraped_count = output_data["metadata"]["comment_total_count"]
             update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
-            save_to_sqlite(output_data, self.db_path, replace=True)
+            save_comments_to_sqlite(output_data, self.db_path, replace=True)
             payload = load_comment_data(self.db_path, bvid=output_data["metadata"]["bvid"])
             payload["refresh"] = {
                 "before_count": before_count,
                 "scraped_count": scraped_count,
-                "after_count": payload["metadata"]["flat_total_count"],
+                "after_count": payload["metadata"]["comment_total_count"],
                 "active_count": payload["metadata"].get("active_comment_count"),
                 "deleted_count": payload["metadata"].get("deleted_comment_count"),
-                "added_count": payload["metadata"]["flat_total_count"] - before_count,
+                "added_count": payload["metadata"]["comment_total_count"] - before_count,
                 "logs": logs[-12:],
             }
             finish_progress("comments", output_data["metadata"]["bvid"], "评论刷新完成")
@@ -230,8 +232,9 @@ class CommentServer(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            fail_progress("comments", requested_bvid or "", str(exc))
-            self.send_json({"error": str(exc)}, status=500)
+            payload, status = api_error_response(exc)
+            fail_progress("comments", requested_bvid or "", payload["error"])
+            self.send_json(payload, status=status)
             return
         finally:
             refresh_lock.release()
@@ -284,8 +287,9 @@ class CommentServer(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            fail_progress("danmaku", requested_bvid or "", str(exc))
-            self.send_json({"error": str(exc)}, status=500)
+            payload, status = api_error_response(exc)
+            fail_progress("danmaku", requested_bvid or "", payload["error"])
+            self.send_json(payload, status=status)
             return
         finally:
             refresh_lock.release()
@@ -333,7 +337,7 @@ class CommentServer(BaseHTTPRequestHandler):
         return json.loads(raw)
 
     def log_message(self, fmt, *args):
-        print(f"{self.address_string()} - {fmt % args}")
+        safe_print(f"{self.address_string()} - {fmt % args}")
 
 
 def utc_now():
@@ -438,9 +442,50 @@ def make_progress_logger(kind, bvid, logs):
     def log(message):
         logs.append(message)
         update_progress(kind, bvid, message)
-        print(message, flush=True)
+        safe_print(message)
 
     return log
+
+
+def safe_print(message):
+    try:
+        print(message, flush=True)
+    except OSError:
+        pass
+
+
+def api_error_response(exc):
+    message = str(exc)
+    lower_message = message.lower()
+
+    if "http error 412" in lower_message:
+        return (
+            {
+                "error": "Bilibili 接口返回 412，可能是风控、Cookie 失效或请求过快。请稍后重试，或检查 data/cookie.txt。",
+                "detail": message,
+            },
+            502,
+        )
+
+    if "http error" in lower_message or "request failed after" in lower_message:
+        return (
+            {
+                "error": "Bilibili 接口请求失败，可能是网络、登录态、风控或接口临时不可用。",
+                "detail": message,
+            },
+            502,
+        )
+
+    if "[errno 22] invalid argument" in lower_message:
+        return (
+            {
+                "error": "本地服务输出流异常，已避免让日志写入中断抓取。请重启服务后重试。",
+                "detail": message,
+            },
+            500,
+        )
+
+    return ({"error": message}, 500)
 
 
 def progress_stage(kind, message):
@@ -577,19 +622,20 @@ def main():
     args = parser.parse_args()
 
     handler = type(
-        "ConfiguredCommentServer",
-        (CommentServer,),
+        "ConfiguredCommentDanmakuServer",
+        (CommentDanmakuServer,),
         {
             "db_path": Path(args.db).resolve(),
             "static_dir": Path(args.static).resolve(),
         },
     )
-    handler.db_path.parent.mkdir(parents=True, exist_ok=True)
+    handler.db_path = prepare_database_path(handler.db_path)
     server = ThreadingHTTPServer((args.host, args.port), handler)
-    print(f"Serving SQLite comments app at http://{args.host}:{args.port}/")
-    print(f"SQLite database: {Path(args.db).resolve()}")
+    safe_print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
+    safe_print(f"SQLite database: {Path(args.db).resolve()}")
     server.serve_forever()
 
 
 if __name__ == "__main__":
     main()
+

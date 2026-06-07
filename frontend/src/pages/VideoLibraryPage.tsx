@@ -1,4 +1,4 @@
-import {
+﻿import {
   AlertTriangle,
   ChevronRight,
   Database,
@@ -72,7 +72,7 @@ export function VideoLibraryPage() {
   const totals = useMemo(() => {
     return videos.reduce(
       (acc, video) => {
-        acc.comments += video.flat_total_count || 0;
+        acc.comments += video.comment_total_count || 0;
         acc.active += video.active_comment_count || 0;
         acc.deleted += video.deleted_comment_count || 0;
         acc.likes += video.comment_like_count || 0;
@@ -149,7 +149,7 @@ export function VideoLibraryPage() {
               <span>{formatNumber(totals.comments)} 条评论档案</span>
             </div>
             <h1 className="mt-2 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
-              Bilibili 评论管理
+              Bilibili 评论弹幕管理
             </h1>
           </div>
           <div className="flex items-center gap-2 self-center">
@@ -239,7 +239,7 @@ export function VideoLibraryPage() {
                   <div className="font-medium text-amber-900">该视频已在本地档案中</div>
                   <div className="mt-1 line-clamp-2 text-amber-800">{duplicateVideo.title}</div>
                   <div className="mt-1 text-xs text-amber-700">
-                    {duplicateVideo.bvid} · 档案 {formatNumber(duplicateVideo.flat_total_count)} · 弹幕{" "}
+                    {duplicateVideo.bvid} · 档案 {formatNumber(duplicateVideo.comment_total_count)} · 弹幕{" "}
                     {formatNumber(duplicateVideo.danmaku_count)}
                   </div>
                 </div>
@@ -284,7 +284,7 @@ export function VideoLibraryPage() {
               </label>
               <div className="grid gap-2 text-sm">
                 <InfoRow label="Cookie" value="data/cookie.txt" />
-                <InfoRow label="数据库" value="data/comments.db" />
+                <InfoRow label="数据库" value="data/comment_danmaku.db" />
               </div>
             </div>
           )}
@@ -352,7 +352,7 @@ function VideoCard({ video }: { video: VideoSummary }) {
         </div>
         <h3 className="mt-2 line-clamp-2 text-base font-semibold leading-6 text-ink">{video.title}</h3>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-          <span>档案 {formatNumber(video.flat_total_count)}</span>
+          <span>档案 {formatNumber(video.comment_total_count)}</span>
           <span>弹幕 {formatNumber(video.danmaku_count)}</span>
           <span>可见 {formatNumber(video.active_comment_count)}</span>
           <span>未返回 {formatNumber(video.deleted_comment_count)}</span>
@@ -378,3 +378,4 @@ function VideoCard({ video }: { video: VideoSummary }) {
     </article>
   );
 }
+

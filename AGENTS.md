@@ -1,4 +1,4 @@
-# Agent 开发手册
+﻿# Agent 开发手册
 
 本文档面向接手本项目的其它 agent。目标是让新的 agent 不需要重新猜测架构，就能快速理解项目、定位代码、开发功能、排查问题并提交变更。
 
@@ -54,7 +54,7 @@
 - `data/`
 - `logs/`
 - `cookie.txt`
-- `comments*.db`
+- `comment_danmaku*.db`
 - `*.db`
 - `*.sqlite`
 - `*.sqlite3`
@@ -82,7 +82,7 @@ git status --short --ignored
 当前代码现状：
 
 - Web 服务 `backend/server.py` 调用 `scrape_comments` 和 `scrape_danmaku` 时没有传 `use_proxy=True`，因此默认不走代理。
-- CLI 脚本 `backend/fetch_bilibili_comments.py` 当前默认也不走代理；只有显式传 `--proxy` 才会使用抓取器内置代理设置。
+- CLI 脚本 `backend/fetch_bilibili_comment_danmaku.py` 当前默认也不走代理；只有显式传 `--proxy` 才会使用抓取器内置代理设置。
 - 不要为了 GitHub/Git 的代理偏好，把 Bilibili 抓取请求也改成默认走 `7890`。
 
 ## 3. 技术栈
@@ -140,7 +140,7 @@ pnpm dev
 Python 语法检查：
 
 ```powershell
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend\bilibili_comment_danmaku\storage.py backend\bilibili_comment_danmaku\danmaku.py backend\bilibili_comment_danmaku\scraper.py backend\bilibili_comment_danmaku\url_utils.py backend\bilibili_comment_danmaku\__init__.py
 ```
 
 访问地址：
@@ -169,8 +169,8 @@ http://127.0.0.1:8000/
 ├── README.md                     # 面向用户的项目说明
 ├── backend/
 │   ├── server.py                 # Python HTTP API + 静态文件服务
-│   ├── fetch_bilibili_comments.py # CLI 抓取入口
-│   └── bilibili_comments/
+│   ├── fetch_bilibili_comment_danmaku.py # CLI 抓取入口
+│   └── bilibili_comment_danmaku/
 │       ├── __init__.py           # Python 包导出
 │       ├── url_utils.py          # BV 号提取
 │       ├── scraper.py            # 评论抓取、WBI 签名、评论归一化
@@ -205,7 +205,7 @@ http://127.0.0.1:8000/
 
 - `backend/`：所有 Python 后端和抓取代码。
 - `frontend/`：所有 React 前端源码和前端工具链配置。前端文件夹使用直白的 `frontend`，避免根目录同时混杂页面、组件、构建配置和后端代码。
-- `data/`：本地运行数据，包括 `comments.db`、`cookie.txt`、SQLite 临时文件和人工备份；必须 ignored。
+- `data/`：本地运行数据，包括 `comment_danmaku.db`、`cookie.txt`、SQLite 临时文件和人工备份；必须 ignored。
 - `logs/`：本地运行日志；必须 ignored。
 - `dist/`：`pnpm build` 生成的静态资源，供 `backend/server.py` 读取；必须 ignored。
 - `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`：依赖、脚本和 pnpm 构建许可。
@@ -215,9 +215,9 @@ http://127.0.0.1:8000/
 本地会出现但不提交：
 
 ```text
-data/comments.db
-data/comments.db-shm
-data/comments.db-wal
+data/comment_danmaku.db
+data/comment_danmaku.db-shm
+data/comment_danmaku.db-wal
 data/cookie.txt
 data/backups/comments_legacy.db
 data/backups/comments_before_deleted_restore_*.db
@@ -231,7 +231,8 @@ __pycache__/
 
 文件有用性判断：
 
-- `data/comments.db`：当前主数据库，有用，但属于用户本地数据，不提交。
+- `data/comment_danmaku.db`：当前主数据库，有用，但属于用户本地数据，不提交。
+- `data/comments.db`：旧主数据库文件名。新代码启动时会在缺少 `comment_danmaku.db` 时自动复制迁移，迁移后可作为本地备份保留或手动删除。
 - `data/backups/*.db`：旧库、恢复前备份或人工备份，有用但只对本机排查/恢复有意义，不提交。
 - `data/cookie.txt`：用户登录凭据，有用且敏感，不提交。
 - `logs/*.log`、`logs/*.err`：本地运行日志，可用于排错，但可再生成，不提交。
@@ -255,7 +256,7 @@ __pycache__/
 1. `backend/server.py` 的 `handle_parse_video_api`
 2. `extract_bvid` 从 URL 或文本中提取 BV 号
 3. `scrape_comments` 抓取视频信息、一级评论、楼中楼回复
-4. `save_to_sqlite` 保存视频、用户、评论、图片、表情
+4. `save_comments_to_sqlite` 保存视频、用户、评论、图片、表情
 5. `scrape_danmaku` 抓取弹幕 XML 和点赞数
 6. `save_danmaku_to_sqlite` 保存弹幕
 7. 返回解析结果和视频摘要
@@ -280,7 +281,7 @@ __pycache__/
 1. `handle_refresh_api`
 2. 读取当前视频档案：`load_comment_data`
 3. 重新调用 `scrape_comments`
-4. `save_to_sqlite(..., replace=True)`
+4. `save_comments_to_sqlite(..., replace=True)`
 5. 保存前会先将该视频已有评论标记为 `is_deleted = 1`
 6. 本次 API 返回的评论再 upsert 回 `is_deleted = 0`
 7. 未返回的旧评论保留在数据库中，并显示为“本次未返回”
@@ -320,7 +321,7 @@ __pycache__/
 ```json
 {
   "ok": true,
-  "db": "D:\\path\\data\\comments.db"
+  "db": "D:\\path\\data\\comment_danmaku.db"
 }
 ```
 
@@ -337,7 +338,7 @@ __pycache__/
 - `source_url`
 - `owner_name`
 - `pic`
-- `flat_total_count`
+- `comment_total_count`
 - `active_comment_count`
 - `deleted_comment_count`
 - `danmaku_count`
@@ -451,7 +452,7 @@ __pycache__/
 
 ## 8. SQLite 数据模型
 
-Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
+Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`。
 
 ### 8.1 `videos`
 
@@ -600,7 +601,7 @@ Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 
 ## 9. Bilibili 抓取实现
 
-### 9.1 评论抓取：`backend/bilibili_comments/scraper.py`
+### 9.1 评论抓取：`backend/bilibili_comment_danmaku/scraper.py`
 
 关键函数：
 
@@ -614,7 +615,7 @@ Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 - `fetch_child_replies`：分页抓楼中楼
 - `normalize_reply`：把 B 站 reply JSON 转成项目统一字段
 - `scrape_comments`：评论抓取总入口
-- `scrape_to_sqlite`：CLI 使用的抓取并保存入口
+- `scrape_comments_to_sqlite`：CLI 使用的抓取并保存入口
 
 评论 API：
 
@@ -631,7 +632,7 @@ Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 - `fetch_main_replies` 会去重，避免 top/hot/admin/upper 等来源重复出现。
 - `fetch_child_replies` 同样按 rpid 去重。
 
-### 9.2 弹幕抓取：`backend/bilibili_comments/danmaku.py`
+### 9.2 弹幕抓取：`backend/bilibili_comment_danmaku/danmaku.py`
 
 关键函数：
 
@@ -891,8 +892,8 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `backend/bilibili_comments/scraper.py`
-- `backend/bilibili_comments/storage.py`
+- `backend/bilibili_comment_danmaku/scraper.py`
+- `backend/bilibili_comment_danmaku/storage.py`
 - `backend/server.py` 的 `handle_parse_video_api` 和 `handle_refresh_api`
 
 需要同步：
@@ -906,8 +907,8 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `backend/bilibili_comments/danmaku.py`
-- `backend/bilibili_comments/storage.py` 的 `save_danmaku_to_sqlite` 和 `load_danmaku_data`
+- `backend/bilibili_comment_danmaku/danmaku.py`
+- `backend/bilibili_comment_danmaku/storage.py` 的 `save_danmaku_to_sqlite` 和 `load_danmaku_data`
 - `backend/server.py` 的 `handle_danmaku_refresh_api`
 
 需要同步：
@@ -929,7 +930,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 要求：
 
-- 兼容已有 `comments.db`
+- 兼容已有 `comment_danmaku.db`，并从旧 `comments.db` 自动复制迁移
 - 用 `ALTER TABLE ADD COLUMN` 做轻量迁移
 - 不要要求用户手动删数据库
 - 不要破坏旧数据
@@ -993,7 +994,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 ```powershell
 pnpm build
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend\bilibili_comment_danmaku\storage.py backend\bilibili_comment_danmaku\danmaku.py backend\bilibili_comment_danmaku\scraper.py backend\bilibili_comment_danmaku\url_utils.py backend\bilibili_comment_danmaku\__init__.py
 git status --short --ignored
 ```
 
@@ -1038,7 +1039,7 @@ git status --short --ignored
 - 没有 `cookie.txt`
 - 没有 `data/`
 - 没有 `logs/`
-- 没有 `comments*.db`
+- 没有 `comment_danmaku*.db`
 - 没有 `dist/`
 - 没有 `node_modules/`
 - 没有日志和缓存
@@ -1055,7 +1056,7 @@ git pull --ff-only
 git switch -c <branch-name>
 # edit
 pnpm build
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend\bilibili_comment_danmaku\storage.py backend\bilibili_comment_danmaku\danmaku.py backend\bilibili_comment_danmaku\scraper.py backend\bilibili_comment_danmaku\url_utils.py backend\bilibili_comment_danmaku\__init__.py
 git status --short --ignored
 git add <files>
 git commit -m "<message>"
@@ -1089,3 +1090,4 @@ git -c credential.helper= -c credential.https://github.com.helper= -c credential
 
 - 用户可见行为改变：更新 `README.md`
 - 开发方式、接口、schema、架构改变：更新 `AGENTS.md`
+

@@ -1,4 +1,4 @@
-import type { CommentData, DanmakuData, ParseVideoResponse, ProgressState, VideoListResponse } from "../types";
+﻿import type { CommentData, DanmakuData, ParseVideoResponse, ProgressState, VideoListResponse } from "../types";
 
 export async function fetchCommentData(bvid?: string) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
@@ -58,12 +58,13 @@ async function parseJsonResponse<T>(response: Response) {
   if (!response.ok) {
     let detail = "";
     try {
-      const payload = (await response.json()) as { error?: string };
-      detail = payload.error || "";
+      const payload = (await response.json()) as { detail?: string; error?: string };
+      detail = payload.error || payload.detail || "";
     } catch {
       detail = "";
     }
-    throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    throw new Error(detail || `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
 }
+

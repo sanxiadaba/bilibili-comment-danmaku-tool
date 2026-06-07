@@ -20,7 +20,7 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
   if (!danmaku || danmaku.metadata.total_count === 0) {
     return (
       <div className="grid min-h-44 place-items-center rounded-md border border-dashed border-line bg-[#fbfcfe] p-6 text-center text-sm text-muted">
-        暂无弹幕数据，点击刷新会重新抓取当前视频的评论和弹幕。
+        暂无弹幕数据，点击刷新会重新抓取当前视频的弹幕。
       </div>
     );
   }
