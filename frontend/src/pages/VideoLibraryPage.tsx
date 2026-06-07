@@ -13,6 +13,7 @@
   Search,
   Settings,
   Sparkles,
+  Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
@@ -32,6 +33,7 @@ export function VideoLibraryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [ownerFilter, setOwnerFilter] = useState("all");
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const parseProgress = useProgressPolling(isParsing, "parse");
@@ -57,17 +59,65 @@ export function VideoLibraryPage() {
     void loadVideos();
   }, [loadVideos]);
 
+  const ownerGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        name: string;
+        videoCount: number;
+        commentCount: number;
+        danmakuCount: number;
+      }
+    >();
+
+    for (const video of videos) {
+      const key = ownerKey(video);
+      const existing = groups.get(key);
+      if (existing) {
+        existing.videoCount += 1;
+        existing.commentCount += video.comment_total_count || 0;
+        existing.danmakuCount += video.danmaku_count || 0;
+      } else {
+        groups.set(key, {
+          key,
+          name: ownerName(video),
+          videoCount: 1,
+          commentCount: video.comment_total_count || 0,
+          danmakuCount: video.danmaku_count || 0,
+        });
+      }
+    }
+
+    return Array.from(groups.values()).sort((first, second) => {
+      if (second.videoCount !== first.videoCount) return second.videoCount - first.videoCount;
+      if (second.commentCount !== first.commentCount) return second.commentCount - first.commentCount;
+      return first.name.localeCompare(second.name, "zh-Hans-CN");
+    });
+  }, [videos]);
+
+  useEffect(() => {
+    if (ownerFilter === "all") return;
+    if (!ownerGroups.some((group) => group.key === ownerFilter)) {
+      setOwnerFilter("all");
+    }
+  }, [ownerFilter, ownerGroups]);
+
+  const selectedOwnerName = ownerGroups.find((group) => group.key === ownerFilter)?.name;
+
   const filteredVideos = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return videos;
-    return videos.filter((video) => {
+    const ownerScopedVideos =
+      ownerFilter === "all" ? videos : videos.filter((video) => ownerKey(video) === ownerFilter);
+    if (!needle) return ownerScopedVideos;
+    return ownerScopedVideos.filter((video) => {
       return (
         video.title.toLowerCase().includes(needle) ||
         video.bvid.toLowerCase().includes(needle) ||
         (video.owner_name || "").toLowerCase().includes(needle)
       );
     });
-  }, [query, videos]);
+  }, [ownerFilter, query, videos]);
 
   const totals = useMemo(() => {
     return videos.reduce(
@@ -327,6 +377,51 @@ export function VideoLibraryPage() {
               </div>
             </div>
           )}
+          <div className="mt-4 border-t border-line pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+                <Users size={18} aria-hidden="true" />
+                UP主分类
+              </h2>
+              <span className="text-xs text-muted">{ownerGroups.length} 位</span>
+            </div>
+            <div className="mt-3 grid gap-2">
+              <OwnerFilterButton
+                active={ownerFilter === "all"}
+                commentCount={totals.comments}
+                danmakuCount={totals.danmaku}
+                name="全部视频"
+                videoCount={videos.length}
+                onClick={() => {
+                  logClientEvent("client.user.videos.owner_filter", "user selected all owners", {
+                    owner: "all",
+                  });
+                  setOwnerFilter("all");
+                }}
+              />
+              <div className="max-h-[360px] overflow-y-auto pr-1">
+                <div className="grid gap-2">
+                  {ownerGroups.map((owner) => (
+                    <OwnerFilterButton
+                      active={ownerFilter === owner.key}
+                      commentCount={owner.commentCount}
+                      danmakuCount={owner.danmakuCount}
+                      key={owner.key}
+                      name={owner.name}
+                      videoCount={owner.videoCount}
+                      onClick={() => {
+                        logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
+                          owner: owner.name,
+                          video_count: owner.videoCount,
+                        });
+                        setOwnerFilter(owner.key);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </aside>
 
         <section className="min-w-0 rounded-md border border-line bg-white shadow-soft">
@@ -334,8 +429,11 @@ export function VideoLibraryPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
                 <ListTree size={18} aria-hidden="true" />
-                视频列表
+                {selectedOwnerName ? `${selectedOwnerName}的视频` : "视频列表"}
               </h2>
+              <span className="text-sm text-muted">
+                {filteredVideos.length} / {videos.length}
+              </span>
               <label className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
                 <Search size={16} aria-hidden="true" />
                 <input
@@ -366,6 +464,55 @@ export function VideoLibraryPage() {
 
 function extractBvid(value: string) {
   return value.trim().match(/BV[0-9A-Za-z]{10}/)?.[0] || "";
+}
+
+function ownerName(video: VideoSummary) {
+  return (video.owner_name || "未知UP主").trim() || "未知UP主";
+}
+
+function ownerKey(video: VideoSummary) {
+  const mid = (video.owner_mid || "").trim();
+  if (mid) return `mid:${mid}`;
+  return `name:${ownerName(video).toLowerCase()}`;
+}
+
+type OwnerFilterButtonProps = {
+  active: boolean;
+  commentCount: number;
+  danmakuCount: number;
+  name: string;
+  videoCount: number;
+  onClick: () => void;
+};
+
+function OwnerFilterButton({
+  active,
+  commentCount,
+  danmakuCount,
+  name,
+  videoCount,
+  onClick,
+}: OwnerFilterButtonProps) {
+  return (
+    <button
+      className={cn(
+        "grid w-full min-w-0 gap-1 rounded-md border px-3 py-2 text-left transition",
+        active
+          ? "border-bilibili bg-pink-50 text-bilibili"
+          : "border-line bg-[#fbfcfe] text-ink hover:border-bilibili hover:bg-white",
+      )}
+      type="button"
+      onClick={onClick}
+    >
+      <span className="flex min-w-0 items-center justify-between gap-3">
+        <span className="truncate text-sm font-medium">{name}</span>
+        <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs text-muted">{videoCount}</span>
+      </span>
+      <span className="text-xs text-muted">
+        评论 {formatNumber(commentCount)} · 弹幕 {formatNumber(danmakuCount)}
+      </span>
+    </button>
+  );
 }
 
 function VideoCard({ video }: { video: VideoSummary }) {
