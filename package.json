@@ -7,7 +7,10 @@
     "dev": "vite --config frontend/vite.config.ts --host 127.0.0.1",
     "server": "python backend/server.py --host 127.0.0.1 --port 8000",
     "fetch": "python backend/fetch_bilibili_comment_danmaku.py",
-    "build": "tsc -p frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",
+    "test": "pnpm test:backend && pnpm test:frontend",
+    "test:backend": "python -B -m unittest discover -s tests/backend -p \"test_*.py\"",
+    "test:frontend": "vitest run --config frontend/vite.config.ts",
+    "build": "pnpm test && tsc -p frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",
     "preview": "vite preview --config frontend/vite.config.ts --host 127.0.0.1"
   },
   "dependencies": {
@@ -23,7 +26,8 @@
     "autoprefixer": "^10.4.23",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.18",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
   }
 }
 

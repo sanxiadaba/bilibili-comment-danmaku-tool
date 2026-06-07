@@ -125,6 +125,21 @@ pnpm install
 pnpm build
 ```
 
+运行完整测试：
+
+```powershell
+pnpm test
+```
+
+测试分项：
+
+```powershell
+pnpm test:backend
+pnpm test:frontend
+```
+
+注意：`pnpm build` 会先执行 `pnpm test`，测试通过后才继续 TypeScript 检查和 Vite 构建。
+
 启动后端静态服务：
 
 ```powershell

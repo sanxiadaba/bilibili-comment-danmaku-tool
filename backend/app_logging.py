@@ -261,7 +261,11 @@ def emit_drop_summary_if_due(logger):
 
 
 def clean_fields(fields):
-    return {key: sanitize_value(value) for key, value in fields.items() if value is not None}
+    return {
+        key: sanitize_value(value)
+        for key, value in fields.items()
+        if value is not None and not is_sensitive_key(key)
+    }
 
 
 def sanitize_value(value):

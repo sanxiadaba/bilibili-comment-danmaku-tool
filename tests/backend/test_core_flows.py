@@ -1,0 +1,265 @@
+import gzip
+import json
+import logging
+import queue
+import sys
+import tempfile
+import unittest
+import zlib
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+BACKEND = ROOT / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
+from bilibili_comment_danmaku.danmaku import (  # noqa: E402
+    decode_response_body,
+    parse_danmaku_xml,
+)
+from bilibili_comment_danmaku.storage import (  # noqa: E402
+    danmaku_user_hash,
+    load_comment_data,
+    load_danmaku_data,
+    list_video_summaries,
+    save_comments_to_sqlite,
+    save_danmaku_to_sqlite,
+)
+from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
+
+
+BVID = "BV1xx411c7mD"
+
+
+def make_comment(rpid, level, message, *, root="0", parent="0", mid="100", like=0, ctime=1700000000):
+    return {
+        "normalized": {
+            "level": level,
+            "rpid": str(rpid),
+            "oid": "123",
+            "type": 1,
+            "mid": str(mid),
+            "root": str(root),
+            "parent": str(parent),
+            "dialog": "0",
+            "ctime": ctime,
+            "time_iso": "2024-01-01T00:00:00+08:00",
+            "time_iso_utc": "2023-12-31T16:00:00+00:00",
+            "like": like,
+            "rcount": 1 if level == 1 else 0,
+            "count": 1 if level == 1 else 0,
+            "state": 0,
+            "attr": 0,
+            "message": message,
+            "ip_location": "IP属地：上海",
+            "pictures": [
+                {
+                    "img_src": "http://i.example/a.jpg",
+                    "img_width": 640,
+                    "img_height": 480,
+                    "img_size": 12.5,
+                    "play_gif_thumbnail": False,
+                }
+            ]
+            if level == 1
+            else [],
+            "emote": {
+                "[doge]": {
+                    "url": "http://i.example/doge.png",
+                    "jump_title": "doge",
+                    "meta": {"size": 1},
+                    "package_id": 1,
+                    "type": 1,
+                }
+            }
+            if level == 1
+            else {},
+            "user": {
+                "mid": str(mid),
+                "uname": f"user-{mid}",
+                "sex": "保密",
+                "sign": "hello",
+                "avatar": "http://i.example/avatar.jpg",
+                "level": 5,
+            },
+        },
+        "raw": {},
+        "replies": [],
+    }
+
+
+def make_archive(fetched_at, comments):
+    return {
+        "metadata": {
+            "bvid": BVID,
+            "aid": 123,
+            "title": "测试视频",
+            "source_url": f"https://www.bilibili.com/video/{BVID}",
+            "fetched_at": fetched_at,
+            "sort": "like",
+            "api_comment_count": len(comments),
+            "top_level_comment_count": sum(1 for item in comments if item["normalized"]["level"] == 1),
+            "expected_nested_comment_count": sum(1 for item in comments if item["normalized"]["level"] == 2),
+            "nested_comment_count": sum(1 for item in comments if item["normalized"]["level"] == 2),
+            "comment_total_count": len(comments),
+        },
+        "video_raw": {
+            "cid": "456",
+            "pic": "http://i.example/pic.jpg",
+            "owner": {"mid": "42", "name": "UP主", "face": "http://i.example/up.jpg"},
+            "stat": {"view": 1000, "danmaku": 2, "reply": 2, "favorite": 1, "coin": 2, "share": 3, "like": 4},
+            "pubdate": 1700000000,
+            "desc": "desc",
+            "duration": 180,
+        },
+        "comments": comments,
+    }
+
+
+class UrlAndDanmakuTests(unittest.TestCase):
+    def test_extract_bvid_from_plain_text_and_url(self):
+        self.assertEqual(extract_bvid(BVID), BVID)
+        self.assertEqual(extract_bvid(f"https://www.bilibili.com/video/{BVID}/?p=1"), BVID)
+        with self.assertRaises(ValueError):
+            extract_bvid("not a bilibili video")
+
+    def test_decode_response_body_supports_plain_gzip_and_deflate(self):
+        payload = b"<i><d p='1,1,25,16777215,1700000000,0,hash,1'>hi</d></i>"
+        self.assertEqual(decode_response_body(payload, ""), payload)
+        self.assertEqual(decode_response_body(gzip.compress(payload), "gzip"), payload)
+        self.assertEqual(decode_response_body(zlib.compress(payload), "deflate"), payload)
+
+    def test_parse_danmaku_xml_skips_invalid_rows_and_unescapes_content(self):
+        xml = b"""
+        <i>
+          <d p="12.5,1,25,16777215,1700000000,0,abc,100,9">hello &amp; hi</d>
+          <d p="bad,row">skip</d>
+        </i>
+        """
+        rows = parse_danmaku_xml(xml, BVID, "456")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["dmid"], "100")
+        self.assertEqual(rows[0]["progress"], 12.5)
+        self.assertEqual(rows[0]["weight"], 9)
+        self.assertEqual(rows[0]["content"], "hello & hi")
+
+
+class StorageTests(unittest.TestCase):
+    def test_comment_refresh_keeps_missing_comments_as_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            reply = make_comment("2", 2, "reply comment", root="1", parent="1", mid="100", like=3)
+            top["replies"] = [reply]
+
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), db_path, replace=True)
+            refreshed_top = make_comment("1", 1, "top comment edited", mid="42", like=9)
+            result = save_comments_to_sqlite(
+                make_archive("2024-01-02T00:00:00+00:00", [refreshed_top]),
+                db_path,
+                replace=True,
+            )
+            loaded = load_comment_data(db_path, bvid=BVID)
+
+            self.assertEqual(result["deleted_count"], 1)
+            self.assertEqual(loaded["metadata"]["active_comment_count"], 1)
+            self.assertEqual(loaded["metadata"]["deleted_comment_count"], 1)
+            by_rpid = {item["normalized"]["rpid"]: item["normalized"] for item in loaded["comment_items"]}
+            self.assertFalse(by_rpid["1"]["is_deleted"])
+            self.assertTrue(by_rpid["2"]["is_deleted"])
+            self.assertEqual(by_rpid["1"]["message"], "top comment edited")
+            self.assertTrue(loaded["comments"][0]["normalized"]["is_up_owner"])
+
+    def test_danmaku_save_load_marks_owner_and_builds_buckets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+            owner_hash = danmaku_user_hash("42")
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": "100",
+                            "progress": 1.2,
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000001,
+                            "pool": 0,
+                            "user_hash": owner_hash,
+                            "weight": 9,
+                            "like_count": 12,
+                            "content": "owner danmaku",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        },
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": "101",
+                            "progress": 15.0,
+                            "mode": 5,
+                            "font_size": 25,
+                            "color": 0xFE0302,
+                            "ctime": 1700000002,
+                            "pool": 0,
+                            "user_hash": "other",
+                            "weight": None,
+                            "like_count": 2,
+                            "content": "top danmaku",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+
+            loaded = load_danmaku_data(db_path, bvid=BVID, limit=1)
+            summaries = list_video_summaries(db_path)
+
+            self.assertEqual(loaded["metadata"]["total_count"], 2)
+            self.assertEqual(loaded["metadata"]["limit"], 1)
+            self.assertEqual(len(loaded["items"]), 1)
+            self.assertTrue(loaded["items"][0]["is_up_owner"])
+            self.assertEqual([bucket["bucket_start"] for bucket in loaded["buckets"]], [0, 10])
+            self.assertEqual(summaries[0]["danmaku_count"], 2)
+
+
+class LoggingTests(unittest.TestCase):
+    def test_clean_fields_removes_sensitive_values_and_truncates_long_strings(self):
+        cleaned = clean_fields(
+            {
+                "token": "secret",
+                "nested": {"cookie": "hidden", "safe": "visible"},
+                "items": list(range(60)),
+                "message": "x" * 600,
+            }
+        )
+        self.assertNotIn("token", cleaned)
+        self.assertEqual(cleaned["nested"], {"safe": "visible"})
+        self.assertEqual(len(cleaned["items"]), 50)
+        self.assertTrue(cleaned["message"].endswith("...[truncated]"))
+
+    def test_bounded_queue_drops_low_priority_and_keeps_warning_when_full(self):
+        log_queue = queue.Queue(maxsize=1)
+        handler = BoundedQueueHandler(log_queue)
+        first = logging.LogRecord("test", logging.INFO, __file__, 1, "first", (), None)
+        second = logging.LogRecord("test", logging.INFO, __file__, 2, "second", (), None)
+        warning = logging.LogRecord("test", logging.WARNING, __file__, 3, "warning", (), None)
+
+        handler.emit(first)
+        handler.emit(second)
+        handler.emit(warning)
+
+        self.assertEqual(log_queue.qsize(), 1)
+        self.assertEqual(log_queue.get_nowait().getMessage(), "warning")
+
+
+if __name__ == "__main__":
+    unittest.main()
