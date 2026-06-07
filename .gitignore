@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+*.tsbuildinfo
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local data and credentials
+cookie.txt
+comments*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+
+# Logs
+*.log
+server.err
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
