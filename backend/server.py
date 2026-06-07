@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from app_logging import configure_logging, log_event, log_exception, new_request_id
+from app_logging import configure_logging, logging_status, log_event, log_exception, new_request_id, shutdown_logging
 from bilibili_comment_danmaku import (
     extract_bvid,
     list_video_summaries,
@@ -157,14 +157,16 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         self.send_json(get_progress_snapshot())
 
     def handle_health_api(self):
+        logging = logging_status()
         log_event(
             "api.health",
             "health check",
             request_id=getattr(self, "request_id", ""),
             db=str(self.db_path),
             static_dir=str(self.static_dir),
+            logging=logging,
         )
-        self.send_json({"ok": True, "db": str(self.db_path)})
+        self.send_json({"ok": True, "db": str(self.db_path), "logging": logging})
 
     def handle_client_log_api(self):
         body = self.read_json_body()
@@ -932,8 +934,18 @@ def main():
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
+    parser.add_argument("--log-max-bytes", type=int, default=10 * 1024 * 1024)
+    parser.add_argument("--log-backup-count", type=int, default=10)
+    parser.add_argument("--log-queue-size", type=int, default=10000)
+    parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    configure_logging(args.log_dir)
+    configure_logging(
+        args.log_dir,
+        max_bytes=args.log_max_bytes,
+        backup_count=args.log_backup_count,
+        queue_size=args.log_queue_size,
+        level=args.log_level,
+    )
 
     handler = type(
         "ConfiguredCommentDanmakuServer",
@@ -954,6 +966,7 @@ def main():
         db=str(handler.db_path),
         static_dir=str(handler.static_dir),
         log_dir=str(handler.log_dir),
+        logging=logging_status(),
     )
     safe_print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
     safe_print(f"SQLite database: {Path(args.db).resolve()}")
@@ -964,6 +977,7 @@ def main():
         raise
     finally:
         server.server_close()
+        shutdown_logging()
 
 
 if __name__ == "__main__":

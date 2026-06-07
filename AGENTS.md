@@ -506,12 +506,28 @@ logs/app.jsonl
 - `progress.*`：抓取进度开始、更新、完成、失败。
 - `client.*`：用户点击、刷新、导出、导航、前端 API 成功/失败。
 
+长期运行保护：
+
+- `backend/app_logging.py` 使用后台队列写日志，避免请求线程直接等待文件写盘。
+- 队列有上限，默认 `10000` 条；日志暴涨时不会无限占用内存。
+- 默认单个 `app.jsonl` 最大 `10MB`，保留 `10` 个轮转文件。
+- 队列满时优先丢弃低优先级日志并累加 `dropped_count`；`warning` / `error` 会尝试挤出旧记录后保留。
+- `/api/health` 返回 `logging` 状态，包括队列大小、队列上限、轮转配置、丢弃计数和后台 listener 是否存活。
+- 服务退出时调用 `shutdown_logging()`，尽量 flush 队列中已接收的日志。
+
+可调启动参数：
+
+```powershell
+python backend/server.py --log-max-bytes 10485760 --log-backup-count 10 --log-queue-size 10000 --log-level INFO
+```
+
 开发注意：
 
 - 不要把 `logs/` 提交。
 - 新增 API 或重要用户操作时，补一条结构化日志事件。
 - 事件名用点分层，例如 `task.comments_refresh.finish`。
 - 日志字段应使用可分析的短字段名，不要记录 cookie、token、密码或完整敏感正文。
+- 不要把日志队列改回同步文件写入；长时间运行时，日志系统必须有轮转、背压和状态可观测能力。
 
 ## 8. SQLite 数据模型
 
