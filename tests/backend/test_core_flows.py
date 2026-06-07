@@ -410,9 +410,17 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.12, 0.12, 0.35, 0.12])
 
     def test_signed_request_refreshes_signature_after_blocked_status(self):
+        class FakeBackoff:
+            def __init__(self):
+                self.blocks = []
+
+            def block_for(self, seconds):
+                self.blocks.append(seconds)
+
         class FakeClient:
             def __init__(self):
                 self.urls = []
+                self.backoff = FakeBackoff()
 
             def request_json(self, url, retries=1):
                 self.urls.append(url)
@@ -424,27 +432,40 @@ class ScraperPerformanceTests(unittest.TestCase):
         times = iter([1000, 1030])
         original_sleep = scraper.time.sleep
         original_time = scraper.time.time
+        original_uniform = scraper.random.uniform
         try:
             scraper.time.sleep = sleeps.append
             scraper.time.time = lambda: next(times)
+            scraper.random.uniform = lambda _start, _end: 5
             client = FakeClient()
+            mixin_keys = iter(["1" * 32])
             result = scraper.request_signed_json(
                 "https://example.test/reply",
                 lambda: {"oid": 1, "next": 0},
                 client,
                 "0" * 32,
                 lambda _message: None,
+                refresh_mixin_key=lambda: next(mixin_keys),
             )
         finally:
             scraper.time.sleep = original_sleep
             scraper.time.time = original_time
+            scraper.random.uniform = original_uniform
 
         self.assertEqual(result, {"data": {"ok": True}})
-        self.assertEqual(sleeps, [8])
+        self.assertEqual(sleeps, [65])
+        self.assertEqual(client.backoff.blocks, [65])
         self.assertEqual(len(client.urls), 2)
         self.assertIn("wts=1000", client.urls[0])
         self.assertIn("wts=1030", client.urls[1])
         self.assertNotEqual(client.urls[0], client.urls[1])
+        self.assertNotIn("w_rid=" + client.urls[0].split("w_rid=", 1)[1], client.urls[1])
+
+    def test_api_block_code_is_treated_as_blocked_request(self):
+        exc = scraper.BilibiliRequestError("blocked", api_code=-352, url="https://example.test")
+
+        self.assertTrue(scraper.is_blocked_request_error(exc))
+        self.assertEqual(scraper.blocked_error_label(exc), "API code -352")
 
     def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
         class FailingClient:

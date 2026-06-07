@@ -3,6 +3,7 @@ import http.cookiejar
 import copy
 import json
 import os
+import random
 import threading
 import time
 import urllib.error
@@ -25,7 +26,9 @@ CHILD_PAGE_YIELD_SECONDS = 0.12
 CHILD_FULL_DELAY_EVERY_PAGES = 10
 MAX_CHILD_FETCH_WORKERS = 4
 BLOCKED_HTTP_STATUSES = {412, 429}
-BLOCKED_RETRY_DELAYS = (8, 15, 30)
+BLOCKED_API_CODES = {-352}
+BLOCKED_RETRY_DELAYS = (60, 180, 600)
+BLOCKED_RETRY_JITTER_SECONDS = (3, 18)
 SIGNED_REQUEST_RETRIES = 3
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
@@ -98,10 +101,12 @@ WBI_BAD_CHARS = "!'()*"
 
 
 class BilibiliRequestError(RuntimeError):
-    def __init__(self, message, *, status=None, url=None, cause=None):
+    def __init__(self, message, *, status=None, api_code=None, url=None, cause=None, retry_after=None):
         super().__init__(message)
         self.status = status
+        self.api_code = api_code
         self.url = url
+        self.retry_after = retry_after
         self.__cause__ = cause
 
 
@@ -123,11 +128,14 @@ class RequestBackoff:
             self.blocked_until = max(self.blocked_until, time.monotonic() + seconds)
 
 
+GLOBAL_REQUEST_BACKOFF = RequestBackoff()
+
+
 class BilibiliClient:
     def __init__(self, headers, use_proxy=False, backoff=None):
         self.headers = headers
         self.use_proxy = use_proxy
-        self.backoff = backoff or RequestBackoff()
+        self.backoff = backoff or GLOBAL_REQUEST_BACKOFF
         self.cookie_jar = http.cookiejar.CookieJar()
         proxy_handler = urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({})
         self.opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPCookieProcessor(self.cookie_jar))
@@ -148,14 +156,39 @@ class BilibiliClient:
                     body = resp.read().decode("utf-8")
                 data = json.loads(body)
                 if data.get("code") != 0 and not allow_api_error:
+                    api_code = data.get("code")
+                    if api_code in BLOCKED_API_CODES:
+                        raise BilibiliRequestError(
+                            f"API code={api_code} message={data.get('message')}",
+                            api_code=api_code,
+                            url=url,
+                        )
                     raise RuntimeError(f"API code={data.get('code')} message={data.get('message')}")
                 return data
             except urllib.error.HTTPError as exc:
                 last_error = exc
+                retry_after = retry_after_seconds(exc)
+                if exc.code in BLOCKED_HTTP_STATUSES:
+                    delay = max(retry_after or 0, retry_delay_seconds(attempt, status=exc.code))
+                else:
+                    delay = retry_delay_seconds(attempt, status=exc.code)
                 if attempt == retries:
                     break
-                delay = retry_delay_seconds(attempt, status=exc.code)
                 if exc.code in BLOCKED_HTTP_STATUSES:
+                    self.backoff.block_for(delay)
+                time.sleep(delay)
+            except BilibiliRequestError as exc:
+                last_error = exc
+                if is_blocked_request_error(exc):
+                    delay = max(
+                        exc.retry_after or 0,
+                        retry_delay_seconds(attempt, status=exc.status, api_code=exc.api_code),
+                    )
+                else:
+                    delay = retry_delay_seconds(attempt)
+                if attempt == retries:
+                    break
+                if is_blocked_request_error(exc):
                     self.backoff.block_for(delay)
                 time.sleep(delay)
             except Exception as exc:
@@ -171,7 +204,10 @@ class BilibiliClient:
                 status=status,
                 url=url,
                 cause=last_error,
+                retry_after=retry_after_seconds(last_error),
             )
+        if isinstance(last_error, BilibiliRequestError):
+            raise last_error
         raise BilibiliRequestError(
             f"Request failed after {retries} attempts: {url}\n{last_error}",
             url=url,
@@ -207,8 +243,10 @@ def make_headers(bvid, cookie=""):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Referer": f"https://www.bilibili.com/video/{bvid}",
         "Origin": "https://www.bilibili.com",
+        "Connection": "keep-alive",
     }
     if cookie:
         headers["Cookie"] = cookie
@@ -240,18 +278,42 @@ def sign_wbi_params(params, mixin_key):
     return cleaned
 
 
-def retry_delay_seconds(attempt, status=None):
-    if status in BLOCKED_HTTP_STATUSES:
+def retry_delay_seconds(attempt, status=None, api_code=None):
+    if status in BLOCKED_HTTP_STATUSES or api_code in BLOCKED_API_CODES:
         index = min(max(attempt, 1), len(BLOCKED_RETRY_DELAYS)) - 1
-        return BLOCKED_RETRY_DELAYS[index]
+        base_delay = BLOCKED_RETRY_DELAYS[index]
+        jitter = random.uniform(*BLOCKED_RETRY_JITTER_SECONDS)
+        return base_delay + jitter
     return min(2 * attempt, 8)
 
 
+def retry_after_seconds(error):
+    headers = getattr(error, "headers", None)
+    if not headers:
+        return None
+    value = headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(int(value), 0)
+    except ValueError:
+        return None
+
+
 def is_blocked_request_error(exc):
-    return isinstance(exc, BilibiliRequestError) and exc.status in BLOCKED_HTTP_STATUSES
+    return (
+        isinstance(exc, BilibiliRequestError)
+        and (exc.status in BLOCKED_HTTP_STATUSES or exc.api_code in BLOCKED_API_CODES)
+    )
 
 
-def request_signed_json(endpoint, params_factory, client, mixin_key, log):
+def blocked_error_label(exc):
+    if exc.status in BLOCKED_HTTP_STATUSES:
+        return f"HTTP {exc.status}"
+    return f"API code {exc.api_code}"
+
+
+def request_signed_json(endpoint, params_factory, client, mixin_key, log, refresh_mixin_key=None):
     last_error = None
     for attempt in range(1, SIGNED_REQUEST_RETRIES + 1):
         params = sign_wbi_params(params_factory(), mixin_key)
@@ -261,12 +323,24 @@ def request_signed_json(endpoint, params_factory, client, mixin_key, log):
             last_error = exc
             if not is_blocked_request_error(exc) or attempt == SIGNED_REQUEST_RETRIES:
                 raise
-            delay = retry_delay_seconds(attempt, status=exc.status)
+            delay = max(
+                exc.retry_after or 0,
+                retry_delay_seconds(attempt, status=exc.status, api_code=exc.api_code),
+            )
+            backoff = getattr(client, "backoff", None)
+            if backoff is not None:
+                backoff.block_for(delay)
             log(
-                f"warning: signed request got HTTP {exc.status}; "
-                f"refreshing WBI signature after {delay}s backoff (attempt {attempt}/{SIGNED_REQUEST_RETRIES})"
+                f"warning: signed request got {blocked_error_label(exc)}; "
+                f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{SIGNED_REQUEST_RETRIES})"
             )
             time.sleep(delay)
+            if refresh_mixin_key is not None:
+                try:
+                    mixin_key = refresh_mixin_key()
+                    log("refreshed WBI signature key after cooldown")
+                except Exception as refresh_error:
+                    log(f"warning: failed to refresh WBI signature key: {refresh_error}")
     raise last_error
 
 
@@ -367,7 +441,14 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
                 "web_location": 1315875,
             }
 
-        data = request_signed_json(endpoint, make_params, client, mixin_key, log)["data"]
+        data = request_signed_json(
+            endpoint,
+            make_params,
+            client,
+            mixin_key,
+            log,
+            refresh_mixin_key=lambda: get_wbi_mixin_key(client, log),
+        )["data"]
         page_replies = collect_main_reply_candidates(data)
         cursor = data.get("cursor") or {}
         api_comment_count = cursor.get("all_count", api_comment_count)
