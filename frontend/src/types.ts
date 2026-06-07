@@ -80,7 +80,7 @@ export type CommentNode = {
   raw: Record<string, unknown>;
 };
 
-export type CommentArchiveData = {
+export type CommentData = {
   metadata: {
     source_url: string;
     bvid: string;

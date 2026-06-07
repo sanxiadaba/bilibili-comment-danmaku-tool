@@ -19,7 +19,7 @@
   Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchCommentArchiveData, refreshCommentArchiveData } from "../api/client";
+import { fetchCommentData, refreshCommentData } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
 import { CommentDetail } from "../components/comments/CommentDetail";
@@ -48,10 +48,10 @@ import {
   topAuthors,
   topLiked,
 } from "../lib/utils";
-import type { CommentArchiveData, CommentNode, LevelFilter, SortMode } from "../types";
+import type { CommentData, CommentNode, LevelFilter, SortMode } from "../types";
 
 export function VideoDetailPage({ bvid }: { bvid?: string }) {
-  const [data, setData] = useState<CommentArchiveData | null>(null);
+  const [data, setData] = useState<CommentData | null>(null);
   const [error, setError] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState("");
@@ -64,7 +64,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [selectedId, setSelectedId] = useState("");
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
-  const applyPayload = useCallback((payload: CommentArchiveData) => {
+  const applyPayload = useCallback((payload: CommentData) => {
     setData(payload);
     setSelectedId((current) => {
       const currentExists = payload.comment_items.some((comment) => comment.normalized.rpid === current);
@@ -78,7 +78,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
     try {
-      const payload = await refreshCommentArchiveData(data?.metadata.bvid || bvid);
+      const payload = await refreshCommentData(data?.metadata.bvid || bvid);
       applyPayload(payload);
       const added = payload.refresh?.added_count ?? 0;
       const after = payload.refresh?.after_count ?? payload.metadata.comment_total_count;
@@ -103,7 +103,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   useEffect(() => {
     let mounted = true;
-    fetchCommentArchiveData(bvid)
+    fetchCommentData(bvid)
       .then((payload) => {
         if (!mounted) return;
         applyPayload(payload);

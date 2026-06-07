@@ -158,8 +158,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             fail_progress("parse", bvid if "bvid" in locals() else "", str(exc))
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
-            fail_progress("parse", bvid if "bvid" in locals() else "", str(exc))
-            self.send_json({"error": str(exc)}, status=500)
+            payload, status = api_error_response(exc)
+            fail_progress("parse", bvid if "bvid" in locals() else "", payload["error"])
+            self.send_json(payload, status=status)
         finally:
             refresh_lock.release()
 
@@ -231,8 +232,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            fail_progress("comments", requested_bvid or "", str(exc))
-            self.send_json({"error": str(exc)}, status=500)
+            payload, status = api_error_response(exc)
+            fail_progress("comments", requested_bvid or "", payload["error"])
+            self.send_json(payload, status=status)
             return
         finally:
             refresh_lock.release()
@@ -285,8 +287,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            fail_progress("danmaku", requested_bvid or "", str(exc))
-            self.send_json({"error": str(exc)}, status=500)
+            payload, status = api_error_response(exc)
+            fail_progress("danmaku", requested_bvid or "", payload["error"])
+            self.send_json(payload, status=status)
             return
         finally:
             refresh_lock.release()
@@ -334,7 +337,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         return json.loads(raw)
 
     def log_message(self, fmt, *args):
-        print(f"{self.address_string()} - {fmt % args}")
+        safe_print(f"{self.address_string()} - {fmt % args}")
 
 
 def utc_now():
@@ -439,9 +442,50 @@ def make_progress_logger(kind, bvid, logs):
     def log(message):
         logs.append(message)
         update_progress(kind, bvid, message)
-        print(message, flush=True)
+        safe_print(message)
 
     return log
+
+
+def safe_print(message):
+    try:
+        print(message, flush=True)
+    except OSError:
+        pass
+
+
+def api_error_response(exc):
+    message = str(exc)
+    lower_message = message.lower()
+
+    if "http error 412" in lower_message:
+        return (
+            {
+                "error": "Bilibili 接口返回 412，可能是风控、Cookie 失效或请求过快。请稍后重试，或检查 data/cookie.txt。",
+                "detail": message,
+            },
+            502,
+        )
+
+    if "http error" in lower_message or "request failed after" in lower_message:
+        return (
+            {
+                "error": "Bilibili 接口请求失败，可能是网络、登录态、风控或接口临时不可用。",
+                "detail": message,
+            },
+            502,
+        )
+
+    if "[errno 22] invalid argument" in lower_message:
+        return (
+            {
+                "error": "本地服务输出流异常，已避免让日志写入中断抓取。请重启服务后重试。",
+                "detail": message,
+            },
+            500,
+        )
+
+    return ({"error": message}, 500)
 
 
 def progress_stage(kind, message):
@@ -587,8 +631,8 @@ def main():
     )
     handler.db_path = prepare_database_path(handler.db_path)
     server = ThreadingHTTPServer((args.host, args.port), handler)
-    print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
-    print(f"SQLite database: {Path(args.db).resolve()}")
+    safe_print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
+    safe_print(f"SQLite database: {Path(args.db).resolve()}")
     server.serve_forever()
 
 

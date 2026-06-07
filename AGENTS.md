@@ -273,7 +273,7 @@ __pycache__/
 前端入口：
 
 - 页面：`VideoDetailPage`
-- 函数：`refreshCommentArchiveData(bvid)`
+- 函数：`refreshCommentData(bvid)`
 - 请求：`POST /api/refresh?bvid=BV...`
 
 后端流程：
@@ -376,7 +376,7 @@ __pycache__/
 
 用途：读取评论详情。
 
-返回类型：`CommentArchiveData`
+返回类型：`CommentData`
 
 如果不传 `bvid`，读取最近一次抓取的视频。
 
@@ -388,7 +388,7 @@ __pycache__/
 
 用途：刷新评论。
 
-返回类型：`CommentArchiveData`，并额外带 `refresh` 字段。
+返回类型：`CommentData`，并额外带 `refresh` 字段。
 
 `refresh` 中的关键字段：
 
@@ -1090,5 +1090,4 @@ git -c credential.helper= -c credential.https://github.com.helper= -c credential
 
 - 用户可见行为改变：更新 `README.md`
 - 开发方式、接口、schema、架构改变：更新 `AGENTS.md`
-
 
