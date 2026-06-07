@@ -81,7 +81,7 @@ pnpm build
 检查 Python 语法：
 
 ```powershell
-python -B -m py_compile server.py fetch_bilibili_comments.py bilibili_comments\storage.py bilibili_comments\danmaku.py bilibili_comments\scraper.py bilibili_comments\url_utils.py bilibili_comments\__init__.py
+python -B -m py_compile backend\server.py backend\fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
 ```
 
 检查 Git 状态和忽略文件：

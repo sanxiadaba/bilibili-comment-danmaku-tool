@@ -20,7 +20,7 @@ from bilibili_comments import (
 )
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "comments.db"
 DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "cookie.txt"

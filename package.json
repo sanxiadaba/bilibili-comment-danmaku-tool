@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "server": "python server.py --host 127.0.0.1 --port 8000",
+    "server": "python backend/server.py --host 127.0.0.1 --port 8000",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },

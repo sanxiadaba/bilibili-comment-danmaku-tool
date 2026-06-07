@@ -78,8 +78,8 @@ git status --short --ignored
 
 当前代码现状：
 
-- Web 服务 `server.py` 调用 `scrape_comments` 和 `scrape_danmaku` 时没有传 `use_proxy=True`，因此默认不走代理。
-- CLI 脚本 `fetch_bilibili_comments.py` 当前默认 `use_proxy=not args.no_proxy`，也就是默认走代理；若使用 CLI 且希望不走代理，需要传 `--no-proxy`。
+- Web 服务 `backend/server.py` 调用 `scrape_comments` 和 `scrape_danmaku` 时没有传 `use_proxy=True`，因此默认不走代理。
+- CLI 脚本 `backend/fetch_bilibili_comments.py` 当前默认 `use_proxy=not args.no_proxy`，也就是默认走代理；若使用 CLI 且希望不走代理，需要传 `--no-proxy`。
 - 如果要统一行为，应单独开分支修改 CLI 默认值，并提醒用户该行为变化。
 
 ## 3. 技术栈
@@ -137,7 +137,7 @@ pnpm dev
 Python 语法检查：
 
 ```powershell
-python -B -m py_compile server.py fetch_bilibili_comments.py bilibili_comments\storage.py bilibili_comments\danmaku.py bilibili_comments\scraper.py bilibili_comments\url_utils.py bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
 ```
 
 访问地址：
@@ -156,7 +156,7 @@ http://127.0.0.1:8000/
 
 1. 执行 `pnpm build`
 2. 执行 `pnpm server`
-3. `server.py` 从 `dist/` 提供静态页面
+3. `backend/server.py` 从 `dist/` 提供静态页面
 
 ## 5. 目录结构
 
@@ -164,14 +164,15 @@ http://127.0.0.1:8000/
 .
 ├── AGENTS.md                     # agent 接手和开发手册
 ├── README.md                     # 面向用户的项目说明
-├── server.py                     # Python HTTP API + 静态文件服务
-├── fetch_bilibili_comments.py    # CLI 抓取入口
-├── bilibili_comments/
-│   ├── __init__.py               # Python 包导出
-│   ├── url_utils.py              # BV 号提取
-│   ├── scraper.py                # 评论抓取、WBI 签名、评论归一化
-│   ├── danmaku.py                # 弹幕 XML 抓取、点赞数抓取、弹幕解析
-│   └── storage.py                # SQLite schema、保存、读取、聚合
+├── backend/
+│   ├── server.py                 # Python HTTP API + 静态文件服务
+│   ├── fetch_bilibili_comments.py # CLI 抓取入口
+│   └── bilibili_comments/
+│       ├── __init__.py           # Python 包导出
+│       ├── url_utils.py          # BV 号提取
+│       ├── scraper.py            # 评论抓取、WBI 签名、评论归一化
+│       ├── danmaku.py            # 弹幕 XML 抓取、点赞数抓取、弹幕解析
+│       └── storage.py            # SQLite schema、保存、读取、聚合
 ├── src/
 │   ├── main.tsx                  # React 挂载入口
 │   ├── App.tsx                   # 极简路由入口
@@ -191,11 +192,21 @@ http://127.0.0.1:8000/
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
+├── index.html
 ├── vite.config.ts
 ├── tsconfig.json
 ├── tailwind.config.ts
 └── postcss.config.js
 ```
+
+根目录保留原则：
+
+- `backend/`：所有 Python 后端和抓取代码。
+- `src/`：所有 React 前端源码。
+- `index.html`、`vite.config.ts`、`tailwind.config.ts`、`postcss.config.js`、`tsconfig.json`：前端工具链默认入口和配置，留在根目录可减少额外配置。
+- `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`：依赖、脚本和 pnpm 构建许可。
+- `README.md`、`AGENTS.md`：用户说明和 agent 开发手册。
+- `comments*.db`、`cookie.txt`、日志、缓存、构建产物和依赖目录只允许本地存在，必须保持 ignored。
 
 本地会出现但不提交：
 
@@ -226,7 +237,7 @@ __pycache__/
 
 后端流程：
 
-1. `server.py` 的 `handle_parse_video_api`
+1. `backend/server.py` 的 `handle_parse_video_api`
 2. `extract_bvid` 从 URL 或文本中提取 BV 号
 3. `scrape_comments` 抓取视频信息、一级评论、楼中楼回复
 4. `save_to_sqlite` 保存视频、用户、评论、图片、表情
@@ -425,7 +436,7 @@ __pycache__/
 
 ## 8. SQLite 数据模型
 
-Schema 定义在 `bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
+Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 
 ### 8.1 `videos`
 
@@ -574,7 +585,7 @@ Schema 定义在 `bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 
 ## 9. Bilibili 抓取实现
 
-### 9.1 评论抓取：`bilibili_comments/scraper.py`
+### 9.1 评论抓取：`backend/bilibili_comments/scraper.py`
 
 关键函数：
 
@@ -605,7 +616,7 @@ Schema 定义在 `bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 - `fetch_main_replies` 会去重，避免 top/hot/admin/upper 等来源重复出现。
 - `fetch_child_replies` 同样按 rpid 去重。
 
-### 9.2 弹幕抓取：`bilibili_comments/danmaku.py`
+### 9.2 弹幕抓取：`backend/bilibili_comments/danmaku.py`
 
 关键函数：
 
@@ -792,9 +803,9 @@ Hook：`useProgressPolling(enabled, kind)`
 
 ## 12. 已知问题与风险
 
-### 12.1 `server.py` 中的中文字符串可能存在编码异常
+### 12.1 `backend/server.py` 中的中文字符串可能存在编码异常
 
-当前 `server.py` 中部分中文提示在终端读取时显示为乱码，例如进度阶段和错误文案。可能原因：
+当前 `backend/server.py` 中部分中文提示在终端读取时显示为乱码，例如进度阶段和错误文案。可能原因：
 
 - 文件内容曾被错误编码保存。
 - 或 PowerShell 输出编码导致显示异常。
@@ -865,9 +876,9 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `bilibili_comments/scraper.py`
-- `bilibili_comments/storage.py`
-- `server.py` 的 `handle_parse_video_api` 和 `handle_refresh_api`
+- `backend/bilibili_comments/scraper.py`
+- `backend/bilibili_comments/storage.py`
+- `backend/server.py` 的 `handle_parse_video_api` 和 `handle_refresh_api`
 
 需要同步：
 
@@ -880,9 +891,9 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `bilibili_comments/danmaku.py`
-- `bilibili_comments/storage.py` 的 `save_danmaku_to_sqlite` 和 `load_danmaku_data`
-- `server.py` 的 `handle_danmaku_refresh_api`
+- `backend/bilibili_comments/danmaku.py`
+- `backend/bilibili_comments/storage.py` 的 `save_danmaku_to_sqlite` 和 `load_danmaku_data`
+- `backend/server.py` 的 `handle_danmaku_refresh_api`
 
 需要同步：
 
@@ -912,7 +923,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `server.py`
+- `backend/server.py`
   - `progress_state`
   - `start_progress`
   - `update_progress`
@@ -967,7 +978,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 ```powershell
 pnpm build
-python -B -m py_compile server.py fetch_bilibili_comments.py bilibili_comments\storage.py bilibili_comments\danmaku.py bilibili_comments\scraper.py bilibili_comments\url_utils.py bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
 git status --short --ignored
 ```
 
@@ -1027,7 +1038,7 @@ git pull --ff-only
 git switch -c <branch-name>
 # edit
 pnpm build
-python -B -m py_compile server.py fetch_bilibili_comments.py bilibili_comments\storage.py bilibili_comments\danmaku.py bilibili_comments\scraper.py bilibili_comments\url_utils.py bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
 git status --short --ignored
 git add <files>
 git commit -m "<message>"
