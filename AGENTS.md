@@ -723,6 +723,7 @@ Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`�
 - B 站评论 API 可能因未登录、cookie 失效、风控、接口变化而返回不完整数据。
 - 没有 cookie 时，代码会继续执行，但会记录 warning。
 - `delay` 用于降低请求频率，默认 0.35 秒。
+- 楼中楼分页内部会按 `delay` 间隔请求；每个根评论之间只做很短让步，避免大视频按根评论数量额外线性放大解析时间。
 - `fetch_main_replies` 会去重，避免 top/hot/admin/upper 等来源重复出现。
 - `fetch_child_replies` 同样按 rpid 去重。
 
@@ -821,6 +822,7 @@ Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`�
 布局注意：
 
 - 之前出现过右侧评论详情列遮住中间列的问题。
+- 评论主列表使用 `VirtualList` 虚拟滚动，避免 1000+ 评论一次性渲染导致加载和滚动卡顿。
 - 修改三栏布局时重点检查：
   - 容器是否 `min-w-0`
   - grid track 是否过宽
@@ -849,6 +851,7 @@ Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`�
 - 弹幕颜色：`DanmakuColorList`、`ColorSwatch`
 - 重复弹幕：`RepeatedDanmakuList`
 - 弹幕面板：`DanmakuPanel`
+- 弹幕主列表和弹幕面板明细使用 `VirtualList` 虚拟滚动，后续不要改回全量 `.map()` 渲染。
 
 用户偏好相关：
 

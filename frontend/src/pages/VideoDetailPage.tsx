@@ -18,7 +18,7 @@
   ThumbsUp,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { fetchCommentData, logClientEvent, refreshCommentData } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
@@ -30,6 +30,7 @@ import { Metric, Panel, ProgressBanner } from "../components/common";
 import { Avatar } from "../components/ui/Avatar";
 import { Segmented } from "../components/ui/Segmented";
 import { StatTile } from "../components/ui/StatTile";
+import { VirtualList } from "../components/ui/VirtualList";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { csvCell } from "../lib/csv";
 import {
@@ -62,6 +63,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [location, setLocation] = useState("all");
   const [minLikes, setMinLikes] = useState(0);
   const [selectedId, setSelectedId] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
   const applyPayload = useCallback((payload: CommentData) => {
@@ -137,8 +139,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   const locations = useMemo(() => locationBuckets(allComments), [allComments]);
   const filteredComments = useMemo(
-    () => sortComments(filterComments(allComments, query, levelFilter, location, minLikes), sortMode),
-    [allComments, query, levelFilter, location, minLikes, sortMode],
+    () => sortComments(filterComments(allComments, deferredQuery, levelFilter, location, minLikes), sortMode),
+    [allComments, deferredQuery, levelFilter, location, minLikes, sortMode],
   );
   const hourly = useMemo(() => hourlyBuckets(allComments), [allComments]);
   const filteredHourly = useMemo(() => hourlyBuckets(filteredComments), [filteredComments]);
@@ -481,12 +483,16 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             <span className="text-muted">{formatNumber(filteredComments.length)}</span>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {filteredComments.map((comment) => (
+          <VirtualList
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            empty={<div className="p-6 text-center text-sm text-muted">没有匹配的评论</div>}
+            estimateSize={124}
+            getKey={(comment) => comment.normalized.rpid}
+            items={filteredComments}
+            renderItem={(comment) => (
               <CommentRow
                 active={selectedComment?.normalized.rpid === comment.normalized.rpid}
                 comment={comment}
-                key={comment.normalized.rpid}
                 onSelect={() => {
                   logClientEvent("client.user.comments.select_item", "user selected comment item", {
                     bvid: data.metadata.bvid,
@@ -497,11 +503,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                   setSelectedId(comment.normalized.rpid);
                 }}
               />
-            ))}
-            {filteredComments.length === 0 && (
-              <div className="p-6 text-center text-sm text-muted">没有匹配的评论</div>
             )}
-          </div>
+          />
         </aside>
 
         <section className="grid min-w-0 gap-4">

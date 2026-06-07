@@ -19,6 +19,7 @@ from bilibili_comment_danmaku.danmaku import (  # noqa: E402
     decode_response_body,
     parse_danmaku_xml,
 )
+from bilibili_comment_danmaku import scraper  # noqa: E402
 from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
     load_comment_data,
@@ -229,6 +230,72 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(loaded["items"][0]["is_up_owner"])
             self.assertEqual([bucket["bucket_start"] for bucket in loaded["buckets"]], [0, 10])
             self.assertEqual(summaries[0]["danmaku_count"], 2)
+
+
+class ScraperPerformanceTests(unittest.TestCase):
+    def test_child_thread_spacing_uses_short_yield_between_roots(self):
+        class FakeClient:
+            def request_json(self, _url):
+                return {
+                    "data": {
+                        "replies": [
+                            {
+                                "rpid_str": "2",
+                                "oid_str": "123",
+                                "type": 1,
+                                "mid_str": "100",
+                                "root_str": "1",
+                                "parent_str": "1",
+                                "dialog_str": "0",
+                                "ctime": 1700000001,
+                                "like": 1,
+                                "rcount": 0,
+                                "count": 0,
+                                "state": 0,
+                                "attr": 0,
+                                "content": {"message": "child"},
+                                "member": {"mid": "100", "uname": "user-100"},
+                            }
+                        ],
+                        "page": {"count": 1},
+                    }
+                }
+
+        main_reply = {
+            "rpid_str": "1",
+            "oid_str": "123",
+            "type": 1,
+            "mid_str": "42",
+            "root_str": "0",
+            "parent_str": "0",
+            "dialog_str": "0",
+            "ctime": 1700000000,
+            "like": 8,
+            "rcount": 1,
+            "count": 1,
+            "state": 0,
+            "attr": 0,
+            "content": {"message": "parent"},
+            "member": {"mid": "42", "uname": "owner"},
+        }
+        sleeps = []
+        original_sleep = scraper.time.sleep
+        try:
+            scraper.time.sleep = sleeps.append
+            comments, comment_items, summary = scraper.build_threaded_output(
+                [main_reply],
+                "123",
+                FakeClient(),
+                0.35,
+                lambda _message: None,
+            )
+        finally:
+            scraper.time.sleep = original_sleep
+
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(len(comment_items), 2)
+        self.assertEqual(summary[0]["fetched_count"], 1)
+        self.assertEqual(sleeps, [0.05])
 
 
 class LoggingTests(unittest.TestCase):

@@ -2,6 +2,7 @@ import { ThumbsUp } from "lucide-react";
 import type { DanmakuData, DanmakuItem } from "../../types";
 import { formatFullDateTime, formatNumber } from "../../lib/utils";
 import { OwnerBadge } from "../common";
+import { VirtualList } from "../ui/VirtualList";
 import { ColorSwatch } from "./ColorSwatch";
 import { formatProgress } from "./danmakuUtils";
 
@@ -27,12 +28,14 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
 
   if (compact) {
     return (
-      <div className="max-h-[640px] overflow-y-auto rounded-md border border-line bg-[#fbfcfe] p-2">
-        {items.map((item) => (
-          <DanmakuRow item={item} key={item.dmid} />
-        ))}
-        {items.length === 0 && <div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
-      </div>
+      <VirtualList
+        className="max-h-[640px] overflow-y-auto rounded-md border border-line bg-[#fbfcfe] p-2"
+        empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
+        estimateSize={72}
+        getKey={(item) => item.dmid}
+        items={items}
+        renderItem={(item) => <DanmakuRow item={item} />}
+      />
     );
   }
 
@@ -72,11 +75,14 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
           <span className="font-semibold text-ink">弹幕明细</span>
           <span className="text-muted">{formatNumber(items.length)} 条</span>
         </div>
-        <div className="max-h-[640px] overflow-y-auto p-2">
-          {items.map((item) => (
-            <DanmakuRow item={item} key={item.dmid} />
-          ))}
-        </div>
+        <VirtualList
+          className="max-h-[640px] overflow-y-auto p-2"
+          empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
+          estimateSize={72}
+          getKey={(item) => item.dmid}
+          items={items}
+          renderItem={(item) => <DanmakuRow item={item} />}
+        />
       </div>
     </div>
   );

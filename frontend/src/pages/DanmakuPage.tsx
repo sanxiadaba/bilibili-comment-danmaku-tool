@@ -15,7 +15,7 @@ import {
   Sparkles,
   ThumbsUp,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { fetchDanmakuData, logClientEvent, refreshDanmakuData } from "../api/client";
 import { DanmakuColorList, DanmakuModeChart, DanmakuTimelineChart, RepeatedDanmakuList } from "../components/danmaku/DanmakuCharts";
 import { DanmakuDetail } from "../components/danmaku/DanmakuDetail";
@@ -38,6 +38,7 @@ import {
 import { Panel, ProgressBanner } from "../components/common";
 import { Segmented } from "../components/ui/Segmented";
 import { StatTile } from "../components/ui/StatTile";
+import { VirtualList } from "../components/ui/VirtualList";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { csvCell } from "../lib/csv";
 import { cn, formatFullDateTime, formatNumber } from "../lib/utils";
@@ -54,6 +55,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const deferredQuery = useDeferredValue(query);
   const danmakuProgress = useProgressPolling(isRefreshing, "danmaku");
 
   const applyDanmakuPayload = useCallback((payload: DanmakuData) => {
@@ -88,7 +90,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
 
   const filteredItems = useMemo(() => {
     const items = danmaku?.items || [];
-    const needle = query.trim().toLowerCase();
+    const needle = deferredQuery.trim().toLowerCase();
     return items.filter((item) => {
       if (modeFilter !== "all" && getDanmakuModeGroup(item.mode) !== modeFilter) return false;
       if (progressLimit > 0 && item.progress > progressLimit) return false;
@@ -100,7 +102,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
         colorNumberToHex(item.color).toLowerCase().includes(needle)
       );
     });
-  }, [danmaku?.items, modeFilter, progressLimit, query]);
+  }, [danmaku?.items, deferredQuery, modeFilter, progressLimit]);
 
   const sortedItems = useMemo(() => sortDanmakuItems(filteredItems, sortMode), [filteredItems, sortMode]);
   const filteredBuckets = useMemo(() => buildDanmakuBuckets(filteredItems), [filteredItems]);
@@ -394,12 +396,16 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             <span className="text-muted">{formatNumber(sortedItems.length)}</span>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {sortedItems.map((item) => (
+          <VirtualList
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
+            estimateSize={92}
+            getKey={(item) => item.dmid}
+            items={sortedItems}
+            renderItem={(item) => (
               <DanmakuListRow
                 active={selectedItem?.dmid === item.dmid}
                 item={item}
-                key={item.dmid}
                 onSelect={() => {
                   logClientEvent("client.user.danmaku.select_item", "user selected danmaku item", {
                     bvid: danmaku?.metadata.bvid || bvid,
@@ -410,11 +416,8 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
                   setSelectedId(item.dmid);
                 }}
               />
-            ))}
-            {sortedItems.length === 0 && (
-              <div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>
             )}
-          </div>
+          />
         </aside>
 
         <section className="grid min-w-0 gap-4">

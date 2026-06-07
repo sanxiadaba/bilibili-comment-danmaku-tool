@@ -382,7 +382,8 @@ def build_threaded_output(main_replies, oid, client, delay, log):
                 if child_rpid not in child_seen:
                     child_seen.add(child_rpid)
                     child_raw.append(child)
-            time.sleep(delay)
+            if delay > 0:
+                time.sleep(min(delay, 0.05))
 
         child_items = [{"normalized": normalize_reply(child, level=2), "raw": child} for child in child_raw]
         child_items.sort(key=sort_key)
