@@ -16,7 +16,7 @@
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
-import { fetchVideos, parseVideo } from "../api/client";
+import { fetchVideos, logClientEvent, parseVideo } from "../api/client";
 import { ProgressBanner } from "../components/common";
 import { InfoRow } from "../components/common";
 import { StatTile } from "../components/ui/StatTile";
@@ -87,6 +87,7 @@ export function VideoLibraryPage() {
     event.preventDefault();
     const target = url.trim();
     if (!target) {
+      logClientEvent("client.user.parse.invalid_input", "parse submitted without video reference");
       setError("请输入 Bilibili 视频链接或 BV 号");
       return;
     }
@@ -94,6 +95,10 @@ export function VideoLibraryPage() {
     const bvid = extractBvid(target);
     const existingVideo = bvid ? videos.find((video) => video.bvid.toLowerCase() === bvid.toLowerCase()) : undefined;
     if (existingVideo) {
+      logClientEvent("client.user.parse.duplicate_detected", "existing video detected before parse", {
+        bvid: existingVideo.bvid,
+        title: existingVideo.title,
+      });
       setDuplicateVideo(existingVideo);
       setPendingParseTarget(target);
       setError("");
@@ -105,6 +110,12 @@ export function VideoLibraryPage() {
   }
 
   async function runParse(target: string) {
+    const targetBvid = extractBvid(target);
+    logClientEvent("client.user.parse.start", "user started video parse", {
+      bvid: targetBvid,
+      delay: parseDelay,
+      source: duplicateVideo ? "duplicate_confirm" : "form",
+    });
     setIsParsing(true);
     setDuplicateVideo(null);
     setPendingParseTarget("");
@@ -113,6 +124,12 @@ export function VideoLibraryPage() {
     try {
       window.localStorage.setItem("bilibili-comment-delay", String(parseDelay));
       const payload = await parseVideo(target, parseDelay);
+      logClientEvent("client.user.parse.success", "video parse completed", {
+        bvid: payload.bvid,
+        scraped_count: payload.scraped_count,
+        after_count: payload.after_count,
+        danmaku_count: payload.danmaku_count,
+      });
       setMessage(
         `解析完成：本次抓到 ${payload.scraped_count} 条评论和 ${payload.danmaku_count ?? 0} 条弹幕，档案共 ${
           payload.after_count
@@ -123,6 +140,9 @@ export function VideoLibraryPage() {
       window.history.pushState({}, "", `/video/${payload.bvid}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (reason: unknown) {
+      logClientEvent("client.user.parse.error", reason instanceof Error ? reason.message : String(reason), {
+        bvid: targetBvid,
+      });
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
     } finally {
@@ -131,6 +151,10 @@ export function VideoLibraryPage() {
   }
 
   function openVideo(video: VideoSummary) {
+    logClientEvent("client.user.video.open_existing", "opened existing local archive", {
+      bvid: video.bvid,
+      title: video.title,
+    });
     window.history.pushState({}, "", `/video/${video.bvid}`);
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
@@ -156,7 +180,12 @@ export function VideoLibraryPage() {
             <button
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
               type="button"
-              onClick={loadVideos}
+              onClick={() => {
+                logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
+                  video_count: videos.length,
+                });
+                void loadVideos();
+              }}
               disabled={isLoading}
             >
               <RefreshCcw className={cn(isLoading && "animate-spin")} size={16} aria-hidden="true" />
@@ -168,7 +197,12 @@ export function VideoLibraryPage() {
                 showSettings ? "border-bilibili text-bilibili" : "text-muted hover:border-ink hover:text-ink",
               )}
               type="button"
-              onClick={() => setShowSettings((value) => !value)}
+              onClick={() => {
+                logClientEvent("client.user.settings.toggle", "user toggled parse settings", {
+                  show_settings: !showSettings,
+                });
+                setShowSettings((value) => !value);
+              }}
             >
               <Settings size={16} aria-hidden="true" />
               设置
@@ -257,7 +291,12 @@ export function VideoLibraryPage() {
                   className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
                   type="button"
                   disabled={isParsing}
-                  onClick={() => void runParse(pendingParseTarget)}
+                  onClick={() => {
+                    logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
+                      bvid: duplicateVideo.bvid,
+                    });
+                    void runParse(pendingParseTarget);
+                  }}
                 >
                   <RefreshCcw className={cn(isParsing && "animate-spin")} size={16} aria-hidden="true" />
                   重新抓取
@@ -363,6 +402,12 @@ function VideoCard({ video }: { video: VideoSummary }) {
         <a
           className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
           href={`/video/${video.bvid}`}
+          onClick={() =>
+            logClientEvent("client.user.video_card.open_comments", "opened comments from video card", {
+              bvid: video.bvid,
+              title: video.title,
+            })
+          }
         >
           评论
           <ChevronRight size={15} aria-hidden="true" />
@@ -370,6 +415,12 @@ function VideoCard({ video }: { video: VideoSummary }) {
         <a
           className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f]"
           href={`/danmaku/${video.bvid}`}
+          onClick={() =>
+            logClientEvent("client.user.video_card.open_danmaku", "opened danmaku from video card", {
+              bvid: video.bvid,
+              title: video.title,
+            })
+          }
         >
           弹幕
           <Sparkles size={15} aria-hidden="true" />

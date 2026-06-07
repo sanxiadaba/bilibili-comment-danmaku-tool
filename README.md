@@ -43,8 +43,20 @@
 - Cookie 放在 `data/cookie.txt`。
 - 默认 SQLite 数据库为 `data/comment_danmaku.db`。
 - 旧数据库或人工备份可放在 `data/backups/`。
-- 本地日志放在 `logs/`。
+- 本地日志放在 `logs/`，其中 `logs/app.jsonl` 是结构化事件日志。
 - `data/`、`logs/`、`dist/`、`node_modules/` 和缓存文件都不会提交到 Git。
+
+## 日志
+
+服务启动后会写入结构化 JSONL 日志：
+
+```text
+logs/app.jsonl
+```
+
+日志覆盖服务启动、HTTP 请求、API 成功/失败、抓取进度、评论/弹幕刷新、空弹幕保护、前端用户操作和前端 API 请求结果。每行是一条 JSON 事件，包含时间、级别、事件名、请求 ID、状态码、耗时和相关业务字段，便于后续排查和分析。
+
+日志文件属于本地运行数据，不会提交到 Git。
 
 ## 本地运行
 

@@ -235,6 +235,7 @@ __pycache__/
 - `data/comments.db`：旧主数据库文件名。新代码启动时会在缺少 `comment_danmaku.db` 时自动复制迁移，迁移后可作为本地备份保留或手动删除。
 - `data/backups/*.db`：旧库、恢复前备份或人工备份，有用但只对本机排查/恢复有意义，不提交。
 - `data/cookie.txt`：用户登录凭据，有用且敏感，不提交。
+- `logs/app.jsonl`：结构化事件日志，记录服务启动、HTTP 请求、API 操作、抓取进度、前端用户操作和异常，便于后续分析；本地文件，不提交。
 - `logs/*.log`、`logs/*.err`：本地运行日志，可用于排错，但可再生成，不提交。
 - `*.tsbuildinfo`：TypeScript 增量编译缓存，不是业务文件，可删除，不提交。
 - `node_modules/`：依赖安装目录，可由 `pnpm install` 重建，不提交。
@@ -449,6 +450,68 @@ __pycache__/
 - `error`
 
 前端进度条依赖 `percent`、`stage`、`message`、`stats`、`logs`。
+
+### 7.9 `POST /api/logs/client`
+
+用途：前端上报用户操作和前端 API 请求结果。
+
+请求体示例：
+
+```json
+{
+  "event": "client.user.comments.refresh_start",
+  "message": "user started comment refresh",
+  "page": "/video/BV...",
+  "ts": "2026-06-07T12:00:00.000Z",
+  "fields": {
+    "bvid": "BV..."
+  }
+}
+```
+
+返回：
+
+```json
+{
+  "ok": true
+}
+```
+
+注意：
+
+- 后端会写入 `logs/app.jsonl`。
+- 前端不应上报 cookie、token、密码、完整敏感正文等字段。
+- `backend/app_logging.py` 会过滤常见敏感 key，并截断过长字符串。
+
+### 7.10 日志系统
+
+日志入口：
+
+- 后端：`backend/app_logging.py`
+- 服务接入：`backend/server.py`
+- 前端上报：`frontend/src/api/client.ts` 的 `logClientEvent`
+
+日志文件：
+
+```text
+logs/app.jsonl
+```
+
+日志覆盖：
+
+- `service.start`：服务启动参数和本地路径。
+- `http.request.start` / `http.request.finish`：请求方法、路径、状态码、耗时、request_id。
+- `api.*`：视频列表、评论读取、弹幕读取、健康检查。
+- `task.*`：解析视频、刷新评论、刷新弹幕、任务拒绝、异常、空弹幕保护。
+- `progress.*`：抓取进度开始、更新、完成、失败。
+- `client.*`：用户点击、刷新、导出、导航、前端 API 成功/失败。
+
+开发注意：
+
+- 不要把 `logs/` 提交。
+- 新增 API 或重要用户操作时，补一条结构化日志事件。
+- 事件名用点分层，例如 `task.comments_refresh.finish`。
+- 日志字段应使用可分析的短字段名，不要记录 cookie、token、密码或完整敏感正文。
 
 ## 8. SQLite 数据模型
 
@@ -1043,6 +1106,7 @@ git status --short --ignored
 - 没有 `dist/`
 - 没有 `node_modules/`
 - 没有日志和缓存
+- `logs/app.jsonl` 只出现在 ignored 区域
 - 没有不相关格式化或重构
 
 ## 15. 发布与推送流程

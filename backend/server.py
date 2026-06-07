@@ -3,11 +3,13 @@ import json
 import mimetypes
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from app_logging import configure_logging, log_event, log_exception, new_request_id
 from bilibili_comment_danmaku import (
     extract_bvid,
     list_video_summaries,
@@ -25,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
 DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
+DEFAULT_LOG_DIR = ROOT / "logs"
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
 progress_state = {
@@ -46,53 +49,146 @@ progress_state = {
 class CommentDanmakuServer(BaseHTTPRequestHandler):
     db_path = DEFAULT_DB
     static_dir = DEFAULT_STATIC
+    log_dir = DEFAULT_LOG_DIR
 
     def do_GET(self):
+        self.start_request_log("GET")
         parsed = urlparse(self.path)
-        if parsed.path == "/api/videos":
-            self.handle_videos_api()
-            return
-        if parsed.path == "/api/comments":
-            self.handle_comments_api(parsed)
-            return
-        if parsed.path == "/api/danmaku":
-            self.handle_danmaku_api(parsed)
-            return
-        if parsed.path == "/api/progress":
-            self.handle_progress_api()
-            return
-        if parsed.path == "/api/refresh":
-            self.handle_refresh_api(parsed)
-            return
-        if parsed.path == "/api/health":
-            self.send_json({"ok": True, "db": str(self.db_path)})
-            return
-        self.handle_static(parsed.path)
+        try:
+            if parsed.path == "/api/videos":
+                self.handle_videos_api()
+                return
+            if parsed.path == "/api/comments":
+                self.handle_comments_api(parsed)
+                return
+            if parsed.path == "/api/danmaku":
+                self.handle_danmaku_api(parsed)
+                return
+            if parsed.path == "/api/progress":
+                self.handle_progress_api()
+                return
+            if parsed.path == "/api/refresh":
+                self.handle_refresh_api(parsed)
+                return
+            if parsed.path == "/api/health":
+                self.handle_health_api()
+                return
+            self.handle_static(parsed.path)
+        except Exception as exc:
+            self.log_unhandled_exception(exc, parsed.path)
+            raise
+        finally:
+            self.finish_request_log(parsed.path)
 
     def do_POST(self):
+        self.start_request_log("POST")
         parsed = urlparse(self.path)
-        if parsed.path == "/api/videos/parse":
-            self.handle_parse_video_api()
-            return
-        if parsed.path == "/api/danmaku/refresh":
-            self.handle_danmaku_refresh_api(parsed)
-            return
-        if parsed.path == "/api/refresh":
-            self.handle_refresh_api(parsed)
-            return
-        self.send_error(404)
+        try:
+            if parsed.path == "/api/videos/parse":
+                self.handle_parse_video_api()
+                return
+            if parsed.path == "/api/danmaku/refresh":
+                self.handle_danmaku_refresh_api(parsed)
+                return
+            if parsed.path == "/api/refresh":
+                self.handle_refresh_api(parsed)
+                return
+            if parsed.path == "/api/logs/client":
+                self.handle_client_log_api()
+                return
+            self.send_error(404)
+        except Exception as exc:
+            self.log_unhandled_exception(exc, parsed.path)
+            raise
+        finally:
+            self.finish_request_log(parsed.path)
+
+    def start_request_log(self, method):
+        self.request_id = new_request_id()
+        self.request_started_at = time.perf_counter()
+        self.response_status = 0
+        parsed = urlparse(self.path)
+        log_event(
+            "http.request.start",
+            f"{method} {parsed.path}",
+            request_id=self.request_id,
+            method=method,
+            path=parsed.path,
+            client=self.client_address[0] if self.client_address else "",
+            user_agent=self.headers.get("User-Agent", ""),
+        )
+
+    def finish_request_log(self, path):
+        duration_ms = int((time.perf_counter() - getattr(self, "request_started_at", time.perf_counter())) * 1000)
+        log_event(
+            "http.request.finish",
+            f"{getattr(self, 'command', '')} {path} {getattr(self, 'response_status', 0)}",
+            request_id=getattr(self, "request_id", ""),
+            method=getattr(self, "command", ""),
+            path=path,
+            status=getattr(self, "response_status", 0),
+            duration_ms=duration_ms,
+        )
+
+    def log_unhandled_exception(self, exc, path):
+        log_exception(
+            "http.request.unhandled_error",
+            str(exc),
+            request_id=getattr(self, "request_id", ""),
+            method=getattr(self, "command", ""),
+            path=path,
+        )
 
     def handle_videos_api(self):
         try:
-            self.send_json({"videos": list_video_summaries(self.db_path)})
+            videos = list_video_summaries(self.db_path)
+            log_event(
+                "api.videos.list",
+                "listed local videos",
+                request_id=getattr(self, "request_id", ""),
+                video_count=len(videos),
+            )
+            self.send_json({"videos": videos})
         except Exception as exc:
+            log_exception("api.videos.list_error", str(exc), request_id=getattr(self, "request_id", ""))
             self.send_json({"error": str(exc)}, status=500)
 
     def handle_progress_api(self):
         self.send_json(get_progress_snapshot())
 
+    def handle_health_api(self):
+        log_event(
+            "api.health",
+            "health check",
+            request_id=getattr(self, "request_id", ""),
+            db=str(self.db_path),
+            static_dir=str(self.static_dir),
+        )
+        self.send_json({"ok": True, "db": str(self.db_path)})
+
+    def handle_client_log_api(self):
+        body = self.read_json_body()
+        event = str(body.get("event") or "client.event")[:120]
+        fields = body.get("fields") if isinstance(body.get("fields"), dict) else {}
+        log_event(
+            event if event.startswith("client.") else f"client.{event}",
+            str(body.get("message") or event)[:300],
+            request_id=getattr(self, "request_id", ""),
+            page=str(body.get("page") or "")[:300],
+            client_ts=str(body.get("ts") or "")[:80],
+            fields=fields,
+        )
+        self.send_json({"ok": True})
+
     def handle_parse_video_api(self):
         if not refresh_lock.acquire(blocking=False):
+            log_event(
+                "task.rejected",
+                "parse rejected because another task is active",
+                request_id=getattr(self, "request_id", ""),
+                kind="parse",
+                reason="busy",
+            )
             self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
             return
 
@@ -100,6 +196,12 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             body = self.read_json_body()
             video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
             if not video_ref:
+                log_event(
+                    "task.parse.invalid_input",
+                    "parse request missing video reference",
+                    request_id=getattr(self, "request_id", ""),
+                    level="warning",
+                )
                 self.send_json({"error": "请输入 Bilibili 视频链接或 BV 号"}, status=400)
                 return
             bvid = extract_bvid(video_ref)
@@ -109,6 +211,14 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             except LookupError:
                 before = 0
 
+            log_event(
+                "task.parse.start",
+                "parse video started",
+                request_id=getattr(self, "request_id", ""),
+                bvid=bvid,
+                delay=delay,
+                existing_comment_count=before,
+            )
             start_progress("parse", bvid, "准备解析视频并抓取评论")
             logs = []
             log = make_progress_logger("parse", bvid, logs)
@@ -132,8 +242,24 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 save_danmaku_to_sqlite(danmaku_result, self.db_path, replace=True)
             else:
                 log("danmaku: got=0, skipped saving empty danmaku archive")
+                log_event(
+                    "task.parse.empty_danmaku_skipped",
+                    "parse skipped saving empty danmaku archive",
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=bvid,
+                )
             payload = load_comment_data(self.db_path, bvid=output_data["metadata"]["bvid"])
             finish_progress("parse", bvid, "解析与抓取完成")
+            log_event(
+                "task.parse.finish",
+                "parse video finished",
+                request_id=getattr(self, "request_id", ""),
+                bvid=output_data["metadata"]["bvid"],
+                before_count=before,
+                scraped_count=output_data["metadata"]["comment_total_count"],
+                after_count=payload["metadata"]["comment_total_count"],
+                danmaku_count=len(danmaku_result.get("items") or []),
+            )
             self.send_json(
                 {
                     "bvid": output_data["metadata"]["bvid"],
@@ -156,10 +282,24 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             )
         except ValueError as exc:
             fail_progress("parse", bvid if "bvid" in locals() else "", str(exc))
+            log_event(
+                "task.parse.input_error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                bvid=bvid if "bvid" in locals() else "",
+                level="warning",
+            )
             self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             payload, status = api_error_response(exc)
             fail_progress("parse", bvid if "bvid" in locals() else "", payload["error"])
+            log_exception(
+                "task.parse.error",
+                payload["error"],
+                request_id=getattr(self, "request_id", ""),
+                bvid=bvid if "bvid" in locals() else "",
+                status=status,
+            )
             self.send_json(payload, status=status)
         finally:
             refresh_lock.release()
@@ -169,10 +309,27 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         bvid = query.get("bvid", [None])[0]
         try:
             payload = load_comment_data(self.db_path, bvid=bvid)
+            log_event(
+                "api.comments.load",
+                "loaded comment data",
+                request_id=getattr(self, "request_id", ""),
+                bvid=payload["metadata"]["bvid"],
+                comment_count=payload["metadata"]["comment_total_count"],
+                active_count=payload["metadata"].get("active_comment_count"),
+                deleted_count=payload["metadata"].get("deleted_comment_count"),
+            )
         except LookupError as exc:
+            log_event(
+                "api.comments.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                bvid=bvid or "",
+                level="warning",
+            )
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
+            log_exception("api.comments.error", str(exc), request_id=getattr(self, "request_id", ""), bvid=bvid or "")
             self.send_json({"error": str(exc)}, status=500)
             return
         self.send_json(payload)
@@ -183,16 +340,39 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         limit = parse_optional_int(query.get("limit", [None])[0])
         try:
             payload = load_danmaku_data(self.db_path, bvid=bvid, limit=limit)
+            log_event(
+                "api.danmaku.load",
+                "loaded danmaku data",
+                request_id=getattr(self, "request_id", ""),
+                bvid=payload["metadata"]["bvid"],
+                total_count=payload["metadata"]["total_count"],
+                limit=limit,
+            )
         except LookupError as exc:
+            log_event(
+                "api.danmaku.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                bvid=bvid or "",
+                level="warning",
+            )
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
+            log_exception("api.danmaku.error", str(exc), request_id=getattr(self, "request_id", ""), bvid=bvid or "")
             self.send_json({"error": str(exc)}, status=500)
             return
         self.send_json(payload)
 
     def handle_refresh_api(self, parsed):
         if not refresh_lock.acquire(blocking=False):
+            log_event(
+                "task.rejected",
+                "comment refresh rejected because another task is active",
+                request_id=getattr(self, "request_id", ""),
+                kind="comments",
+                reason="busy",
+            )
             self.send_json({"error": "已有刷新任务正在进行，请稍后再试"}, status=409)
             return
 
@@ -203,6 +383,14 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             current = load_comment_data(self.db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
+            log_event(
+                "task.comments_refresh.start",
+                "comment refresh started",
+                request_id=getattr(self, "request_id", ""),
+                bvid=current["metadata"]["bvid"],
+                before_count=before_count,
+                delay=delay,
+            )
             start_progress("comments", current["metadata"]["bvid"], "正在重新抓取评论")
             logs = []
             log = make_progress_logger("comments", current["metadata"]["bvid"], logs)
@@ -227,13 +415,38 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 "logs": logs[-12:],
             }
             finish_progress("comments", output_data["metadata"]["bvid"], "评论刷新完成")
+            log_event(
+                "task.comments_refresh.finish",
+                "comment refresh finished",
+                request_id=getattr(self, "request_id", ""),
+                bvid=output_data["metadata"]["bvid"],
+                before_count=before_count,
+                scraped_count=scraped_count,
+                after_count=payload["metadata"]["comment_total_count"],
+                active_count=payload["metadata"].get("active_comment_count"),
+                deleted_count=payload["metadata"].get("deleted_comment_count"),
+            )
         except LookupError as exc:
             fail_progress("comments", requested_bvid or "", str(exc))
+            log_event(
+                "task.comments_refresh.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                bvid=requested_bvid or "",
+                level="warning",
+            )
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
             payload, status = api_error_response(exc)
             fail_progress("comments", requested_bvid or "", payload["error"])
+            log_exception(
+                "task.comments_refresh.error",
+                payload["error"],
+                request_id=getattr(self, "request_id", ""),
+                bvid=requested_bvid or "",
+                status=status,
+            )
             self.send_json(payload, status=status)
             return
         finally:
@@ -243,6 +456,13 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
     def handle_danmaku_refresh_api(self, parsed):
         if not refresh_lock.acquire(blocking=False):
+            log_event(
+                "task.rejected",
+                "danmaku refresh rejected because another task is active",
+                request_id=getattr(self, "request_id", ""),
+                kind="danmaku",
+                reason="busy",
+            )
             self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
             return
 
@@ -250,6 +470,12 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         requested_bvid = query.get("bvid", [None])[0]
         try:
             current = load_comment_data(self.db_path, bvid=requested_bvid)
+            log_event(
+                "task.danmaku_refresh.start",
+                "danmaku refresh started",
+                request_id=getattr(self, "request_id", ""),
+                bvid=current["metadata"]["bvid"],
+            )
             start_progress("danmaku", current["metadata"]["bvid"], "正在重新抓取弹幕")
             logs = []
             log = make_progress_logger("danmaku", current["metadata"]["bvid"], logs)
@@ -269,6 +495,15 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             if scraped_count == 0 and before_count > 0:
                 warning = "本次弹幕接口返回 0 条，已保留上一次的本地弹幕档案"
                 log(f"danmaku: got=0, kept previous archive count={before_count}")
+                log_event(
+                    "task.danmaku_refresh.empty_result_kept",
+                    warning,
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=current["metadata"]["bvid"],
+                    before_count=before_count,
+                    scraped_count=scraped_count,
+                    level="warning",
+                )
             else:
                 update_progress("danmaku", current["metadata"]["bvid"], "弹幕抓取完成，正在保存档案")
                 save_danmaku_to_sqlite(danmaku_result, self.db_path, replace=True)
@@ -282,13 +517,37 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             if warning:
                 payload["refresh"]["warning"] = warning
             finish_progress("danmaku", current["metadata"]["bvid"], warning or "弹幕刷新完成")
+            log_event(
+                "task.danmaku_refresh.finish",
+                "danmaku refresh finished",
+                request_id=getattr(self, "request_id", ""),
+                bvid=current["metadata"]["bvid"],
+                before_count=before_count,
+                scraped_count=scraped_count,
+                after_count=payload["metadata"]["total_count"],
+                warning=warning,
+            )
         except LookupError as exc:
             fail_progress("danmaku", requested_bvid or "", str(exc))
+            log_event(
+                "task.danmaku_refresh.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                bvid=requested_bvid or "",
+                level="warning",
+            )
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
             payload, status = api_error_response(exc)
             fail_progress("danmaku", requested_bvid or "", payload["error"])
+            log_exception(
+                "task.danmaku_refresh.error",
+                payload["error"],
+                request_id=getattr(self, "request_id", ""),
+                bvid=requested_bvid or "",
+                status=status,
+            )
             self.send_json(payload, status=status)
             return
         finally:
@@ -317,6 +576,22 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
+
+    def send_response(self, code, message=None):
+        self.response_status = code
+        super().send_response(code, message)
+
+    def send_error(self, code, message=None, explain=None):
+        self.response_status = code
+        log_event(
+            "http.request.error_response",
+            message or f"HTTP {code}",
+            request_id=getattr(self, "request_id", ""),
+            method=getattr(self, "command", ""),
+            path=urlparse(self.path).path,
+            status=code,
+        )
+        super().send_error(code, message, explain)
 
     def send_json(self, payload, status=200):
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -363,6 +638,14 @@ def start_progress(kind, bvid, message):
                 "error": "",
             }
         )
+    log_event(
+        "progress.start",
+        message,
+        kind=kind,
+        bvid=bvid or "",
+        percent=progress_percent(kind, message),
+        stage=progress_stage(kind, message),
+    )
 
 
 def update_progress(kind, bvid, message):
@@ -385,6 +668,18 @@ def update_progress(kind, bvid, message):
                 "error": "",
             }
         )
+        percent = progress_state.get("percent", 0)
+        stage = progress_state.get("stage", "")
+        stats = dict(progress_state.get("stats", {}))
+    log_event(
+        "progress.update",
+        message,
+        kind=kind,
+        bvid=bvid or "",
+        percent=percent,
+        stage=stage,
+        stats=stats,
+    )
 
 
 def finish_progress(kind, bvid, message):
@@ -406,6 +701,14 @@ def finish_progress(kind, bvid, message):
                 "error": "",
             }
         )
+    log_event(
+        "progress.finish",
+        message,
+        kind=kind,
+        bvid=bvid or "",
+        percent=100,
+        stage="完成",
+    )
 
 
 def fail_progress(kind, bvid, message):
@@ -427,6 +730,16 @@ def fail_progress(kind, bvid, message):
                 "error": message,
             }
         )
+        percent = progress_state.get("percent", 0)
+    log_event(
+        "progress.fail",
+        message,
+        kind=kind,
+        bvid=bvid or "",
+        percent=percent,
+        stage="失败",
+        level="error",
+    )
 
 
 def get_progress_snapshot():
@@ -442,7 +755,6 @@ def make_progress_logger(kind, bvid, logs):
     def log(message):
         logs.append(message)
         update_progress(kind, bvid, message)
-        safe_print(message)
 
     return log
 
@@ -619,7 +931,9 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
+    parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     args = parser.parse_args()
+    configure_logging(args.log_dir)
 
     handler = type(
         "ConfiguredCommentDanmakuServer",
@@ -627,13 +941,29 @@ def main():
         {
             "db_path": Path(args.db).resolve(),
             "static_dir": Path(args.static).resolve(),
+            "log_dir": Path(args.log_dir).resolve(),
         },
     )
     handler.db_path = prepare_database_path(handler.db_path)
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    log_event(
+        "service.start",
+        "Bilibili comment/danmaku service started",
+        host=args.host,
+        port=args.port,
+        db=str(handler.db_path),
+        static_dir=str(handler.static_dir),
+        log_dir=str(handler.log_dir),
+    )
     safe_print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
     safe_print(f"SQLite database: {Path(args.db).resolve()}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log_event("service.stop", "service stopped by keyboard interrupt")
+        raise
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":
