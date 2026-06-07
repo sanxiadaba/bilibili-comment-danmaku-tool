@@ -815,7 +815,7 @@ def progress_stage(kind, message):
         return "抓取弹幕"
     if message.startswith("main page"):
         return "抓取主评论"
-    if "fetching children" in message or "child root" in message:
+    if "fetching children" in message or "children done" in message or "child root" in message:
         return "抓取楼中楼"
     if "评论抓取完成" in message:
         return "保存评论"
@@ -843,7 +843,7 @@ def progress_percent(kind, message, current=0):
         if message.startswith("main page"):
             page = parse_progress_int(message, r"main page\s+(\d+)")
             return max(current, min(55, 8 + page))
-        if "child root" in message or "fetching children" in message:
+        if "child root" in message or "fetching children" in message or "children done" in message:
             index, total = parse_child_root_progress(message)
             if total:
                 return max(current, min(76, 56 + int((index / total) * 20)))
@@ -856,7 +856,7 @@ def progress_percent(kind, message, current=0):
         if message.startswith("main page"):
             page = parse_progress_int(message, r"main page\s+(\d+)")
             return max(current, min(65, 10 + page))
-        if "child root" in message or "fetching children" in message:
+        if "child root" in message or "fetching children" in message or "children done" in message:
             index, total = parse_child_root_progress(message)
             if total:
                 return max(current, min(90, 66 + int((index / total) * 24)))
@@ -876,11 +876,27 @@ def progress_stats(kind, message, current):
             stats["已抓评论"] = main.group(3)
             if main.group(4) != "None":
                 stats["接口总数"] = main.group(4)
+        child_batch = re.search(r"fetching children batch: roots=(\d+) workers=(\d+) total_fetched=(\d+) total_expected=(\d+)", message)
+        if child_batch:
+            stats["楼中楼进度"] = f"0 / {child_batch.group(1)}"
+            stats["楼中楼总已抓"] = child_batch.group(3)
+            stats["楼中楼预期总数"] = child_batch.group(4)
+            stats["并发数"] = child_batch.group(2)
+        child_done = re.search(
+            r"children done\s+(\d+)/(\d+)\s+root=([^ ]+)\s+fetched=(\d+)\s+total_fetched=(\d+)\s+total_expected=(\d+)",
+            message,
+        )
+        if child_done:
+            stats["楼中楼进度"] = f"{child_done.group(1)} / {child_done.group(2)}"
+            stats["当前根评论"] = child_done.group(3)
+            stats["当前楼中楼已抓"] = child_done.group(4)
+            stats["楼中楼总已抓"] = child_done.group(5)
+            stats["楼中楼预期总数"] = child_done.group(6)
         child = re.search(r"child root=.*?unique=(\d+).*?(?:expected|count)=(\d+|None)", message)
         if child:
-            stats["楼中楼已抓"] = child.group(1)
+            stats["当前楼中楼已抓"] = child.group(1)
             if child.group(2) != "None":
-                stats["楼中楼预期"] = child.group(2)
+                stats["当前楼中楼预期"] = child.group(2)
         child_start = re.search(r"fetching children\s+(\d+)/(\d+)\s+root=([^ ]+)\s+expected=(\d+|None)", message)
         if child_start:
             stats["楼中楼进度"] = f"{child_start.group(1)} / {child_start.group(2)}"
@@ -913,6 +929,9 @@ def parse_progress_int(message, pattern):
 
 def parse_child_root_progress(message):
     match = re.search(r"fetching children\s+(\d+)/(\d+)", message)
+    if match:
+        return (int(match.group(1)), int(match.group(2)))
+    match = re.search(r"children done\s+(\d+)/(\d+)", message)
     if match:
         return (int(match.group(1)), int(match.group(2)))
     return (0, 0)

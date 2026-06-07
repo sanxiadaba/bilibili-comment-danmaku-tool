@@ -1,10 +1,12 @@
 ﻿import hashlib
 import http.cookiejar
+import copy
 import json
 import os
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +19,7 @@ DEFAULT_PROXY = "http://127.0.0.1:7890"
 TYPE_VIDEO = 1
 FAST_PAGE_YIELD_SECONDS = 0.02
 FULL_DELAY_EVERY_PAGES = 20
+MAX_CHILD_FETCH_WORKERS = 4
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
     46,
@@ -90,9 +93,16 @@ WBI_BAD_CHARS = "!'()*"
 class BilibiliClient:
     def __init__(self, headers, use_proxy=False):
         self.headers = headers
+        self.use_proxy = use_proxy
         self.cookie_jar = http.cookiejar.CookieJar()
         proxy_handler = urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({})
         self.opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPCookieProcessor(self.cookie_jar))
+
+    def clone(self):
+        cloned = BilibiliClient(dict(self.headers), use_proxy=self.use_proxy)
+        for cookie in self.cookie_jar:
+            cloned.cookie_jar.set_cookie(copy.copy(cookie))
+        return cloned
 
     def request_json(self, url, timeout=30, retries=4, allow_api_error=False):
         last_error = None
@@ -359,16 +369,15 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
 
 
 def build_threaded_output(main_replies, oid, client, delay, log):
-    comments = []
-    comment_items = []
-    child_fetch_summary = []
+    entries = []
+    fetch_jobs = []
+    expected_child_total = 0
 
     for index, reply in enumerate(main_replies, 1):
         root_rpid = reply.get("rpid_str") or str(reply.get("rpid"))
         expected_count = reply.get("rcount")
         child_raw = []
         child_seen = set()
-        child_api_count = None
 
         for child in reply.get("replies") or []:
             child_rpid = child.get("rpid_str") or str(child.get("rpid"))
@@ -376,15 +385,31 @@ def build_threaded_output(main_replies, oid, client, delay, log):
                 child_seen.add(child_rpid)
                 child_raw.append(child)
 
+        entry = {
+            "index": index,
+            "reply": reply,
+            "root_rpid": root_rpid,
+            "expected_count": expected_count,
+            "child_raw": child_raw,
+            "child_api_count": None,
+        }
+        entries.append(entry)
+
         if isinstance(expected_count, int) and expected_count > len(child_raw):
-            log(f"fetching children {index}/{len(main_replies)} root={root_rpid} expected={expected_count}")
-            fetched_child_raw, child_api_count = fetch_child_replies(oid, root_rpid, expected_count, client, delay, log)
-            for child in fetched_child_raw:
-                child_rpid = child.get("rpid_str") or str(child.get("rpid"))
-                if child_rpid not in child_seen:
-                    child_seen.add(child_rpid)
-                    child_raw.append(child)
-            sleep_between_roots(delay)
+            expected_child_total += expected_count
+            fetch_jobs.append(entry)
+
+    fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total)
+
+    comments = []
+    comment_items = []
+    child_fetch_summary = []
+
+    for entry in entries:
+        reply = entry["reply"]
+        expected_count = entry["expected_count"]
+        child_raw = entry["child_raw"]
+        child_api_count = entry["child_api_count"]
 
         child_items = [{"normalized": normalize_reply(child, level=2), "raw": child} for child in child_raw]
         child_items.sort(key=sort_key)
@@ -401,7 +426,7 @@ def build_threaded_output(main_replies, oid, client, delay, log):
         if isinstance(expected_count, int) and expected_count > 0:
             child_fetch_summary.append(
                 {
-                    "root_rpid": root_rpid,
+                    "root_rpid": entry["root_rpid"],
                     "expected_rcount": expected_count,
                     "api_count": child_api_count,
                     "fetched_count": len(child_items),
@@ -413,17 +438,58 @@ def build_threaded_output(main_replies, oid, client, delay, log):
     return comments, comment_items, child_fetch_summary
 
 
+def fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total):
+    if not fetch_jobs:
+        return
+
+    worker_count = min(MAX_CHILD_FETCH_WORKERS, len(fetch_jobs))
+    completed = 0
+    total_fetched = 0
+    log(
+        f"fetching children batch: roots={len(fetch_jobs)} workers={worker_count} "
+        f"total_fetched=0 total_expected={expected_child_total}"
+    )
+
+    def run_job(entry):
+        worker_client = client.clone()
+        fetched_child_raw, child_api_count = fetch_child_replies(
+            oid,
+            entry["root_rpid"],
+            entry["expected_count"],
+            worker_client,
+            delay,
+            log,
+        )
+        return entry, fetched_child_raw, child_api_count
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(run_job, entry) for entry in fetch_jobs]
+        for future in as_completed(futures):
+            entry, fetched_child_raw, child_api_count = future.result()
+            child_seen = {
+                child.get("rpid_str") or str(child.get("rpid"))
+                for child in entry["child_raw"]
+            }
+            for child in fetched_child_raw:
+                child_rpid = child.get("rpid_str") or str(child.get("rpid"))
+                if child_rpid not in child_seen:
+                    child_seen.add(child_rpid)
+                    entry["child_raw"].append(child)
+            entry["child_api_count"] = child_api_count
+            completed += 1
+            total_fetched += len(entry["child_raw"])
+            log(
+                f"children done {completed}/{len(fetch_jobs)} root={entry['root_rpid']} "
+                f"fetched={len(entry['child_raw'])} total_fetched={total_fetched} "
+                f"total_expected={expected_child_total}"
+            )
+
+
 def sleep_between_pages(delay, page_index):
     if delay <= 0:
         return
     if page_index > 0 and page_index % FULL_DELAY_EVERY_PAGES == 0:
         time.sleep(delay)
-        return
-    time.sleep(min(delay, FAST_PAGE_YIELD_SECONDS))
-
-
-def sleep_between_roots(delay):
-    if delay <= 0:
         return
     time.sleep(min(delay, FAST_PAGE_YIELD_SECONDS))
 

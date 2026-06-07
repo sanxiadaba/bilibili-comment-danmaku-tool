@@ -97,7 +97,7 @@ function selectProgressStats(stage: string, stats: ProgressState["stats"]) {
   const entries = Object.entries(stats);
   const preferred =
     stage === "抓取楼中楼"
-      ? ["楼中楼进度", "当前根评论", "当前楼中楼预期", "楼中楼已抓", "楼中楼预期"]
+      ? ["楼中楼进度", "楼中楼总已抓", "楼中楼预期总数", "并发数", "当前根评论", "当前楼中楼已抓"]
       : stage === "抓取主评论"
         ? ["主评论页", "本页评论", "已抓评论", "接口总数"]
         : stage === "弹幕点赞"

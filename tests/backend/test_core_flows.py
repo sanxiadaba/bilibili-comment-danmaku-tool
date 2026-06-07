@@ -234,8 +234,11 @@ class StorageTests(unittest.TestCase):
 
 
 class ScraperPerformanceTests(unittest.TestCase):
-    def test_child_thread_spacing_uses_short_yield_between_roots(self):
+    def test_child_fetch_batch_removes_serial_root_spacing(self):
         class FakeClient:
+            def clone(self):
+                return self
+
             def request_json(self, _url):
                 return {
                     "data": {
@@ -296,7 +299,91 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(len(comments), 1)
         self.assertEqual(len(comment_items), 2)
         self.assertEqual(summary[0]["fetched_count"], 1)
-        self.assertEqual(sleeps, [0.02])
+        self.assertEqual(sleeps, [])
+
+    def test_child_fetch_batch_fetches_multiple_roots_and_reports_totals(self):
+        class FakeClient:
+            def clone(self):
+                return self
+
+            def request_json(self, url):
+                root = "1" if "root=1" in url else "3"
+                child_rpid = "2" if root == "1" else "4"
+                return {
+                    "data": {
+                        "replies": [
+                            {
+                                "rpid_str": child_rpid,
+                                "oid_str": "123",
+                                "type": 1,
+                                "mid_str": "100",
+                                "root_str": root,
+                                "parent_str": root,
+                                "dialog_str": "0",
+                                "ctime": 1700000001,
+                                "like": 1,
+                                "rcount": 0,
+                                "count": 0,
+                                "state": 0,
+                                "attr": 0,
+                                "content": {"message": f"child {child_rpid}"},
+                                "member": {"mid": "100", "uname": "user-100"},
+                            }
+                        ],
+                        "page": {"count": 1},
+                    }
+                }
+
+        replies = [
+            {
+                "rpid_str": "1",
+                "oid_str": "123",
+                "type": 1,
+                "mid_str": "42",
+                "root_str": "0",
+                "parent_str": "0",
+                "dialog_str": "0",
+                "ctime": 1700000000,
+                "like": 8,
+                "rcount": 1,
+                "count": 1,
+                "state": 0,
+                "attr": 0,
+                "content": {"message": "parent 1"},
+                "member": {"mid": "42", "uname": "owner"},
+            },
+            {
+                "rpid_str": "3",
+                "oid_str": "123",
+                "type": 1,
+                "mid_str": "43",
+                "root_str": "0",
+                "parent_str": "0",
+                "dialog_str": "0",
+                "ctime": 1700000002,
+                "like": 7,
+                "rcount": 1,
+                "count": 1,
+                "state": 0,
+                "attr": 0,
+                "content": {"message": "parent 2"},
+                "member": {"mid": "43", "uname": "user-43"},
+            },
+        ]
+        logs = []
+        comments, comment_items, summary = scraper.build_threaded_output(
+            replies,
+            "123",
+            FakeClient(),
+            0,
+            logs.append,
+        )
+
+        self.assertEqual(len(comments), 2)
+        self.assertEqual(len(comment_items), 4)
+        self.assertEqual([item["fetched_count"] for item in summary], [1, 1])
+        self.assertTrue(any("fetching children batch: roots=2 workers=2" in item for item in logs))
+        self.assertTrue(any("total_fetched=2 total_expected=2" in item for item in logs))
 
     def test_comment_page_spacing_uses_short_yields_and_periodic_full_delay(self):
         sleeps = []
@@ -386,6 +473,25 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(child_stats["楼中楼进度"], "12 / 109")
         self.assertEqual(child_stats["当前根评论"], "987654")
         self.assertEqual(child_stats["当前楼中楼预期"], "34")
+        self.assertGreater(child_percent, 65)
+
+    def test_child_done_progress_reports_total_child_counts(self):
+        stats = progress_stats(
+            "comments",
+            "children done 12/109 root=987654 fetched=2 total_fetched=341 total_expected=1518",
+            {},
+        )
+        child_percent = progress_percent(
+            "comments",
+            "children done 12/109 root=987654 fetched=2 total_fetched=341 total_expected=1518",
+            65,
+        )
+
+        self.assertEqual(stats["楼中楼进度"], "12 / 109")
+        self.assertEqual(stats["当前根评论"], "987654")
+        self.assertEqual(stats["当前楼中楼已抓"], "2")
+        self.assertEqual(stats["楼中楼总已抓"], "341")
+        self.assertEqual(stats["楼中楼预期总数"], "1518")
         self.assertGreater(child_percent, 65)
 
 
