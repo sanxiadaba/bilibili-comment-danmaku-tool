@@ -4,6 +4,8 @@ node_modules/
 # Frontend build output
 dist/
 *.tsbuildinfo
+vite.config.js
+vite.config.d.ts
 
 # Python caches
 __pycache__/
