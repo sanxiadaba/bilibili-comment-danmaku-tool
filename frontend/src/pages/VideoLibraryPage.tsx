@@ -6,6 +6,7 @@ import {
   LinkIcon,
   ListTree,
   MessageCircle,
+  FolderOpen,
   PlayCircle,
   PlusCircle,
   RefreshCcw,
@@ -31,6 +32,8 @@ export function VideoLibraryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
+  const [pendingParseTarget, setPendingParseTarget] = useState("");
   const parseProgress = useProgressPolling(isParsing, "parse");
   const [parseDelay, setParseDelay] = useState(() => {
     const saved = window.localStorage.getItem("bilibili-comment-delay");
@@ -88,7 +91,23 @@ export function VideoLibraryPage() {
       return;
     }
 
+    const bvid = extractBvid(target);
+    const existingVideo = bvid ? videos.find((video) => video.bvid.toLowerCase() === bvid.toLowerCase()) : undefined;
+    if (existingVideo) {
+      setDuplicateVideo(existingVideo);
+      setPendingParseTarget(target);
+      setError("");
+      setMessage("");
+      return;
+    }
+
+    await runParse(target);
+  }
+
+  async function runParse(target: string) {
     setIsParsing(true);
+    setDuplicateVideo(null);
+    setPendingParseTarget("");
     setError("");
     setMessage("正在解析并抓取评论，评论较多时可能需要几十秒");
     try {
@@ -109,6 +128,11 @@ export function VideoLibraryPage() {
     } finally {
       setIsParsing(false);
     }
+  }
+
+  function openVideo(video: VideoSummary) {
+    window.history.pushState({}, "", `/video/${video.bvid}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
   return (
@@ -190,7 +214,11 @@ export function VideoLibraryPage() {
                   className="min-w-0 flex-1 bg-transparent text-ink outline-none"
                   placeholder="https://www.bilibili.com/video/BV..."
                   value={url}
-                  onChange={(event) => setUrl(event.target.value)}
+                  onChange={(event) => {
+                    setUrl(event.target.value);
+                    setDuplicateVideo(null);
+                    setPendingParseTarget("");
+                  }}
                 />
               </span>
             </label>
@@ -203,6 +231,40 @@ export function VideoLibraryPage() {
               {isParsing ? "解析中" : "解析视频"}
             </button>
           </form>
+          {duplicateVideo && (
+            <div className="mt-4 grid gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-ink">
+              <div className="flex min-w-0 items-start gap-2">
+                <AlertTriangle className="mt-0.5 shrink-0 text-amber-600" size={17} aria-hidden="true" />
+                <div className="min-w-0">
+                  <div className="font-medium text-amber-900">该视频已在本地档案中</div>
+                  <div className="mt-1 line-clamp-2 text-amber-800">{duplicateVideo.title}</div>
+                  <div className="mt-1 text-xs text-amber-700">
+                    {duplicateVideo.bvid} · 档案 {formatNumber(duplicateVideo.flat_total_count)} · 弹幕{" "}
+                    {formatNumber(duplicateVideo.danmaku_count)}
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-sm font-medium text-amber-900 transition hover:border-amber-500"
+                  type="button"
+                  onClick={() => openVideo(duplicateVideo)}
+                >
+                  <FolderOpen size={16} aria-hidden="true" />
+                  打开已有档案
+                </button>
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
+                  type="button"
+                  disabled={isParsing}
+                  onClick={() => void runParse(pendingParseTarget)}
+                >
+                  <RefreshCcw className={cn(isParsing && "animate-spin")} size={16} aria-hidden="true" />
+                  重新抓取
+                </button>
+              </div>
+            </div>
+          )}
           {showSettings && (
             <div className="mt-4 grid gap-3 border-t border-line pt-4">
               <label className="grid gap-2 text-sm text-muted">
@@ -261,6 +323,10 @@ export function VideoLibraryPage() {
       </section>
     </main>
   );
+}
+
+function extractBvid(value: string) {
+  return value.trim().match(/BV[0-9A-Za-z]{10}/)?.[0] || "";
 }
 
 function VideoCard({ video }: { video: VideoSummary }) {
