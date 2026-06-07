@@ -263,7 +263,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
               <span className="inline-flex items-center gap-1">
                 <Sparkles size={15} aria-hidden="true" />
-                Bilibili 评论可视化
+                Bilibili 评论弹幕工具
               </span>
               <span>{data.video_raw.owner?.name || "UP主"}</span>
               <span>{formatFullDateTime(data.metadata.fetched_at)}</span>

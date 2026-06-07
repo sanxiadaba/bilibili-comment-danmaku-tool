@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from bilibili_comments import (
+from bilibili_comment_danmaku import (
     extract_bvid,
     list_video_summaries,
     load_comment_data,
@@ -42,7 +42,7 @@ progress_state = {
 }
 
 
-class CommentServer(BaseHTTPRequestHandler):
+class CommentDanmakuServer(BaseHTTPRequestHandler):
     db_path = DEFAULT_DB
     static_dir = DEFAULT_STATIC
 
@@ -577,8 +577,8 @@ def main():
     args = parser.parse_args()
 
     handler = type(
-        "ConfiguredCommentServer",
-        (CommentServer,),
+        "ConfiguredCommentDanmakuServer",
+        (CommentDanmakuServer,),
         {
             "db_path": Path(args.db).resolve(),
             "static_dir": Path(args.static).resolve(),
@@ -586,7 +586,7 @@ def main():
     )
     handler.db_path.parent.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), handler)
-    print(f"Serving SQLite comments app at http://{args.host}:{args.port}/")
+    print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
     print(f"SQLite database: {Path(args.db).resolve()}")
     server.serve_forever()
 

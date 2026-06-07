@@ -1,4 +1,4 @@
-# Agent 开发手册
+﻿# Agent 开发手册
 
 本文档面向接手本项目的其它 agent。目标是让新的 agent 不需要重新猜测架构，就能快速理解项目、定位代码、开发功能、排查问题并提交变更。
 
@@ -82,7 +82,7 @@ git status --short --ignored
 当前代码现状：
 
 - Web 服务 `backend/server.py` 调用 `scrape_comments` 和 `scrape_danmaku` 时没有传 `use_proxy=True`，因此默认不走代理。
-- CLI 脚本 `backend/fetch_bilibili_comments.py` 当前默认也不走代理；只有显式传 `--proxy` 才会使用抓取器内置代理设置。
+- CLI 脚本 `backend/fetch_bilibili_comment_danmaku.py` 当前默认也不走代理；只有显式传 `--proxy` 才会使用抓取器内置代理设置。
 - 不要为了 GitHub/Git 的代理偏好，把 Bilibili 抓取请求也改成默认走 `7890`。
 
 ## 3. 技术栈
@@ -140,7 +140,7 @@ pnpm dev
 Python 语法检查：
 
 ```powershell
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend\bilibili_comment_danmaku\storage.py backend\bilibili_comment_danmaku\danmaku.py backend\bilibili_comment_danmaku\scraper.py backend\bilibili_comment_danmaku\url_utils.py backend\bilibili_comment_danmaku\__init__.py
 ```
 
 访问地址：
@@ -169,8 +169,8 @@ http://127.0.0.1:8000/
 ├── README.md                     # 面向用户的项目说明
 ├── backend/
 │   ├── server.py                 # Python HTTP API + 静态文件服务
-│   ├── fetch_bilibili_comments.py # CLI 抓取入口
-│   └── bilibili_comments/
+│   ├── fetch_bilibili_comment_danmaku.py # CLI 抓取入口
+│   └── bilibili_comment_danmaku/
 │       ├── __init__.py           # Python 包导出
 │       ├── url_utils.py          # BV 号提取
 │       ├── scraper.py            # 评论抓取、WBI 签名、评论归一化
@@ -451,7 +451,7 @@ __pycache__/
 
 ## 8. SQLite 数据模型
 
-Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
+Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`。
 
 ### 8.1 `videos`
 
@@ -600,7 +600,7 @@ Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 
 ## 9. Bilibili 抓取实现
 
-### 9.1 评论抓取：`backend/bilibili_comments/scraper.py`
+### 9.1 评论抓取：`backend/bilibili_comment_danmaku/scraper.py`
 
 关键函数：
 
@@ -631,7 +631,7 @@ Schema 定义在 `backend/bilibili_comments/storage.py` 的 `SCHEMA_SQL`。
 - `fetch_main_replies` 会去重，避免 top/hot/admin/upper 等来源重复出现。
 - `fetch_child_replies` 同样按 rpid 去重。
 
-### 9.2 弹幕抓取：`backend/bilibili_comments/danmaku.py`
+### 9.2 弹幕抓取：`backend/bilibili_comment_danmaku/danmaku.py`
 
 关键函数：
 
@@ -891,8 +891,8 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `backend/bilibili_comments/scraper.py`
-- `backend/bilibili_comments/storage.py`
+- `backend/bilibili_comment_danmaku/scraper.py`
+- `backend/bilibili_comment_danmaku/storage.py`
 - `backend/server.py` 的 `handle_parse_video_api` 和 `handle_refresh_api`
 
 需要同步：
@@ -906,8 +906,8 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 优先看：
 
-- `backend/bilibili_comments/danmaku.py`
-- `backend/bilibili_comments/storage.py` 的 `save_danmaku_to_sqlite` 和 `load_danmaku_data`
+- `backend/bilibili_comment_danmaku/danmaku.py`
+- `backend/bilibili_comment_danmaku/storage.py` 的 `save_danmaku_to_sqlite` 和 `load_danmaku_data`
 - `backend/server.py` 的 `handle_danmaku_refresh_api`
 
 需要同步：
@@ -993,7 +993,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 ```powershell
 pnpm build
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend\bilibili_comment_danmaku\storage.py backend\bilibili_comment_danmaku\danmaku.py backend\bilibili_comment_danmaku\scraper.py backend\bilibili_comment_danmaku\url_utils.py backend\bilibili_comment_danmaku\__init__.py
 git status --short --ignored
 ```
 
@@ -1055,7 +1055,7 @@ git pull --ff-only
 git switch -c <branch-name>
 # edit
 pnpm build
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comments.py backend\bilibili_comments\storage.py backend\bilibili_comments\danmaku.py backend\bilibili_comments\scraper.py backend\bilibili_comments\url_utils.py backend\bilibili_comments\__init__.py
+python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend\bilibili_comment_danmaku\storage.py backend\bilibili_comment_danmaku\danmaku.py backend\bilibili_comment_danmaku\scraper.py backend\bilibili_comment_danmaku\url_utils.py backend\bilibili_comment_danmaku\__init__.py
 git status --short --ignored
 git add <files>
 git commit -m "<message>"
@@ -1089,3 +1089,4 @@ git -c credential.helper= -c credential.https://github.com.helper= -c credential
 
 - 用户可见行为改变：更新 `README.md`
 - 开发方式、接口、schema、架构改变：更新 `AGENTS.md`
+

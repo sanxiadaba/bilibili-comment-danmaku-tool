@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import sys
 
-from bilibili_comments import DEFAULT_BVID, scrape_to_sqlite
+from bilibili_comment_danmaku import DEFAULT_BVID, scrape_to_sqlite
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,7 +12,7 @@ DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch all Bilibili video comments into SQLite.")
+    parser = argparse.ArgumentParser(description="Fetch Bilibili video comments and danmaku into SQLite.")
     parser.add_argument("video", nargs="?", default=DEFAULT_BVID, help="Bilibili video URL or BV id")
     parser.add_argument("--bvid", help="Backward-compatible alias for a BV id")
     parser.add_argument("--db", default=str(DEFAULT_DB))

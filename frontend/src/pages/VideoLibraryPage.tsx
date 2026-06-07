@@ -149,7 +149,7 @@ export function VideoLibraryPage() {
               <span>{formatNumber(totals.comments)} 条评论档案</span>
             </div>
             <h1 className="mt-2 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
-              Bilibili 评论管理
+              Bilibili 评论弹幕管理
             </h1>
           </div>
           <div className="flex items-center gap-2 self-center">
