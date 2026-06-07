@@ -3,13 +3,22 @@ import gzip
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zlib
 from datetime import datetime, timezone
 
-from .scraper import DEFAULT_PROXY
+from .scraper import (
+    BLOCKED_API_CODES,
+    BLOCKED_HTTP_STATUSES,
+    DEFAULT_PROXY,
+    GLOBAL_REQUEST_BACKOFF,
+    BilibiliRequestError,
+    retry_after_seconds,
+    retry_delay_seconds,
+)
 
 
 def extract_cid(video_raw):
@@ -36,8 +45,21 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False):
         },
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=30) as resp:
-        return decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+    GLOBAL_REQUEST_BACKOFF.wait()
+    try:
+        with opener.open(req, timeout=30) as resp:
+            return decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in BLOCKED_HTTP_STATUSES:
+            delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(1, status=exc.code))
+            GLOBAL_REQUEST_BACKOFF.block_for(delay)
+            raise BilibiliRequestError(
+                f"HTTP Error {exc.code}: danmaku XML request blocked",
+                status=exc.code,
+                cause=exc,
+                retry_after=retry_after_seconds(exc),
+            ) from exc
+        raise
 
 
 def decode_response_body(body, content_encoding):
@@ -102,9 +124,30 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
             },
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        if payload.get("code") != 0:
+        GLOBAL_REQUEST_BACKOFF.wait()
+        try:
+            with opener.open(req, timeout=30) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code in BLOCKED_HTTP_STATUSES:
+                delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(1, status=exc.code))
+                GLOBAL_REQUEST_BACKOFF.block_for(delay)
+                raise BilibiliRequestError(
+                    f"HTTP Error {exc.code}: danmaku like request blocked",
+                    status=exc.code,
+                    cause=exc,
+                    retry_after=retry_after_seconds(exc),
+                ) from exc
+            raise
+        api_code = payload.get("code")
+        if api_code in BLOCKED_API_CODES:
+            delay = retry_delay_seconds(1, api_code=api_code)
+            GLOBAL_REQUEST_BACKOFF.block_for(delay)
+            raise BilibiliRequestError(
+                f"API code={api_code} message={payload.get('message')}",
+                api_code=api_code,
+            )
+        if api_code != 0:
             continue
         data = payload.get("data") or {}
         for dmid, value in data.items():

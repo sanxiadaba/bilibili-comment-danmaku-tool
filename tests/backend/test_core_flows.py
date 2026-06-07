@@ -239,7 +239,7 @@ class ScraperPerformanceTests(unittest.TestCase):
             def clone(self):
                 return self
 
-            def request_json(self, _url):
+            def request_json(self, _url, **_kwargs):
                 return {
                     "data": {
                         "replies": [
@@ -306,7 +306,7 @@ class ScraperPerformanceTests(unittest.TestCase):
             def clone(self):
                 return self
 
-            def request_json(self, url):
+            def request_json(self, url, **_kwargs):
                 root = "1" if "root=1" in url else "3"
                 child_rpid = "2" if root == "1" else "4"
                 return {
@@ -422,7 +422,7 @@ class ScraperPerformanceTests(unittest.TestCase):
                 self.urls = []
                 self.backoff = FakeBackoff()
 
-            def request_json(self, url, retries=1):
+            def request_json(self, url, retries=1, **_kwargs):
                 self.urls.append(url)
                 if len(self.urls) == 1:
                     raise scraper.BilibiliRequestError("blocked", status=412, url=url)
@@ -453,8 +453,8 @@ class ScraperPerformanceTests(unittest.TestCase):
             scraper.random.uniform = original_uniform
 
         self.assertEqual(result, {"data": {"ok": True}})
-        self.assertEqual(sleeps, [65])
-        self.assertEqual(client.backoff.blocks, [65])
+        self.assertEqual(sleeps, [185])
+        self.assertEqual(client.backoff.blocks, [185])
         self.assertEqual(len(client.urls), 2)
         self.assertIn("wts=1000", client.urls[0])
         self.assertIn("wts=1030", client.urls[1])
@@ -469,7 +469,7 @@ class ScraperPerformanceTests(unittest.TestCase):
 
     def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
         class FailingClient:
-            def request_json(self, _url):
+            def request_json(self, _url, **_kwargs):
                 raise AssertionError("child API should not be called when embedded replies are complete")
 
         child_reply = {

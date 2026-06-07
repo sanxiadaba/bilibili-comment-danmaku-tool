@@ -27,8 +27,10 @@ CHILD_FULL_DELAY_EVERY_PAGES = 10
 MAX_CHILD_FETCH_WORKERS = 4
 BLOCKED_HTTP_STATUSES = {412, 429}
 BLOCKED_API_CODES = {-352}
-BLOCKED_RETRY_DELAYS = (60, 180, 600)
-BLOCKED_RETRY_JITTER_SECONDS = (3, 18)
+BLOCKED_RETRY_DELAYS = (180, 600, 1800)
+BLOCKED_RETRY_JITTER_SECONDS = (15, 90)
+GLOBAL_MIN_REQUEST_INTERVAL_SECONDS = 0.85
+REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
 SIGNED_REQUEST_RETRIES = 3
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
@@ -111,14 +113,26 @@ class BilibiliRequestError(RuntimeError):
 
 
 class RequestBackoff:
-    def __init__(self):
+    def __init__(
+        self,
+        min_interval=GLOBAL_MIN_REQUEST_INTERVAL_SECONDS,
+        interval_jitter=REQUEST_INTERVAL_JITTER_SECONDS,
+    ):
         self.lock = threading.Lock()
         self.blocked_until = 0
+        self.next_request_at = 0
+        self.min_interval = min_interval
+        self.interval_jitter = interval_jitter
 
     def wait(self):
-        with self.lock:
-            sleep_for = self.blocked_until - time.monotonic()
-        if sleep_for > 0:
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                sleep_for = max(self.blocked_until - now, self.next_request_at - now)
+                if sleep_for <= 0:
+                    spacing = self.min_interval + random.uniform(*self.interval_jitter)
+                    self.next_request_at = now + max(spacing, 0)
+                    return
             time.sleep(sleep_for)
 
     def block_for(self, seconds):
@@ -146,7 +160,8 @@ class BilibiliClient:
             cloned.cookie_jar.set_cookie(copy.copy(cookie))
         return cloned
 
-    def request_json(self, url, timeout=30, retries=4, allow_api_error=False):
+    def request_json(self, url, timeout=30, retries=4, allow_api_error=False, logger=None):
+        log = logger or (lambda _message: None)
         last_error = None
         for attempt in range(1, retries + 1):
             try:
@@ -176,6 +191,10 @@ class BilibiliClient:
                     break
                 if exc.code in BLOCKED_HTTP_STATUSES:
                     self.backoff.block_for(delay)
+                    log(
+                        f"warning: request got HTTP {exc.code}; "
+                        f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
+                    )
                 time.sleep(delay)
             except BilibiliRequestError as exc:
                 last_error = exc
@@ -190,6 +209,10 @@ class BilibiliClient:
                     break
                 if is_blocked_request_error(exc):
                     self.backoff.block_for(delay)
+                    log(
+                        f"warning: request got {blocked_error_label(exc)}; "
+                        f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
+                    )
                 time.sleep(delay)
             except Exception as exc:
                 last_error = exc
@@ -216,6 +239,7 @@ class BilibiliClient:
 
     def warmup(self, bvid):
         req = urllib.request.Request(f"https://www.bilibili.com/video/{bvid}", headers=self.headers)
+        self.backoff.wait()
         with self.opener.open(req, timeout=30) as resp:
             resp.read(1024)
 
@@ -349,15 +373,24 @@ def get_wbi_mixin_key(client, log):
         "https://api.bilibili.com/x/web-interface/nav",
         timeout=30,
         allow_api_error=True,
+        logger=log,
     )
+    nav_code = nav.get("code")
+    if nav_code in BLOCKED_API_CODES:
+        delay = retry_delay_seconds(1, api_code=nav_code)
+        client.backoff.block_for(delay)
+        raise BilibiliRequestError(
+            f"API code={nav_code} message={nav.get('message')}",
+            api_code=nav_code,
+        )
     data = nav.get("data") or {}
     wbi_img = data.get("wbi_img") or {}
     img_url = wbi_img.get("img_url")
     sub_url = wbi_img.get("sub_url")
     if not img_url or not sub_url:
-        raise RuntimeError(f"Could not get WBI image keys from nav API: code={nav.get('code')} message={nav.get('message')}")
+        raise RuntimeError(f"Could not get WBI image keys from nav API: code={nav_code} message={nav.get('message')}")
 
-    log(f"login: isLogin={data.get('isLogin')} nav_code={nav.get('code')}")
+    log(f"login: isLogin={data.get('isLogin')} nav_code={nav_code}")
     return get_mixin_key(filename_stem(img_url), filename_stem(sub_url))
 
 
@@ -506,7 +539,7 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
             "pn": page,
             "ps": 20,
         }
-        data = client.request_json(build_url(endpoint, params))["data"]
+        data = client.request_json(build_url(endpoint, params), logger=log)["data"]
         page_replies = collect_main_reply_candidates(data)
         page_info = data.get("page") or {}
         api_count = page_info.get("count", api_count)
