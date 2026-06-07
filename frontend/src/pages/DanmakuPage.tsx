@@ -46,7 +46,7 @@ import type { DanmakuData } from "../types";
 export function DanmakuPage({ bvid }: { bvid?: string }) {
   const [danmaku, setDanmaku] = useState<DanmakuData | null>(null);
   const [query, setQuery] = useState("");
-  const [sortMode, setSortMode] = useState<DanmakuSortMode>("progress_asc");
+  const [sortMode, setSortMode] = useState<DanmakuSortMode>("like_desc");
   const [modeFilter, setModeFilter] = useState<DanmakuModeFilter>("all");
   const [progressRange, setProgressRange] = useState(100);
   const [selectedId, setSelectedId] = useState("");
@@ -169,7 +169,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
 
   function resetDanmakuFilters() {
     setQuery("");
-    setSortMode("progress_asc");
+    setSortMode("like_desc");
     setModeFilter("all");
     setProgressRange(100);
   }

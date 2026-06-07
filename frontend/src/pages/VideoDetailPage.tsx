@@ -57,7 +57,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [lastLoadedAt, setLastLoadedAt] = useState("");
   const [refreshMessage, setRefreshMessage] = useState("");
   const [query, setQuery] = useState("");
-  const [sortMode, setSortMode] = useState<SortMode>("time_asc");
+  const [sortMode, setSortMode] = useState<SortMode>("like_desc");
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [location, setLocation] = useState("all");
   const [minLikes, setMinLikes] = useState(0);
@@ -158,7 +158,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const activeThreadItems = selectedThread ? flattenThread(selectedThread) : [];
   function resetFilters() {
     setQuery("");
-    setSortMode("time_asc");
+    setSortMode("like_desc");
     setLevelFilter("all");
     setLocation("all");
     setMinLikes(0);

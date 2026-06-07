@@ -1,11 +1,12 @@
 import type { DanmakuItem } from "../../types";
 
-export type DanmakuSortMode = "progress_asc" | "progress_desc" | "time_desc" | "content_asc";
+export type DanmakuSortMode = "progress_asc" | "progress_desc" | "like_desc" | "time_desc" | "content_asc";
 export type DanmakuModeFilter = "all" | "scroll" | "top" | "bottom" | "other";
 
 export const danmakuSortLabels: Record<DanmakuSortMode, string> = {
   progress_asc: "视频时间升序",
   progress_desc: "视频时间降序",
+  like_desc: "点赞优先",
   time_desc: "发送时间最新",
   content_asc: "内容 A-Z",
 };
@@ -35,6 +36,7 @@ export function sortDanmakuItems(items: DanmakuItem[], sortMode: DanmakuSortMode
   const sorted = [...items];
   sorted.sort((a, b) => {
     if (sortMode === "progress_desc") return b.progress - a.progress || b.dmid.localeCompare(a.dmid);
+    if (sortMode === "like_desc") return (b.like_count || 0) - (a.like_count || 0) || a.progress - b.progress;
     if (sortMode === "time_desc") return b.ctime - a.ctime || b.dmid.localeCompare(a.dmid);
     if (sortMode === "content_asc") return a.content.localeCompare(b.content, "zh-CN") || a.progress - b.progress;
     return a.progress - b.progress || a.dmid.localeCompare(b.dmid);
