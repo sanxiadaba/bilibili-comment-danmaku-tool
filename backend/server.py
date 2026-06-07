@@ -21,9 +21,9 @@ from bilibili_comments import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = ROOT / "comments.db"
+DEFAULT_DB = ROOT / "data" / "comments.db"
 DEFAULT_STATIC = ROOT / "dist"
-DEFAULT_COOKIE_FILE = ROOT / "cookie.txt"
+DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
 progress_state = {
@@ -584,6 +584,7 @@ def main():
             "static_dir": Path(args.static).resolve(),
         },
     )
+    handler.db_path.parent.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Serving SQLite comments app at http://{args.host}:{args.port}/")
     print(f"SQLite database: {Path(args.db).resolve()}")

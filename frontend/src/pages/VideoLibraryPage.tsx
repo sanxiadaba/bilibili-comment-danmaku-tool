@@ -221,8 +221,8 @@ export function VideoLibraryPage() {
                 </span>
               </label>
               <div className="grid gap-2 text-sm">
-                <InfoRow label="Cookie" value="cookie.txt" />
-                <InfoRow label="数据库" value="comments.db" />
+                <InfoRow label="Cookie" value="data/cookie.txt" />
+                <InfoRow label="数据库" value="data/comments.db" />
               </div>
             </div>
           )}

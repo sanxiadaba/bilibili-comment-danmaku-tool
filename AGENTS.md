@@ -51,8 +51,11 @@
 
 禁止提交：
 
+- `data/`
+- `logs/`
 - `cookie.txt`
 - `comments*.db`
+- `*.db`
 - `*.sqlite`
 - `*.sqlite3`
 - `dist/`
@@ -79,8 +82,8 @@ git status --short --ignored
 当前代码现状：
 
 - Web 服务 `backend/server.py` 调用 `scrape_comments` 和 `scrape_danmaku` 时没有传 `use_proxy=True`，因此默认不走代理。
-- CLI 脚本 `backend/fetch_bilibili_comments.py` 当前默认 `use_proxy=not args.no_proxy`，也就是默认走代理；若使用 CLI 且希望不走代理，需要传 `--no-proxy`。
-- 如果要统一行为，应单独开分支修改 CLI 默认值，并提醒用户该行为变化。
+- CLI 脚本 `backend/fetch_bilibili_comments.py` 当前默认也不走代理；只有显式传 `--proxy` 才会使用抓取器内置代理设置。
+- 不要为了 GitHub/Git 的代理偏好，把 Bilibili 抓取请求也改成默认走 `7890`。
 
 ## 3. 技术栈
 
@@ -103,10 +106,10 @@ git status --short --ignored
 
 构建配置：
 
-- `vite.config.ts`：Vite + React，开发代理 `/api -> http://127.0.0.1:8000`
-- `tsconfig.json`：前端源码和 Vite 配置 TypeScript 检查
-- `tailwind.config.ts`：主题色、阴影、字体
-- `postcss.config.js`：Tailwind + Autoprefixer
+- `frontend/vite.config.ts`：Vite + React，开发代理 `/api -> http://127.0.0.1:8000`，构建产物输出到根目录 `dist/`
+- `frontend/tsconfig.json`：前端源码和 Vite 配置 TypeScript 检查
+- `frontend/tailwind.config.ts`：主题色、阴影、字体
+- `frontend/postcss.config.js`：Tailwind + Autoprefixer
 
 ## 4. 常用命令
 
@@ -173,57 +176,69 @@ http://127.0.0.1:8000/
 │       ├── scraper.py            # 评论抓取、WBI 签名、评论归一化
 │       ├── danmaku.py            # 弹幕 XML 抓取、点赞数抓取、弹幕解析
 │       └── storage.py            # SQLite schema、保存、读取、聚合
-├── src/
-│   ├── main.tsx                  # React 挂载入口
-│   ├── App.tsx                   # 极简路由入口
-│   ├── types.ts                  # 前后端数据契约 TypeScript 类型
-│   ├── styles.css                # Tailwind 入口和全局样式
-│   ├── api/                      # 前端 API 请求封装
-│   ├── hooks/                    # React hooks
-│   ├── pages/                    # 页面级组件
-│   ├── lib/
-│   │   ├── utils.ts              # 评论过滤、排序、统计、格式化工具
-│   │   └── csv.ts                # CSV 导出转义
-│   └── components/
-│       ├── common.tsx            # 页面通用展示组件
-│       ├── comments/             # 评论列表、详情、图表组件
-│       ├── danmaku/              # 弹幕列表、详情、图表、工具
-│       └── ui/                   # 基础 UI 小组件
+├── frontend/
+│   ├── index.html                # Vite HTML 入口
+│   ├── vite.config.ts            # Vite 配置
+│   ├── tsconfig.json             # 前端 TypeScript 配置
+│   ├── tailwind.config.ts        # Tailwind 配置
+│   ├── postcss.config.js         # PostCSS 配置
+│   └── src/
+│       ├── main.tsx              # React 挂载入口
+│       ├── App.tsx               # 极简路由入口
+│       ├── types.ts              # 前后端数据契约 TypeScript 类型
+│       ├── styles.css            # Tailwind 入口和全局样式
+│       ├── api/                  # 前端 API 请求封装
+│       ├── hooks/                # React hooks
+│       ├── pages/                # 页面级组件
+│       ├── lib/                  # 通用工具和 CSV 导出
+│       └── components/           # 评论、弹幕和基础 UI 组件
+├── data/                         # 本地数据库、cookie、备份；ignored
+├── logs/                         # 本地运行日志；ignored
+├── dist/                         # 前端构建产物；ignored
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
-├── index.html
-├── vite.config.ts
-├── tsconfig.json
-├── tailwind.config.ts
-└── postcss.config.js
+└── .gitignore
 ```
 
 根目录保留原则：
 
 - `backend/`：所有 Python 后端和抓取代码。
-- `src/`：所有 React 前端源码。
-- `index.html`、`vite.config.ts`、`tailwind.config.ts`、`postcss.config.js`、`tsconfig.json`：前端工具链默认入口和配置，留在根目录可减少额外配置。
+- `frontend/`：所有 React 前端源码和前端工具链配置。前端文件夹使用直白的 `frontend`，避免根目录同时混杂页面、组件、构建配置和后端代码。
+- `data/`：本地运行数据，包括 `comments.db`、`cookie.txt`、SQLite 临时文件和人工备份；必须 ignored。
+- `logs/`：本地运行日志；必须 ignored。
+- `dist/`：`pnpm build` 生成的静态资源，供 `backend/server.py` 读取；必须 ignored。
 - `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`：依赖、脚本和 pnpm 构建许可。
 - `README.md`、`AGENTS.md`：用户说明和 agent 开发手册。
-- `comments*.db`、`cookie.txt`、日志、缓存、构建产物和依赖目录只允许本地存在，必须保持 ignored。
+- 根目录不再放业务源码、cookie、数据库、日志、构建缓存或旧数据库备份。
 
 本地会出现但不提交：
 
 ```text
-comments.db
-comments.db-shm
-comments.db-wal
-comments_legacy.db
-comments_before_deleted_restore_*.db
-cookie.txt
+data/comments.db
+data/comments.db-shm
+data/comments.db-wal
+data/cookie.txt
+data/backups/comments_legacy.db
+data/backups/comments_before_deleted_restore_*.db
+logs/server.log
+logs/server.err
 dist/
 node_modules/
-server.log
-server.err
 __pycache__/
 *.tsbuildinfo
 ```
+
+文件有用性判断：
+
+- `data/comments.db`：当前主数据库，有用，但属于用户本地数据，不提交。
+- `data/backups/*.db`：旧库、恢复前备份或人工备份，有用但只对本机排查/恢复有意义，不提交。
+- `data/cookie.txt`：用户登录凭据，有用且敏感，不提交。
+- `logs/*.log`、`logs/*.err`：本地运行日志，可用于排错，但可再生成，不提交。
+- `*.tsbuildinfo`：TypeScript 增量编译缓存，不是业务文件，可删除，不提交。
+- `node_modules/`：依赖安装目录，可由 `pnpm install` 重建，不提交。
+- `dist/`：前端构建产物，可由 `pnpm build` 重建，不提交。
+- `frontend/*.config.*`、`frontend/tsconfig.json`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`：项目配置，有用，应提交。
 
 ## 6. 数据流总览
 
@@ -305,7 +320,7 @@ __pycache__/
 ```json
 {
   "ok": true,
-  "db": "D:\\path\\comments.db"
+  "db": "D:\\path\\data\\comments.db"
 }
 ```
 
@@ -769,13 +784,13 @@ Hook：`useProgressPolling(enabled, kind)`
 
 ### 10.6 TypeScript 数据契约
 
-所有前后端 JSON 契约集中在 `src/types.ts`。
+所有前后端 JSON 契约集中在 `frontend/src/types.ts`。
 
 如果修改后端返回字段，必须同步更新：
 
-- `src/types.ts`
-- `src/App.tsx` 中的渲染逻辑
-- 必要时更新 `src/lib/utils.ts`
+- `frontend/src/types.ts`
+- `frontend/src/App.tsx` 中的渲染逻辑
+- 必要时更新 `frontend/src/lib/utils.ts`
 - 本文档相关章节
 
 不要让前端到处写 `any` 或猜字段。
@@ -855,7 +870,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 ### 12.5 单文件前端较大
 
-`src/App.tsx` 是薄路由入口；页面和组件已经按领域拆分。
+`frontend/src/App.tsx` 是薄路由入口；页面和组件已经按领域拆分。
 
 后续继续重构时要谨慎：
 
@@ -863,12 +878,12 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 - 如果要拆，应单独开重构分支。
 - 拆分前先保证现有行为有构建验证。
 - 现有前端边界：
-  - `src/pages/*` 放页面状态和页面布局。
-  - `src/components/comments/*` 放评论领域展示。
-  - `src/components/danmaku/*` 放弹幕领域展示和弹幕工具。
-  - `src/components/common.tsx` 放跨页面通用组件。
-  - `src/api/client.ts` 放前端请求封装。
-  - `src/hooks/*` 放 React hooks。
+  - `frontend/src/pages/*` 放页面状态和页面布局。
+  - `frontend/src/components/comments/*` 放评论领域展示。
+  - `frontend/src/components/danmaku/*` 放弹幕领域展示和弹幕工具。
+  - `frontend/src/components/common.tsx` 放跨页面通用组件。
+  - `frontend/src/api/client.ts` 放前端请求封装。
+  - `frontend/src/hooks/*` 放 React hooks。
 
 ## 13. 常见开发任务定位
 
@@ -884,7 +899,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 - SQLite schema
 - `load_comment_data`
-- `src/types.ts`
+- `frontend/src/types.ts`
 - 评论页 UI
 
 ### 13.2 修改弹幕抓取
@@ -932,7 +947,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
   - `progress_stage`
   - `progress_percent`
   - `progress_stats`
-- `src/App.tsx`
+- `frontend/src/App.tsx`
   - `useProgressPolling`
   - `ProgressBanner`
 
@@ -1021,6 +1036,8 @@ git status --short --ignored
 确认：
 
 - 没有 `cookie.txt`
+- 没有 `data/`
+- 没有 `logs/`
 - 没有 `comments*.db`
 - 没有 `dist/`
 - 没有 `node_modules/`

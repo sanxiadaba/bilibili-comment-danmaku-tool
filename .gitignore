@@ -12,8 +12,11 @@ __pycache__/
 *.py[cod]
 
 # Local data and credentials
+data/
 cookie.txt
 comments*.db
+*.db
+*.db-journal
 *.db-shm
 *.db-wal
 *.sqlite
@@ -22,6 +25,7 @@ comments*.db
 .env.*
 
 # Logs
+logs/
 *.log
 server.err
 

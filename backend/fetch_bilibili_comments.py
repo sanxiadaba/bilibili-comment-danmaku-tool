@@ -1,29 +1,36 @@
 import argparse
 import os
+from pathlib import Path
 import sys
 
 from bilibili_comments import DEFAULT_BVID, scrape_to_sqlite
+
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB = ROOT / "data" / "comments.db"
+DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch all Bilibili video comments into SQLite.")
     parser.add_argument("video", nargs="?", default=DEFAULT_BVID, help="Bilibili video URL or BV id")
     parser.add_argument("--bvid", help="Backward-compatible alias for a BV id")
-    parser.add_argument("--db", default="comments.db")
+    parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--delay", type=float, default=0.35)
     parser.add_argument("--cookie", default=os.environ.get("BILIBILI_COOKIE", ""))
-    parser.add_argument("--cookie-file", default="cookie.txt")
-    parser.add_argument("--no-proxy", action="store_true")
+    parser.add_argument("--cookie-file", default=str(DEFAULT_COOKIE_FILE))
+    parser.add_argument("--proxy", action="store_true", help="Use the scraper HTTP proxy for Bilibili requests.")
     args = parser.parse_args()
 
     video_ref = args.bvid or args.video
+    Path(args.db).resolve().parent.mkdir(parents=True, exist_ok=True)
     summary = scrape_to_sqlite(
         video_ref,
         db_path=args.db,
         cookie=args.cookie,
         cookie_file=args.cookie_file,
         delay=args.delay,
-        use_proxy=not args.no_proxy,
+        use_proxy=args.proxy,
     )
     print(f"saved sqlite database: {summary['db']}", flush=True)
     print(f"bvid: {summary['bvid']}", flush=True)
