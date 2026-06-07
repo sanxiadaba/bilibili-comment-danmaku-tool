@@ -1,4 +1,4 @@
-# Dependencies
+﻿# Dependencies
 node_modules/
 
 # Frontend build output
@@ -14,7 +14,7 @@ __pycache__/
 # Local data and credentials
 data/
 cookie.txt
-comments*.db
+comment_danmaku*.db
 comment-danmaku*.db
 comment_danmaku*.db
 *.db
@@ -36,3 +36,4 @@ server.err
 Thumbs.db
 .vscode/
 .idea/
+

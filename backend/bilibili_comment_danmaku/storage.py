@@ -1,8 +1,13 @@
-from collections import defaultdict
+﻿from collections import defaultdict
 import binascii
 from pathlib import Path
+import shutil
 import json
 import sqlite3
+
+
+DEFAULT_DATABASE_NAME = "comment_danmaku.db"
+LEGACY_DATABASE_NAME = "comments.db"
 
 
 SCHEMA_SQL = """
@@ -16,11 +21,11 @@ CREATE TABLE IF NOT EXISTS videos (
     source_url TEXT NOT NULL,
     fetched_at TEXT NOT NULL,
     sort TEXT,
-    api_all_count INTEGER,
-    top_level_count INTEGER,
-    expected_nested_reply_count INTEGER,
-    nested_reply_count INTEGER,
-    flat_total_count INTEGER,
+    api_comment_count INTEGER,
+    top_level_comment_count INTEGER,
+    expected_nested_comment_count INTEGER,
+    nested_comment_count INTEGER,
+    comment_total_count INTEGER,
     pic TEXT,
     video_cid TEXT,
     owner_mid TEXT,
@@ -133,8 +138,27 @@ def connect(db_path):
     return conn
 
 
+def prepare_database_path(db_path):
+    db_path = Path(db_path).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path = db_path.with_name(LEGACY_DATABASE_NAME)
+    if db_path.name == DEFAULT_DATABASE_NAME and not db_path.exists() and legacy_path.exists():
+        shutil.copy2(legacy_path, db_path)
+        for suffix in ("-wal", "-shm"):
+            legacy_sidecar = legacy_path.with_name(f"{legacy_path.name}{suffix}")
+            target_sidecar = db_path.with_name(f"{db_path.name}{suffix}")
+            if legacy_sidecar.exists() and not target_sidecar.exists():
+                shutil.copy2(legacy_sidecar, target_sidecar)
+    return db_path
+
+
 def ensure_schema(conn):
     conn.executescript(SCHEMA_SQL)
+    rename_video_column(conn, "api_all_count", "api_comment_count", "INTEGER")
+    rename_video_column(conn, "top_level_count", "top_level_comment_count", "INTEGER")
+    rename_video_column(conn, "expected_nested_reply_count", "expected_nested_comment_count", "INTEGER")
+    rename_video_column(conn, "nested_reply_count", "nested_comment_count", "INTEGER")
+    rename_video_column(conn, "flat_total_count", "comment_total_count", "INTEGER")
     ensure_video_column(conn, "video_cid", "TEXT")
     ensure_video_column(conn, "owner_mid", "TEXT")
     ensure_comment_column(conn, "first_seen_at", "TEXT")
@@ -156,6 +180,19 @@ def ensure_video_column(conn, name, definition):
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)").fetchall()}
     if name not in columns:
         conn.execute(f"ALTER TABLE videos ADD COLUMN {name} {definition}")
+
+
+def rename_video_column(conn, old_name, new_name, definition):
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)").fetchall()}
+    if new_name not in columns:
+        try:
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {new_name} {definition}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)").fetchall()}
+    if old_name in columns:
+        conn.execute(f"UPDATE videos SET {new_name} = COALESCE({new_name}, {old_name})")
 
 
 def ensure_danmaku_column(conn, name, definition):
@@ -202,7 +239,7 @@ def extract_video_cid(video_raw):
     return None
 
 
-def save_to_sqlite(output_data, db_path, replace=True):
+def save_comments_to_sqlite(output_data, db_path, replace=True):
     metadata = output_data["metadata"]
     video_raw = output_data["video_raw"]
     owner = video_raw.get("owner") or {}
@@ -226,9 +263,9 @@ def save_to_sqlite(output_data, db_path, replace=True):
         conn.execute(
             """
             INSERT INTO videos (
-                bvid, aid, title, source_url, fetched_at, sort, api_all_count,
-                top_level_count, expected_nested_reply_count, nested_reply_count,
-                flat_total_count, pic, video_cid, owner_mid, owner_name, owner_face, stat_view,
+                bvid, aid, title, source_url, fetched_at, sort, api_comment_count,
+                top_level_comment_count, expected_nested_comment_count, nested_comment_count,
+                comment_total_count, pic, video_cid, owner_mid, owner_name, owner_face, stat_view,
                 stat_danmaku, stat_reply, stat_favorite, stat_coin, stat_share,
                 stat_like, pubdate, desc, duration
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -238,11 +275,11 @@ def save_to_sqlite(output_data, db_path, replace=True):
                 source_url = excluded.source_url,
                 fetched_at = excluded.fetched_at,
                 sort = excluded.sort,
-                api_all_count = excluded.api_all_count,
-                top_level_count = excluded.top_level_count,
-                expected_nested_reply_count = excluded.expected_nested_reply_count,
-                nested_reply_count = excluded.nested_reply_count,
-                flat_total_count = excluded.flat_total_count,
+                api_comment_count = excluded.api_comment_count,
+                top_level_comment_count = excluded.top_level_comment_count,
+                expected_nested_comment_count = excluded.expected_nested_comment_count,
+                nested_comment_count = excluded.nested_comment_count,
+                comment_total_count = excluded.comment_total_count,
                 pic = excluded.pic,
                 video_cid = excluded.video_cid,
                 owner_mid = excluded.owner_mid,
@@ -266,11 +303,11 @@ def save_to_sqlite(output_data, db_path, replace=True):
                 metadata["source_url"],
                 metadata["fetched_at"],
                 metadata.get("sort"),
-                metadata.get("api_all_count"),
-                metadata.get("top_level_count"),
-                metadata.get("expected_nested_reply_count"),
-                metadata.get("nested_reply_count"),
-                metadata.get("flat_total_count"),
+                metadata.get("api_comment_count"),
+                metadata.get("top_level_comment_count"),
+                metadata.get("expected_nested_comment_count"),
+                metadata.get("nested_comment_count"),
+                metadata.get("comment_total_count"),
                 video_raw.get("pic"),
                 video_cid,
                 owner.get("mid"),
@@ -429,10 +466,10 @@ def save_to_sqlite(output_data, db_path, replace=True):
         return {
             "db": str(Path(db_path).resolve()),
             "bvid": metadata["bvid"],
-            "top_level_count": conn.execute(
+            "top_level_comment_count": conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE bvid = ? AND level = 1", (metadata["bvid"],)
             ).fetchone()[0],
-            "nested_reply_count": conn.execute(
+            "nested_comment_count": conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE bvid = ? AND level = 2", (metadata["bvid"],)
             ).fetchone()[0],
             "total_count": conn.execute(
@@ -830,7 +867,7 @@ def load_comment_data(db_path, bvid=None):
             "metadata": metadata_from_video(video, rows),
             "video_raw": video_raw_from_video(video),
             "comments": top_level,
-            "flat_comments": sorted(nodes, key=node_sort_key),
+            "comment_items": sorted(nodes, key=node_sort_key),
         }
     finally:
         conn.close()
@@ -845,11 +882,11 @@ def list_video_summaries(db_path):
             """
             SELECT
                 v.*,
-                COALESCE(c.flat_total_count_actual, 0) AS flat_total_count_actual,
+                COALESCE(c.comment_total_count_actual, 0) AS comment_total_count_actual,
                 COALESCE(c.active_comment_count, 0) AS active_comment_count,
                 COALESCE(c.deleted_comment_count, 0) AS deleted_comment_count,
-                COALESCE(c.top_level_count_actual, 0) AS top_level_count_actual,
-                COALESCE(c.nested_reply_count_actual, 0) AS nested_reply_count_actual,
+                COALESCE(c.top_level_comment_count_actual, 0) AS top_level_comment_count_actual,
+                COALESCE(c.nested_comment_count_actual, 0) AS nested_comment_count_actual,
                 COALESCE(c.comment_like_count, 0) AS comment_like_count,
                 c.latest_comment_ctime,
                 COALESCE(d.danmaku_count, 0) AS danmaku_count,
@@ -858,11 +895,11 @@ def list_video_summaries(db_path):
             LEFT JOIN (
                 SELECT
                     bvid,
-                    COUNT(rpid) AS flat_total_count_actual,
+                    COUNT(rpid) AS comment_total_count_actual,
                     SUM(CASE WHEN is_deleted = 0 THEN 1 ELSE 0 END) AS active_comment_count,
                     SUM(CASE WHEN is_deleted = 1 THEN 1 ELSE 0 END) AS deleted_comment_count,
-                    SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END) AS top_level_count_actual,
-                    SUM(CASE WHEN level = 2 THEN 1 ELSE 0 END) AS nested_reply_count_actual,
+                    SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END) AS top_level_comment_count_actual,
+                    SUM(CASE WHEN level = 2 THEN 1 ELSE 0 END) AS nested_comment_count_actual,
                     SUM(COALESCE(like_count, 0)) AS comment_like_count,
                     MAX(ctime) AS latest_comment_ctime
                 FROM comments
@@ -885,7 +922,7 @@ def list_video_summaries(db_path):
 
 
 def video_summary_from_row(row):
-    total = value_or_zero(row["flat_total_count_actual"])
+    total = value_or_zero(row["comment_total_count_actual"])
     deleted = value_or_zero(row["deleted_comment_count"])
     active = value_or_zero(row["active_comment_count"])
     return {
@@ -902,11 +939,11 @@ def video_summary_from_row(row):
         "stat_view": value_or_zero(row["stat_view"]),
         "stat_reply": value_or_zero(row["stat_reply"]),
         "stat_like": value_or_zero(row["stat_like"]),
-        "flat_total_count": total,
+        "comment_total_count": total,
         "active_comment_count": active,
         "deleted_comment_count": deleted,
-        "top_level_count": value_or_zero(row["top_level_count_actual"]),
-        "nested_reply_count": value_or_zero(row["nested_reply_count_actual"]),
+        "top_level_comment_count": value_or_zero(row["top_level_comment_count_actual"]),
+        "nested_comment_count": value_or_zero(row["nested_comment_count_actual"]),
         "comment_like_count": value_or_zero(row["comment_like_count"]),
         "latest_comment_ctime": row["latest_comment_ctime"],
         "danmaku_count": value_or_zero(row["danmaku_count"]),
@@ -1008,9 +1045,9 @@ def normalized_from_row(row):
 
 
 def metadata_from_video(video, comment_rows):
-    top_level_count = sum(1 for row in comment_rows if row["level"] == 1)
-    nested_reply_count = sum(1 for row in comment_rows if row["level"] == 2)
-    flat_total_count = len(comment_rows)
+    top_level_comment_count = sum(1 for row in comment_rows if row["level"] == 1)
+    nested_comment_count = sum(1 for row in comment_rows if row["level"] == 2)
+    comment_total_count = len(comment_rows)
     deleted_count = sum(1 for row in comment_rows if row["is_deleted"])
     return {
         "source_url": video["source_url"],
@@ -1019,12 +1056,12 @@ def metadata_from_video(video, comment_rows):
         "title": video["title"],
         "fetched_at": video["fetched_at"],
         "sort": video["sort"] or "ctime_ascending",
-        "api_all_count": count_or_default(video["api_all_count"], top_level_count),
-        "top_level_count": top_level_count,
-        "expected_nested_reply_count": count_or_default(video["expected_nested_reply_count"], nested_reply_count),
-        "nested_reply_count": nested_reply_count,
-        "flat_total_count": flat_total_count,
-        "active_comment_count": flat_total_count - deleted_count,
+        "api_comment_count": count_or_default(video["api_comment_count"], top_level_comment_count),
+        "top_level_comment_count": top_level_comment_count,
+        "expected_nested_comment_count": count_or_default(video["expected_nested_comment_count"], nested_comment_count),
+        "nested_comment_count": nested_comment_count,
+        "comment_total_count": comment_total_count,
+        "active_comment_count": comment_total_count - deleted_count,
         "deleted_comment_count": deleted_count,
         "child_fetch_summary": [],
         "notes": [
@@ -1067,3 +1104,4 @@ def node_sort_key(node):
     ctime = normalized.get("ctime") or 0
     rpid = str(normalized.get("rpid") or "")
     return ctime, rpid
+

@@ -1,10 +1,10 @@
-import type { CommentData, DanmakuData, ParseVideoResponse, ProgressState, VideoListResponse } from "../types";
+﻿import type { CommentArchiveData, DanmakuData, ParseVideoResponse, ProgressState, VideoListResponse } from "../types";
 
-export async function fetchCommentData(bvid?: string) {
+export async function fetchCommentArchiveData(bvid?: string) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
   const response = await fetch(`/api/comments?${query.toString()}`, { cache: "no-store" });
-  return parseJsonResponse<CommentData>(response);
+  return parseJsonResponse<CommentArchiveData>(response);
 }
 
 export async function fetchVideos() {
@@ -39,14 +39,14 @@ export async function parseVideo(url: string, delay: number) {
   return parseJsonResponse<ParseVideoResponse>(response);
 }
 
-export async function refreshCommentData(bvid?: string) {
+export async function refreshCommentArchiveData(bvid?: string) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
   const response = await fetch(`/api/refresh?${query.toString()}`, {
     cache: "no-store",
     method: "POST",
   });
-  return parseJsonResponse<CommentData>(response);
+  return parseJsonResponse<CommentArchiveData>(response);
 }
 
 export async function fetchProgress() {
@@ -67,3 +67,4 @@ async function parseJsonResponse<T>(response: Response) {
   }
   return response.json() as Promise<T>;
 }
+

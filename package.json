@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "bilibili-comment-danmaku-tool",
   "version": "1.0.0",
   "private": true,
@@ -26,3 +26,4 @@
     "typescript": "^5.9.3"
   }
 }
+

@@ -54,7 +54,7 @@
 - `data/`
 - `logs/`
 - `cookie.txt`
-- `comments*.db`
+- `comment_danmaku*.db`
 - `*.db`
 - `*.sqlite`
 - `*.sqlite3`
@@ -205,7 +205,7 @@ http://127.0.0.1:8000/
 
 - `backend/`：所有 Python 后端和抓取代码。
 - `frontend/`：所有 React 前端源码和前端工具链配置。前端文件夹使用直白的 `frontend`，避免根目录同时混杂页面、组件、构建配置和后端代码。
-- `data/`：本地运行数据，包括 `comments.db`、`cookie.txt`、SQLite 临时文件和人工备份；必须 ignored。
+- `data/`：本地运行数据，包括 `comment_danmaku.db`、`cookie.txt`、SQLite 临时文件和人工备份；必须 ignored。
 - `logs/`：本地运行日志；必须 ignored。
 - `dist/`：`pnpm build` 生成的静态资源，供 `backend/server.py` 读取；必须 ignored。
 - `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`：依赖、脚本和 pnpm 构建许可。
@@ -215,9 +215,9 @@ http://127.0.0.1:8000/
 本地会出现但不提交：
 
 ```text
-data/comments.db
-data/comments.db-shm
-data/comments.db-wal
+data/comment_danmaku.db
+data/comment_danmaku.db-shm
+data/comment_danmaku.db-wal
 data/cookie.txt
 data/backups/comments_legacy.db
 data/backups/comments_before_deleted_restore_*.db
@@ -231,7 +231,8 @@ __pycache__/
 
 文件有用性判断：
 
-- `data/comments.db`：当前主数据库，有用，但属于用户本地数据，不提交。
+- `data/comment_danmaku.db`：当前主数据库，有用，但属于用户本地数据，不提交。
+- `data/comments.db`：旧主数据库文件名。新代码启动时会在缺少 `comment_danmaku.db` 时自动复制迁移，迁移后可作为本地备份保留或手动删除。
 - `data/backups/*.db`：旧库、恢复前备份或人工备份，有用但只对本机排查/恢复有意义，不提交。
 - `data/cookie.txt`：用户登录凭据，有用且敏感，不提交。
 - `logs/*.log`、`logs/*.err`：本地运行日志，可用于排错，但可再生成，不提交。
@@ -255,7 +256,7 @@ __pycache__/
 1. `backend/server.py` 的 `handle_parse_video_api`
 2. `extract_bvid` 从 URL 或文本中提取 BV 号
 3. `scrape_comments` 抓取视频信息、一级评论、楼中楼回复
-4. `save_to_sqlite` 保存视频、用户、评论、图片、表情
+4. `save_comments_to_sqlite` 保存视频、用户、评论、图片、表情
 5. `scrape_danmaku` 抓取弹幕 XML 和点赞数
 6. `save_danmaku_to_sqlite` 保存弹幕
 7. 返回解析结果和视频摘要
@@ -272,7 +273,7 @@ __pycache__/
 前端入口：
 
 - 页面：`VideoDetailPage`
-- 函数：`refreshCommentData(bvid)`
+- 函数：`refreshCommentArchiveData(bvid)`
 - 请求：`POST /api/refresh?bvid=BV...`
 
 后端流程：
@@ -280,7 +281,7 @@ __pycache__/
 1. `handle_refresh_api`
 2. 读取当前视频档案：`load_comment_data`
 3. 重新调用 `scrape_comments`
-4. `save_to_sqlite(..., replace=True)`
+4. `save_comments_to_sqlite(..., replace=True)`
 5. 保存前会先将该视频已有评论标记为 `is_deleted = 1`
 6. 本次 API 返回的评论再 upsert 回 `is_deleted = 0`
 7. 未返回的旧评论保留在数据库中，并显示为“本次未返回”
@@ -320,7 +321,7 @@ __pycache__/
 ```json
 {
   "ok": true,
-  "db": "D:\\path\\data\\comments.db"
+  "db": "D:\\path\\data\\comment_danmaku.db"
 }
 ```
 
@@ -337,7 +338,7 @@ __pycache__/
 - `source_url`
 - `owner_name`
 - `pic`
-- `flat_total_count`
+- `comment_total_count`
 - `active_comment_count`
 - `deleted_comment_count`
 - `danmaku_count`
@@ -375,7 +376,7 @@ __pycache__/
 
 用途：读取评论详情。
 
-返回类型：`CommentData`
+返回类型：`CommentArchiveData`
 
 如果不传 `bvid`，读取最近一次抓取的视频。
 
@@ -387,7 +388,7 @@ __pycache__/
 
 用途：刷新评论。
 
-返回类型：`CommentData`，并额外带 `refresh` 字段。
+返回类型：`CommentArchiveData`，并额外带 `refresh` 字段。
 
 `refresh` 中的关键字段：
 
@@ -614,7 +615,7 @@ Schema 定义在 `backend/bilibili_comment_danmaku/storage.py` 的 `SCHEMA_SQL`�
 - `fetch_child_replies`：分页抓楼中楼
 - `normalize_reply`：把 B 站 reply JSON 转成项目统一字段
 - `scrape_comments`：评论抓取总入口
-- `scrape_to_sqlite`：CLI 使用的抓取并保存入口
+- `scrape_comments_to_sqlite`：CLI 使用的抓取并保存入口
 
 评论 API：
 
@@ -929,7 +930,7 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 要求：
 
-- 兼容已有 `comments.db`
+- 兼容已有 `comment_danmaku.db`，并从旧 `comments.db` 自动复制迁移
 - 用 `ALTER TABLE ADD COLUMN` 做轻量迁移
 - 不要要求用户手动删数据库
 - 不要破坏旧数据
@@ -1038,7 +1039,7 @@ git status --short --ignored
 - 没有 `cookie.txt`
 - 没有 `data/`
 - 没有 `logs/`
-- 没有 `comments*.db`
+- 没有 `comment_danmaku*.db`
 - 没有 `dist/`
 - 没有 `node_modules/`
 - 没有日志和缓存
@@ -1089,4 +1090,5 @@ git -c credential.helper= -c credential.https://github.com.helper= -c credential
 
 - 用户可见行为改变：更新 `README.md`
 - 开发方式、接口、schema、架构改变：更新 `AGENTS.md`
+
 

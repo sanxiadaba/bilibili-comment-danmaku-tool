@@ -1,4 +1,4 @@
-import {
+﻿import {
   AlertTriangle,
   BarChart3,
   Clock3,
@@ -19,7 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchCommentData, refreshCommentData } from "../api/client";
+import { fetchCommentArchiveData, refreshCommentArchiveData } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
 import { CommentDetail } from "../components/comments/CommentDetail";
@@ -48,10 +48,10 @@ import {
   topAuthors,
   topLiked,
 } from "../lib/utils";
-import type { CommentData, CommentNode, LevelFilter, SortMode } from "../types";
+import type { CommentArchiveData, CommentNode, LevelFilter, SortMode } from "../types";
 
 export function VideoDetailPage({ bvid }: { bvid?: string }) {
-  const [data, setData] = useState<CommentData | null>(null);
+  const [data, setData] = useState<CommentArchiveData | null>(null);
   const [error, setError] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState("");
@@ -64,11 +64,11 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [selectedId, setSelectedId] = useState("");
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
-  const applyPayload = useCallback((payload: CommentData) => {
+  const applyPayload = useCallback((payload: CommentArchiveData) => {
     setData(payload);
     setSelectedId((current) => {
-      const currentExists = payload.flat_comments.some((comment) => comment.normalized.rpid === current);
-      return currentExists ? current : payload.flat_comments[0]?.normalized.rpid || "";
+      const currentExists = payload.comment_items.some((comment) => comment.normalized.rpid === current);
+      return currentExists ? current : payload.comment_items[0]?.normalized.rpid || "";
     });
     setLastLoadedAt(new Date().toISOString());
   }, []);
@@ -78,10 +78,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
     try {
-      const payload = await refreshCommentData(data?.metadata.bvid || bvid);
+      const payload = await refreshCommentArchiveData(data?.metadata.bvid || bvid);
       applyPayload(payload);
       const added = payload.refresh?.added_count ?? 0;
-      const after = payload.refresh?.after_count ?? payload.metadata.flat_total_count;
+      const after = payload.refresh?.after_count ?? payload.metadata.comment_total_count;
       const active = payload.refresh?.active_count ?? payload.metadata.active_comment_count ?? after;
       const deleted = payload.refresh?.deleted_count ?? payload.metadata.deleted_comment_count ?? 0;
       if (payload.refresh?.warning) {
@@ -103,7 +103,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   useEffect(() => {
     let mounted = true;
-    fetchCommentData(bvid)
+    fetchCommentArchiveData(bvid)
       .then((payload) => {
         if (!mounted) return;
         applyPayload(payload);
@@ -119,7 +119,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     };
   }, [applyPayload, bvid]);
 
-  const allComments = data?.flat_comments || [];
+  const allComments = data?.comment_items || [];
   const topLevelComments = data?.comments || [];
 
   const locations = useMemo(() => locationBuckets(allComments), [allComments]);
@@ -239,7 +239,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     );
   }
 
-  const activeCount = data.metadata.active_comment_count ?? data.metadata.flat_total_count;
+  const activeCount = data.metadata.active_comment_count ?? data.metadata.comment_total_count;
   const deletedCount = data.metadata.deleted_comment_count ?? 0;
 
   return (
@@ -274,7 +274,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             </h1>
             <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted">
               <Metric icon={Eye} label="播放" value={data.video_raw.stat?.view} />
-              <Metric icon={MessageCircle} label="评论" value={data.metadata.flat_total_count} />
+              <Metric icon={MessageCircle} label="评论" value={data.metadata.comment_total_count} />
               <Metric icon={ThumbsUp} label="视频点赞" value={data.video_raw.stat?.like} />
               <Metric icon={Heart} label="评论点赞" value={totalLikes} />
             </div>
@@ -335,9 +335,9 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       {isRefreshing && <ProgressBanner progress={commentProgress} fallback="正在重新抓取评论" />}
 
       <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-4 lg:px-6">
-        <StatTile icon={MessageCircle} label="评论档案" value={data.metadata.flat_total_count} tone="pink" />
+        <StatTile icon={MessageCircle} label="评论档案" value={data.metadata.comment_total_count} tone="pink" />
         <StatTile icon={AlertTriangle} label="仍可见 / 未返回" value={`${activeCount} / ${deletedCount}`} tone="cyan" />
-        <StatTile icon={ListTree} label="一级评论 / 楼中楼" value={`${data.metadata.top_level_count} / ${data.metadata.nested_reply_count}`} tone="mint" />
+        <StatTile icon={ListTree} label="一级评论 / 楼中楼" value={`${data.metadata.top_level_comment_count} / ${data.metadata.nested_comment_count}`} tone="mint" />
         <StatTile icon={Clock3} label="评论峰值时段" value={peakHour?.label || "-"} tone="mint" />
       </section>
 
@@ -520,3 +520,4 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     </main>
   );
 }
+

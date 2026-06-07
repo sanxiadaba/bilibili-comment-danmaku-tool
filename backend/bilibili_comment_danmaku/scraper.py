@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import http.cookiejar
 import json
 import os
@@ -8,7 +8,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .storage import save_to_sqlite
+from .storage import save_comments_to_sqlite
 from .url_utils import extract_bvid
 
 
@@ -254,7 +254,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
     seen_cursors = set()
     next_cursor = 0
     page_index = 0
-    api_all_count = None
+    api_comment_count = None
 
     while True:
         page_index += 1
@@ -273,7 +273,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
         data = client.request_json(build_url(endpoint, params))["data"]
         page_replies = collect_main_reply_candidates(data)
         cursor = data.get("cursor") or {}
-        api_all_count = cursor.get("all_count", api_all_count)
+        api_comment_count = cursor.get("all_count", api_comment_count)
 
         for reply in page_replies:
             rpid = reply.get("rpid_str") or str(reply.get("rpid"))
@@ -283,7 +283,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
 
         log(
             f"main page {page_index}: got={len(page_replies)} unique={len(replies)} "
-            f"all_count={api_all_count} next={cursor.get('next')} is_end={cursor.get('is_end')}"
+            f"all_count={api_comment_count} next={cursor.get('next')} is_end={cursor.get('is_end')}"
         )
 
         if cursor.get("is_end"):
@@ -295,7 +295,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
         next_cursor = next_value
         time.sleep(delay)
 
-    return replies, api_all_count
+    return replies, api_comment_count
 
 
 def collect_main_reply_candidates(data):
@@ -358,7 +358,7 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
 
 def build_threaded_output(main_replies, oid, client, delay, log):
     comments = []
-    flat_comments = []
+    comment_items = []
     child_fetch_summary = []
 
     for index, reply in enumerate(main_replies, 1):
@@ -393,8 +393,8 @@ def build_threaded_output(main_replies, oid, client, delay, log):
             "raw": reply,
         }
         comments.append(item)
-        flat_comments.append({"normalized": item["normalized"], "raw": reply})
-        flat_comments.extend(child_items)
+        comment_items.append({"normalized": item["normalized"], "raw": reply})
+        comment_items.extend(child_items)
 
         if isinstance(expected_count, int) and expected_count > 0:
             child_fetch_summary.append(
@@ -407,8 +407,8 @@ def build_threaded_output(main_replies, oid, client, delay, log):
             )
 
     comments.sort(key=sort_key)
-    flat_comments.sort(key=sort_key)
-    return comments, flat_comments, child_fetch_summary
+    comment_items.sort(key=sort_key)
+    return comments, comment_items, child_fetch_summary
 
 
 def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):
@@ -431,10 +431,10 @@ def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, 
     oid = video["aid"]
     log(f"video: bvid={bvid} aid={oid} title={video.get('title')}")
 
-    main_raw, api_all_count = fetch_main_replies(oid, client, mixin_key, delay, log)
-    comments, flat_comments, child_fetch_summary = build_threaded_output(main_raw, oid, client, delay, log)
-    expected_nested_reply_count = sum((reply.get("rcount") or 0) for reply in main_raw)
-    fetched_nested_reply_count = max(len(flat_comments) - len(comments), 0)
+    main_raw, api_comment_count = fetch_main_replies(oid, client, mixin_key, delay, log)
+    comments, comment_items, child_fetch_summary = build_threaded_output(main_raw, oid, client, delay, log)
+    expected_nested_comment_count = sum((reply.get("rcount") or 0) for reply in main_raw)
+    fetched_nested_comment_count = max(len(comment_items) - len(comments), 0)
 
     return {
         "metadata": {
@@ -444,25 +444,25 @@ def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, 
             "title": video.get("title"),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "sort": "ctime_ascending",
-            "api_all_count": api_all_count,
-            "top_level_count": len(comments),
-            "expected_nested_reply_count": expected_nested_reply_count,
-            "nested_reply_count": fetched_nested_reply_count,
-            "flat_total_count": len(flat_comments),
+            "api_comment_count": api_comment_count,
+            "top_level_comment_count": len(comments),
+            "expected_nested_comment_count": expected_nested_comment_count,
+            "nested_comment_count": fetched_nested_comment_count,
+            "comment_total_count": len(comment_items),
             "child_fetch_summary": child_fetch_summary,
             "notes": [
                 "comments contains top-level comments sorted by ctime ascending; each replies array is also sorted by ctime ascending",
-                "flat_comments contains all top-level and nested comments sorted globally by ctime ascending",
+                "comment_items contains all top-level and nested comments sorted globally by ctime ascending",
                 "raw Bilibili reply objects, cookies, and request headers are not written to the database",
             ],
         },
         "video_raw": video,
         "comments": comments,
-        "flat_comments": flat_comments,
+        "comment_items": comment_items,
     }
 
 
-def scrape_to_sqlite(video_ref, db_path="comments.db", cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):
+def scrape_comments_to_sqlite(video_ref, db_path="comment_danmaku.db", cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):
     output_data = scrape_comments(
         video_ref,
         cookie=cookie,
@@ -471,4 +471,5 @@ def scrape_to_sqlite(video_ref, db_path="comments.db", cookie="", cookie_file="c
         use_proxy=use_proxy,
         logger=logger,
     )
-    return save_to_sqlite(output_data, db_path)
+    return save_comments_to_sqlite(output_data, db_path)
+
