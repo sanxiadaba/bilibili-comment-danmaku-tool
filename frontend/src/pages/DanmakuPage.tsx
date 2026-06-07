@@ -191,7 +191,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-ink">
       <section className="border-b border-line bg-white">
-        <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6">
+        <div className="mx-auto grid max-w-[1800px] gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6 2xl:px-8">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
               <span className="inline-flex items-center gap-1">
@@ -245,19 +245,19 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
 
       {error && (
         <section className="border-b border-red-100 bg-red-50">
-          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-red-700 lg:px-6">{error}</div>
+          <div className="mx-auto max-w-[1800px] px-4 py-2 text-sm text-red-700 lg:px-6 2xl:px-8">{error}</div>
         </section>
       )}
 
       {message && !error && (
         <section className="border-b border-cyan-100 bg-cyan-50">
-          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-cyan-700 lg:px-6">{message}</div>
+          <div className="mx-auto max-w-[1800px] px-4 py-2 text-sm text-cyan-700 lg:px-6 2xl:px-8">{message}</div>
         </section>
       )}
 
       {isRefreshing && <ProgressBanner progress={danmakuProgress} fallback="正在重新抓取弹幕" />}
 
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-5 lg:px-6">
+      <section className="mx-auto grid max-w-[1800px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-5 lg:px-6 2xl:px-8">
         <StatTile icon={Sparkles} label="弹幕总数" value={totalCount} tone="amber" />
         <StatTile icon={Filter} label="当前匹配" value={sortedItems.length} tone="cyan" />
         <StatTile icon={Clock3} label="视频覆盖" value={formatProgress(danmaku?.metadata.max_progress)} tone="mint" />
@@ -265,7 +265,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
         <StatTile icon={Database} label="CID" value={danmaku?.metadata.cid || "-"} tone="amber" />
       </section>
 
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:px-6 2xl:grid-cols-[390px_minmax(0,1fr)_360px]">
+      <section className="mx-auto grid max-w-[1800px] gap-4 px-4 pb-6 lg:grid-cols-[380px_minmax(0,1fr)] lg:px-6 2xl:grid-cols-[400px_minmax(0,1fr)_440px] 2xl:px-8">
         <aside className="flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md border border-line bg-white shadow-soft lg:sticky lg:top-4">
           <div className="border-b border-line p-4">
             <div className="relative">

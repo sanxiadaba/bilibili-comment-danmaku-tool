@@ -245,7 +245,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-ink">
       <section className="border-b border-line bg-white">
-        <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-4 lg:grid-cols-[280px_minmax(0,1fr)_auto] lg:px-6">
+        <div className="mx-auto grid max-w-[1800px] gap-5 px-4 py-4 lg:grid-cols-[280px_minmax(0,1fr)_auto] lg:px-6 2xl:px-8">
           <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100">
             {data.video_raw.pic && (
               <img
@@ -318,7 +318,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
       {error && (
         <section className="border-b border-red-100 bg-red-50">
-          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-red-700 lg:px-6">
+          <div className="mx-auto max-w-[1800px] px-4 py-2 text-sm text-red-700 lg:px-6 2xl:px-8">
             刷新失败：{error}
           </div>
         </section>
@@ -326,7 +326,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
       {refreshMessage && !error && (
         <section className="border-b border-cyan-100 bg-cyan-50">
-          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-cyan-700 lg:px-6">
+          <div className="mx-auto max-w-[1800px] px-4 py-2 text-sm text-cyan-700 lg:px-6 2xl:px-8">
             {refreshMessage}
           </div>
         </section>
@@ -334,14 +334,14 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
       {isRefreshing && <ProgressBanner progress={commentProgress} fallback="正在重新抓取评论" />}
 
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-4 lg:px-6">
+      <section className="mx-auto grid max-w-[1800px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-4 lg:px-6 2xl:px-8">
         <StatTile icon={MessageCircle} label="评论档案" value={data.metadata.comment_total_count} tone="pink" />
         <StatTile icon={AlertTriangle} label="仍可见 / 未返回" value={`${activeCount} / ${deletedCount}`} tone="cyan" />
         <StatTile icon={ListTree} label="一级评论 / 楼中楼" value={`${data.metadata.top_level_comment_count} / ${data.metadata.nested_comment_count}`} tone="mint" />
         <StatTile icon={Clock3} label="评论峰值时段" value={peakHour?.label || "-"} tone="mint" />
       </section>
 
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:px-6 xl:grid-cols-[340px_minmax(420px,560px)_340px] xl:justify-center 2xl:grid-cols-[360px_minmax(460px,620px)_360px]">
+      <section className="mx-auto grid max-w-[1800px] gap-4 px-4 pb-6 lg:grid-cols-[380px_minmax(0,1fr)] lg:px-6 xl:grid-cols-[380px_minmax(0,1fr)_420px] 2xl:grid-cols-[400px_minmax(0,1fr)_460px] 2xl:px-8">
         <aside className="flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md border border-line bg-white shadow-soft lg:sticky lg:top-4">
           <div className="border-b border-line p-4">
             <div className="relative">
