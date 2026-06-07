@@ -104,8 +104,7 @@ git status --short --ignored
 构建配置：
 
 - `vite.config.ts`：Vite + React，开发代理 `/api -> http://127.0.0.1:8000`
-- `tsconfig.json`：前端源码 TypeScript 配置
-- `tsconfig.node.json`：Vite 配置文件 TypeScript 构建引用
+- `tsconfig.json`：前端源码和 Vite 配置 TypeScript 检查
 - `tailwind.config.ts`：主题色、阴影、字体
 - `postcss.config.js`：Tailwind + Autoprefixer
 
@@ -175,21 +174,25 @@ http://127.0.0.1:8000/
 │   └── storage.py                # SQLite schema、保存、读取、聚合
 ├── src/
 │   ├── main.tsx                  # React 挂载入口
-│   ├── App.tsx                   # 主应用、页面、图表、列表、详情
+│   ├── App.tsx                   # 极简路由入口
 │   ├── types.ts                  # 前后端数据契约 TypeScript 类型
 │   ├── styles.css                # Tailwind 入口和全局样式
+│   ├── api/                      # 前端 API 请求封装
+│   ├── hooks/                    # React hooks
+│   ├── pages/                    # 页面级组件
 │   ├── lib/
-│   │   └── utils.ts              # 评论过滤、排序、统计、格式化工具
-│   └── components/ui/
-│       ├── Avatar.tsx            # 头像，可跳转 B 站用户主页
-│       ├── Segmented.tsx         # 分段控制
-│       └── StatTile.tsx          # 统计卡片
+│   │   ├── utils.ts              # 评论过滤、排序、统计、格式化工具
+│   │   └── csv.ts                # CSV 导出转义
+│   └── components/
+│       ├── common.tsx            # 页面通用展示组件
+│       ├── comments/             # 评论列表、详情、图表组件
+│       ├── danmaku/              # 弹幕列表、详情、图表、工具
+│       └── ui/                   # 基础 UI 小组件
 ├── package.json
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
 ├── vite.config.ts
 ├── tsconfig.json
-├── tsconfig.node.json
 ├── tailwind.config.ts
 └── postcss.config.js
 ```
@@ -198,6 +201,8 @@ http://127.0.0.1:8000/
 
 ```text
 comments.db
+comments.db-shm
+comments.db-wal
 comments_legacy.db
 comments_before_deleted_restore_*.db
 cookie.txt
@@ -839,20 +844,20 @@ UI 文案应使用“本次未返回”而不是绝对的“已删除”。
 
 ### 12.5 单文件前端较大
 
-`src/App.tsx` 目前包含页面、组件、图表和工具函数，文件较大。
+`src/App.tsx` 是薄路由入口；页面和组件已经按领域拆分。
 
-可以重构，但要谨慎：
+后续继续重构时要谨慎：
 
 - 不要在功能修复时顺手大规模拆文件。
 - 如果要拆，应单独开重构分支。
 - 拆分前先保证现有行为有构建验证。
-- 拆分优先方向：
-  - `src/pages/VideoLibraryPage.tsx`
-  - `src/pages/VideoDetailPage.tsx`
-  - `src/pages/DanmakuPage.tsx`
-  - `src/components/comments/*`
-  - `src/components/danmaku/*`
-  - `src/components/charts/*`
+- 现有前端边界：
+  - `src/pages/*` 放页面状态和页面布局。
+  - `src/components/comments/*` 放评论领域展示。
+  - `src/components/danmaku/*` 放弹幕领域展示和弹幕工具。
+  - `src/components/common.tsx` 放跨页面通用组件。
+  - `src/api/client.ts` 放前端请求封装。
+  - `src/hooks/*` 放 React hooks。
 
 ## 13. 常见开发任务定位
 

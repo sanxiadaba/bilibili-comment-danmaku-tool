@@ -1,0 +1,405 @@
+import {
+  AlertTriangle,
+  BarChart3,
+  Clock3,
+  Database,
+  Download,
+  Eye,
+  ExternalLink,
+  Filter,
+  ListTree,
+  MessageCircle,
+  RefreshCcw,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  ThumbsUp,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchDanmakuData, refreshDanmakuData } from "../api/client";
+import { DanmakuColorList, DanmakuModeChart, DanmakuTimelineChart, RepeatedDanmakuList } from "../components/danmaku/DanmakuCharts";
+import { DanmakuDetail } from "../components/danmaku/DanmakuDetail";
+import { DanmakuListRow } from "../components/danmaku/DanmakuList";
+import { DanmakuPanel } from "../components/danmaku/DanmakuPanel";
+import {
+  buildDanmakuBuckets,
+  buildDanmakuColorStats,
+  buildDanmakuModeStats,
+  buildRepeatedDanmakuContent,
+  colorNumberToHex,
+  danmakuModeLabels,
+  danmakuSortLabels,
+  formatProgress,
+  getDanmakuModeGroup,
+  sortDanmakuItems,
+  type DanmakuModeFilter,
+  type DanmakuSortMode,
+} from "../components/danmaku/danmakuUtils";
+import { Panel, ProgressBanner } from "../components/common";
+import { Segmented } from "../components/ui/Segmented";
+import { StatTile } from "../components/ui/StatTile";
+import { useProgressPolling } from "../hooks/useProgressPolling";
+import { csvCell } from "../lib/csv";
+import { cn, formatFullDateTime, formatNumber } from "../lib/utils";
+import type { DanmakuData } from "../types";
+
+export function DanmakuPage({ bvid }: { bvid?: string }) {
+  const [danmaku, setDanmaku] = useState<DanmakuData | null>(null);
+  const [query, setQuery] = useState("");
+  const [sortMode, setSortMode] = useState<DanmakuSortMode>("progress_asc");
+  const [modeFilter, setModeFilter] = useState<DanmakuModeFilter>("all");
+  const [progressRange, setProgressRange] = useState(100);
+  const [selectedId, setSelectedId] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const danmakuProgress = useProgressPolling(isRefreshing, "danmaku");
+
+  const applyDanmakuPayload = useCallback((payload: DanmakuData) => {
+    setDanmaku(payload);
+    setSelectedId((current) => {
+      const currentExists = payload.items.some((item) => item.dmid === current);
+      return currentExists ? current : payload.items[0]?.dmid || "";
+    });
+  }, []);
+
+  const loadDanmaku = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const payload = await fetchDanmakuData(bvid);
+      applyDanmakuPayload(payload);
+      setMessage("");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [applyDanmakuPayload, bvid]);
+
+  useEffect(() => {
+    void loadDanmaku();
+  }, [loadDanmaku]);
+
+  const allItems = danmaku?.items || [];
+  const maxProgress = Math.max(0, danmaku?.metadata.max_progress || 0);
+  const progressLimit = maxProgress ? (maxProgress * progressRange) / 100 : 0;
+
+  const filteredItems = useMemo(() => {
+    const items = danmaku?.items || [];
+    const needle = query.trim().toLowerCase();
+    return items.filter((item) => {
+      if (modeFilter !== "all" && getDanmakuModeGroup(item.mode) !== modeFilter) return false;
+      if (progressLimit > 0 && item.progress > progressLimit) return false;
+      if (!needle) return true;
+      return (
+        item.content.toLowerCase().includes(needle) ||
+        item.dmid.toLowerCase().includes(needle) ||
+        String(item.color).includes(needle) ||
+        colorNumberToHex(item.color).toLowerCase().includes(needle)
+      );
+    });
+  }, [danmaku?.items, modeFilter, progressLimit, query]);
+
+  const sortedItems = useMemo(() => sortDanmakuItems(filteredItems, sortMode), [filteredItems, sortMode]);
+  const filteredBuckets = useMemo(() => buildDanmakuBuckets(filteredItems), [filteredItems]);
+  const modeStats = useMemo(() => buildDanmakuModeStats(filteredItems), [filteredItems]);
+  const colorStats = useMemo(() => buildDanmakuColorStats(filteredItems), [filteredItems]);
+  const repeatedContent = useMemo(() => buildRepeatedDanmakuContent(filteredItems), [filteredItems]);
+  const peakBucket = useMemo(() => {
+    return [...filteredBuckets].sort((a, b) => b.count - a.count)[0];
+  }, [filteredBuckets]);
+  const selectedItem =
+    (selectedId && allItems.find((item) => item.dmid === selectedId)) || sortedItems[0] || allItems[0] || null;
+
+  useEffect(() => {
+    if (!sortedItems.length) {
+      setSelectedId("");
+      return;
+    }
+    setSelectedId((current) => (sortedItems.some((item) => item.dmid === current) ? current : sortedItems[0].dmid));
+  }, [sortedItems]);
+
+  async function refreshCurrentDanmaku() {
+    setIsRefreshing(true);
+    setError("");
+    setMessage("正在重新抓取弹幕");
+    try {
+      const payload = await refreshDanmakuData(danmaku?.metadata.bvid || bvid);
+      applyDanmakuPayload(payload);
+      setMessage(
+        payload.refresh?.warning ||
+          `已刷新弹幕：本次抓到 ${payload.refresh?.scraped_count ?? payload.metadata.total_count} 条，档案共 ${
+            payload.metadata.total_count
+          } 条`,
+      );
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setMessage("");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  function exportDanmaku() {
+    if (!danmaku) return;
+    const header = ["progress", "time", "dmid", "mode", "font_size", "color", "like_count", "is_up_owner", "ctime", "content"];
+    const rows = sortedItems.map((item) => [
+      item.progress,
+      formatProgress(item.progress),
+      item.dmid,
+      item.mode,
+      item.font_size,
+      colorNumberToHex(item.color),
+      item.like_count || 0,
+      item.is_up_owner ? "yes" : "no",
+      item.ctime,
+      item.content,
+    ]);
+    const csv = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+    const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `danmaku-${danmaku.metadata.bvid}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function resetDanmakuFilters() {
+    setQuery("");
+    setSortMode("progress_asc");
+    setModeFilter("all");
+    setProgressRange(100);
+  }
+
+  if (isLoading && !danmaku) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#f4f7fb]">
+        <div className="flex items-center gap-3 rounded-md border border-line bg-white px-5 py-4 text-sm text-muted shadow-soft">
+          <RefreshCcw className="animate-spin" size={18} aria-hidden="true" />
+          正在载入弹幕数据
+        </div>
+      </main>
+    );
+  }
+
+  const totalCount = danmaku?.metadata.total_count ?? 0;
+  const fetchedAt = danmaku?.metadata.fetched_at ? formatFullDateTime(danmaku.metadata.fetched_at) : "-";
+
+  return (
+    <main className="min-h-screen bg-[#f4f7fb] text-ink">
+      <section className="border-b border-line bg-white">
+        <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
+              <span className="inline-flex items-center gap-1">
+                <Sparkles size={15} aria-hidden="true" />
+                Bilibili 弹幕档案
+              </span>
+              <span>{danmaku?.metadata.bvid || bvid}</span>
+              <span>CID {danmaku?.metadata.cid || "-"}</span>
+              <span>{fetchedAt}</span>
+            </div>
+            <h1 className="mt-2 break-words text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
+              {danmaku?.metadata.title || "弹幕数据"}
+            </h1>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 self-center lg:flex-col lg:items-stretch">
+            <a
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              href="/"
+            >
+              <Database size={16} aria-hidden="true" />
+              视频库
+            </a>
+            <a
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              href={`/video/${danmaku?.metadata.bvid || bvid || ""}`}
+            >
+              <MessageCircle size={16} aria-hidden="true" />
+              评论页
+            </a>
+            <button
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              type="button"
+              onClick={refreshCurrentDanmaku}
+              disabled={isRefreshing}
+            >
+              <RefreshCcw className={cn(isRefreshing && "animate-spin")} size={16} aria-hidden="true" />
+              {isRefreshing ? "抓取中" : "刷新弹幕"}
+            </button>
+            <a
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+              href={`https://www.bilibili.com/video/${danmaku?.metadata.bvid || bvid || ""}`}
+              rel="noreferrer"
+              target="_blank"
+            >
+              <ExternalLink size={16} aria-hidden="true" />
+              打开视频
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {error && (
+        <section className="border-b border-red-100 bg-red-50">
+          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-red-700 lg:px-6">{error}</div>
+        </section>
+      )}
+
+      {message && !error && (
+        <section className="border-b border-cyan-100 bg-cyan-50">
+          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-cyan-700 lg:px-6">{message}</div>
+        </section>
+      )}
+
+      {isRefreshing && <ProgressBanner progress={danmakuProgress} fallback="正在重新抓取弹幕" />}
+
+      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-5 lg:px-6">
+        <StatTile icon={Sparkles} label="弹幕总数" value={totalCount} tone="amber" />
+        <StatTile icon={Filter} label="当前匹配" value={sortedItems.length} tone="cyan" />
+        <StatTile icon={Clock3} label="视频覆盖" value={formatProgress(danmaku?.metadata.max_progress)} tone="mint" />
+        <StatTile icon={BarChart3} label="峰值片段" value={peakBucket?.label || "-"} tone="pink" />
+        <StatTile icon={Database} label="CID" value={danmaku?.metadata.cid || "-"} tone="amber" />
+      </section>
+
+      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:px-6 2xl:grid-cols-[390px_minmax(0,1fr)_360px]">
+        <aside className="flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md border border-line bg-white shadow-soft lg:sticky lg:top-4">
+          <div className="border-b border-line p-4">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={17} />
+              <input
+                className="h-10 w-full rounded-md border border-line bg-white pl-10 pr-3 text-sm outline-none transition focus:border-bilibili focus:ring-2 focus:ring-pink-100"
+                placeholder="搜索弹幕、dmid 或颜色"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Segmented
+                ariaLabel="弹幕模式"
+                value={modeFilter}
+                options={[
+                  { label: "全部", value: "all" },
+                  { label: "滚动", value: "scroll" },
+                  { label: "顶部", value: "top" },
+                  { label: "底部", value: "bottom" },
+                  { label: "其他", value: "other" },
+                ]}
+                onChange={setModeFilter}
+              />
+              <button
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-muted transition hover:border-ink hover:text-ink"
+                type="button"
+                onClick={resetDanmakuFilters}
+              >
+                <RefreshCcw size={15} aria-hidden="true" />
+                重置
+              </button>
+              <button
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-muted transition hover:border-ink hover:text-ink disabled:opacity-60"
+                type="button"
+                onClick={exportDanmaku}
+                disabled={!danmaku}
+              >
+                <Download size={15} aria-hidden="true" />
+                导出
+              </button>
+            </div>
+
+            <label className="mt-3 flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
+              <SlidersHorizontal size={15} aria-hidden="true" />
+              <select
+                className="min-w-0 flex-1 truncate bg-transparent text-ink outline-none"
+                value={sortMode}
+                onChange={(event) => setSortMode(event.target.value as DanmakuSortMode)}
+              >
+                {Object.entries(danmakuSortLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mt-3 block text-sm text-muted">
+              <span className="mb-2 flex items-center justify-between">
+                <span className="inline-flex items-center gap-2">
+                  <Clock3 size={15} aria-hidden="true" />
+                  视频进度范围
+                </span>
+                <span className="font-medium text-ink">
+                  00:00 - {formatProgress(progressLimit || maxProgress)}
+                </span>
+              </span>
+              <input
+                className="w-full accent-bilibili"
+                max={100}
+                min={1}
+                type="range"
+                value={progressRange}
+                onChange={(event) => setProgressRange(Number(event.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="flex items-center justify-between border-b border-line px-4 py-3 text-sm">
+            <span className="inline-flex items-center gap-2 font-medium text-ink">
+              <Sparkles size={16} aria-hidden="true" />
+              匹配弹幕
+            </span>
+            <span className="text-muted">{formatNumber(sortedItems.length)}</span>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            {sortedItems.map((item) => (
+              <DanmakuListRow
+                active={selectedItem?.dmid === item.dmid}
+                item={item}
+                key={item.dmid}
+                onSelect={() => setSelectedId(item.dmid)}
+              />
+            ))}
+            {sortedItems.length === 0 && (
+              <div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>
+            )}
+          </div>
+        </aside>
+
+        <section className="grid min-w-0 gap-4">
+          <Panel icon={BarChart3} title="视频时间分布" action={`${formatNumber(sortedItems.length)} / ${formatNumber(totalCount)}`}>
+            <DanmakuTimelineChart allBuckets={danmaku?.buckets || []} filteredBuckets={filteredBuckets} />
+          </Panel>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Panel icon={Sparkles} title="模式分布">
+              <DanmakuModeChart stats={modeStats} total={filteredItems.length} />
+            </Panel>
+            <Panel icon={Eye} title="颜色分布">
+              <DanmakuColorList colors={colorStats} />
+            </Panel>
+          </div>
+
+          <Panel icon={ListTree} title="高频内容">
+            <RepeatedDanmakuList items={repeatedContent} onSelect={(item) => setSelectedId(item.sample.dmid)} />
+          </Panel>
+
+          <Panel icon={Sparkles} title="弹幕明细" action="全量可滚动">
+            <DanmakuPanel danmaku={danmaku} items={sortedItems} compact />
+          </Panel>
+        </section>
+
+        <aside className="min-w-0 overflow-hidden rounded-md border border-line bg-white shadow-soft lg:col-span-2 lg:min-h-[720px] 2xl:col-span-1">
+          {selectedItem ? (
+            <DanmakuDetail item={selectedItem} />
+          ) : (
+            <div className="p-6 text-sm text-muted">暂无选中弹幕</div>
+          )}
+        </aside>
+      </section>
+    </main>
+  );
+}
