@@ -453,13 +453,39 @@ class ScraperPerformanceTests(unittest.TestCase):
             scraper.random.uniform = original_uniform
 
         self.assertEqual(result, {"data": {"ok": True}})
-        self.assertEqual(sleeps, [185])
-        self.assertEqual(client.backoff.blocks, [185])
+        self.assertEqual(sleeps, [17])
+        self.assertEqual(client.backoff.blocks, [17])
         self.assertEqual(len(client.urls), 2)
         self.assertIn("wts=1000", client.urls[0])
         self.assertIn("wts=1030", client.urls[1])
         self.assertNotEqual(client.urls[0], client.urls[1])
         self.assertNotIn("w_rid=" + client.urls[0].split("w_rid=", 1)[1], client.urls[1])
+
+    def test_retry_delay_distinguishes_session_retry_from_rate_limit(self):
+        original_uniform = scraper.random.uniform
+        try:
+            scraper.random.uniform = lambda _start, _end: 5
+
+            self.assertEqual(scraper.retry_delay_seconds(1, status=412), 17)
+            self.assertEqual(scraper.retry_delay_seconds(1, status=429), 185)
+            self.assertEqual(scraper.retry_delay_seconds(1, api_code=-352), 185)
+        finally:
+            scraper.random.uniform = original_uniform
+
+    def test_client_seeds_cookie_jar_from_cookie_header(self):
+        client = scraper.BilibiliClient(
+            scraper.make_headers(BVID, "SESSDATA=session-value; bili_jct=csrf-value"),
+            use_proxy=False,
+        )
+        cookies = {cookie.name: cookie.value for cookie in client.cookie_jar}
+
+        self.assertNotIn("Cookie", client.headers)
+        self.assertEqual(cookies["SESSDATA"], "session-value")
+        self.assertEqual(cookies["bili_jct"], "csrf-value")
+
+    def test_cookie_browser_identifier_detection(self):
+        self.assertTrue(scraper.cookie_has_browser_identifiers("SESSDATA=a; buvid3=b; bili_jct=c"))
+        self.assertFalse(scraper.cookie_has_browser_identifiers("SESSDATA=a; bili_jct=c"))
 
     def test_api_block_code_is_treated_as_blocked_request(self):
         exc = scraper.BilibiliRequestError("blocked", api_code=-352, url="https://example.test")

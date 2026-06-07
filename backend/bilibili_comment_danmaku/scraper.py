@@ -27,8 +27,12 @@ CHILD_FULL_DELAY_EVERY_PAGES = 10
 MAX_CHILD_FETCH_WORKERS = 4
 BLOCKED_HTTP_STATUSES = {412, 429}
 BLOCKED_API_CODES = {-352}
-BLOCKED_RETRY_DELAYS = (180, 600, 1800)
-BLOCKED_RETRY_JITTER_SECONDS = (15, 90)
+SESSION_RETRY_HTTP_STATUSES = {412}
+RATE_LIMIT_HTTP_STATUSES = {429}
+SESSION_RETRY_DELAYS = (12, 45, 120)
+SESSION_RETRY_JITTER_SECONDS = (2, 8)
+RATE_LIMIT_RETRY_DELAYS = (180, 600, 1800)
+RATE_LIMIT_RETRY_JITTER_SECONDS = (15, 90)
 GLOBAL_MIN_REQUEST_INTERVAL_SECONDS = 0.85
 REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
 SIGNED_REQUEST_RETRIES = 3
@@ -100,6 +104,7 @@ MIXIN_KEY_ENC_TAB = [
     52,
 ]
 WBI_BAD_CHARS = "!'()*"
+BROWSER_ID_COOKIE_NAMES = {"buvid3", "buvid4", "buvid_fp", "b_nut"}
 
 
 class BilibiliRequestError(RuntimeError):
@@ -147,10 +152,13 @@ GLOBAL_REQUEST_BACKOFF = RequestBackoff()
 
 class BilibiliClient:
     def __init__(self, headers, use_proxy=False, backoff=None):
-        self.headers = headers
+        self.headers = dict(headers)
         self.use_proxy = use_proxy
         self.backoff = backoff or GLOBAL_REQUEST_BACKOFF
         self.cookie_jar = http.cookiejar.CookieJar()
+        cookie_header = self.headers.pop("Cookie", "")
+        if cookie_header:
+            seed_cookie_jar(self.cookie_jar, cookie_header)
         proxy_handler = urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({})
         self.opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPCookieProcessor(self.cookie_jar))
 
@@ -237,11 +245,22 @@ class BilibiliClient:
             cause=last_error,
         )
 
-    def warmup(self, bvid):
+    def warmup(self, bvid, logger=None):
+        log = logger or (lambda _message: None)
         req = urllib.request.Request(f"https://www.bilibili.com/video/{bvid}", headers=self.headers)
-        self.backoff.wait()
-        with self.opener.open(req, timeout=30) as resp:
-            resp.read(1024)
+        for attempt in range(1, 4):
+            self.backoff.wait()
+            try:
+                with self.opener.open(req, timeout=30) as resp:
+                    resp.read(1024)
+                return
+            except urllib.error.HTTPError as exc:
+                if exc.code not in BLOCKED_HTTP_STATUSES or attempt == 3:
+                    raise
+                delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
+                self.backoff.block_for(delay)
+                log(f"warning: warmup got HTTP {exc.code}; cooling down for {delay:.0f}s before retry")
+                time.sleep(delay)
 
 
 def load_cookie_file(path):
@@ -271,10 +290,55 @@ def make_headers(bvid, cookie=""):
         "Referer": f"https://www.bilibili.com/video/{bvid}",
         "Origin": "https://www.bilibili.com",
         "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
     }
     if cookie:
         headers["Cookie"] = cookie
     return headers
+
+
+def seed_cookie_jar(cookie_jar, cookie_header):
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        if not name:
+            continue
+        cookie_jar.set_cookie(
+            http.cookiejar.Cookie(
+                version=0,
+                name=name.strip(),
+                value=value.strip(),
+                port=None,
+                port_specified=False,
+                domain=".bilibili.com",
+                domain_specified=True,
+                domain_initial_dot=True,
+                path="/",
+                path_specified=True,
+                secure=False,
+                expires=None,
+                discard=True,
+                comment=None,
+                comment_url=None,
+                rest={},
+                rfc2109=False,
+            )
+        )
+
+
+def cookie_has_browser_identifiers(cookie_header):
+    names = set()
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _value = part.split("=", 1)
+        names.add(name.strip())
+    return bool(names & BROWSER_ID_COOKIE_NAMES)
 
 
 def build_url(endpoint, params):
@@ -303,10 +367,15 @@ def sign_wbi_params(params, mixin_key):
 
 
 def retry_delay_seconds(attempt, status=None, api_code=None):
-    if status in BLOCKED_HTTP_STATUSES or api_code in BLOCKED_API_CODES:
-        index = min(max(attempt, 1), len(BLOCKED_RETRY_DELAYS)) - 1
-        base_delay = BLOCKED_RETRY_DELAYS[index]
-        jitter = random.uniform(*BLOCKED_RETRY_JITTER_SECONDS)
+    if status in SESSION_RETRY_HTTP_STATUSES:
+        index = min(max(attempt, 1), len(SESSION_RETRY_DELAYS)) - 1
+        base_delay = SESSION_RETRY_DELAYS[index]
+        jitter = random.uniform(*SESSION_RETRY_JITTER_SECONDS)
+        return base_delay + jitter
+    if status in RATE_LIMIT_HTTP_STATUSES or api_code in BLOCKED_API_CODES:
+        index = min(max(attempt, 1), len(RATE_LIMIT_RETRY_DELAYS)) - 1
+        base_delay = RATE_LIMIT_RETRY_DELAYS[index]
+        jitter = random.uniform(*RATE_LIMIT_RETRY_JITTER_SECONDS)
         return base_delay + jitter
     return min(2 * attempt, 8)
 
@@ -447,9 +516,9 @@ def sort_key(item):
     return (ctime if isinstance(ctime, int) else -1, str(rpid))
 
 
-def fetch_video_info(bvid, client):
+def fetch_video_info(bvid, client, log=None):
     url = build_url("https://api.bilibili.com/x/web-interface/view", {"bvid": bvid})
-    return client.request_json(url)["data"]
+    return client.request_json(url, logger=log)["data"]
 
 
 def fetch_main_replies(oid, client, mixin_key, delay, log):
@@ -715,9 +784,12 @@ def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, 
         log("warning: no cookie provided; Bilibili may only return a partial comment list")
 
     client = BilibiliClient(make_headers(bvid, resolved_cookie), use_proxy=use_proxy)
-    client.warmup(bvid)
+    if cookie_has_browser_identifiers(resolved_cookie):
+        log("warmup: skipped because cookie already has browser identifiers")
+    else:
+        client.warmup(bvid, logger=log)
     mixin_key = get_wbi_mixin_key(client, log)
-    video = fetch_video_info(bvid, client)
+    video = fetch_video_info(bvid, client, log)
     oid = video["aid"]
     log(f"video: bvid={bvid} aid={oid} title={video.get('title')}")
 
