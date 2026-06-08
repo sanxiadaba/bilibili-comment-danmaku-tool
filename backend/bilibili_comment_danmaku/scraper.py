@@ -35,6 +35,8 @@ RATE_LIMIT_RETRY_DELAYS = (180, 600, 1800)
 RATE_LIMIT_RETRY_JITTER_SECONDS = (15, 90)
 GLOBAL_MIN_REQUEST_INTERVAL_SECONDS = 0.85
 REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
+SLOW_REQUEST_WARN_SECONDS = 12
+VERY_SLOW_REQUEST_COOLDOWN_SECONDS = (30, 90)
 SIGNED_REQUEST_RETRIES = 3
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
@@ -130,6 +132,7 @@ class RequestBackoff:
         self.interval_jitter = interval_jitter
 
     def wait(self):
+        total_sleep = 0
         while True:
             with self.lock:
                 now = time.monotonic()
@@ -137,7 +140,8 @@ class RequestBackoff:
                 if sleep_for <= 0:
                     spacing = self.min_interval + random.uniform(*self.interval_jitter)
                     self.next_request_at = now + max(spacing, 0)
-                    return
+                    return total_sleep
+            total_sleep += sleep_for
             time.sleep(sleep_for)
 
     def block_for(self, seconds):
@@ -172,11 +176,16 @@ class BilibiliClient:
         log = logger or (lambda _message: None)
         last_error = None
         for attempt in range(1, retries + 1):
+            request_elapsed = 0
             try:
-                self.backoff.wait()
+                backoff_wait = self.backoff.wait()
+                log_backoff_wait(log, url, backoff_wait, attempt, retries)
+                started_at = time.perf_counter()
                 req = urllib.request.Request(url, headers=self.headers)
                 with self.opener.open(req, timeout=timeout) as resp:
                     body = resp.read().decode("utf-8")
+                request_elapsed = time.perf_counter() - started_at
+                log_slow_request(log, url, request_elapsed, attempt, retries, self.backoff)
                 data = json.loads(body)
                 if data.get("code") != 0 and not allow_api_error:
                     api_code = data.get("code")
@@ -189,6 +198,8 @@ class BilibiliClient:
                     raise RuntimeError(f"API code={data.get('code')} message={data.get('message')}")
                 return data
             except urllib.error.HTTPError as exc:
+                if request_elapsed == 0:
+                    request_elapsed = time.perf_counter() - started_at
                 last_error = exc
                 retry_after = retry_after_seconds(exc)
                 if exc.code in BLOCKED_HTTP_STATUSES:
@@ -201,10 +212,13 @@ class BilibiliClient:
                     self.backoff.block_for(delay)
                     log(
                         f"warning: request got HTTP {exc.code}; "
+                        f"endpoint={request_endpoint_label(url)} elapsed={request_elapsed:.1f}s "
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
                 time.sleep(delay)
             except BilibiliRequestError as exc:
+                if request_elapsed == 0:
+                    request_elapsed = time.perf_counter() - started_at
                 last_error = exc
                 if is_blocked_request_error(exc):
                     delay = max(
@@ -219,6 +233,7 @@ class BilibiliClient:
                     self.backoff.block_for(delay)
                     log(
                         f"warning: request got {blocked_error_label(exc)}; "
+                        f"endpoint={request_endpoint_label(url)} elapsed={request_elapsed:.1f}s "
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
                 time.sleep(delay)
@@ -249,7 +264,8 @@ class BilibiliClient:
         log = logger or (lambda _message: None)
         req = urllib.request.Request(f"https://www.bilibili.com/video/{bvid}", headers=self.headers)
         for attempt in range(1, 4):
-            self.backoff.wait()
+            backoff_wait = self.backoff.wait()
+            log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
             try:
                 with self.opener.open(req, timeout=30) as resp:
                     resp.read(1024)
@@ -391,6 +407,39 @@ def retry_after_seconds(error):
         return max(int(value), 0)
     except ValueError:
         return None
+
+
+def request_endpoint_label(url):
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.strip("/")
+    if not path:
+        return parsed.netloc or "unknown"
+    return path
+
+
+def log_slow_request(log, url, elapsed, attempt, retries, backoff):
+    if elapsed < SLOW_REQUEST_WARN_SECONDS:
+        return
+    cooldown = 0
+    if elapsed >= 60:
+        cooldown = random.uniform(*VERY_SLOW_REQUEST_COOLDOWN_SECONDS)
+        backoff.block_for(cooldown)
+    message = (
+        f"warning: slow request endpoint={request_endpoint_label(url)} "
+        f"elapsed={elapsed:.1f}s attempt={attempt}/{retries}"
+    )
+    if cooldown:
+        message += f" adaptive_cooldown={cooldown:.0f}s"
+    log(message)
+
+
+def log_backoff_wait(log, url, elapsed, attempt, retries):
+    if elapsed < SLOW_REQUEST_WARN_SECONDS:
+        return
+    log(
+        f"warning: backoff wait endpoint={request_endpoint_label(url)} "
+        f"elapsed={elapsed:.1f}s attempt={attempt}/{retries}"
+    )
 
 
 def is_blocked_request_error(exc):

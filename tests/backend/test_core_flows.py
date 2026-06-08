@@ -472,6 +472,16 @@ class ScraperPerformanceTests(unittest.TestCase):
         finally:
             scraper.random.uniform = original_uniform
 
+    def test_retry_after_seconds_reads_header(self):
+        class FakeError:
+            headers = {"Retry-After": "123"}
+
+        class BadHeaderError:
+            headers = {"Retry-After": "later"}
+
+        self.assertEqual(scraper.retry_after_seconds(FakeError()), 123)
+        self.assertIsNone(scraper.retry_after_seconds(BadHeaderError()))
+
     def test_client_seeds_cookie_jar_from_cookie_header(self):
         client = scraper.BilibiliClient(
             scraper.make_headers(BVID, "SESSDATA=session-value; bili_jct=csrf-value"),

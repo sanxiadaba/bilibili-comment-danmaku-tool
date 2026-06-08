@@ -16,6 +16,8 @@ from .scraper import (
     DEFAULT_PROXY,
     GLOBAL_REQUEST_BACKOFF,
     BilibiliRequestError,
+    log_backoff_wait,
+    log_slow_request,
     retry_after_seconds,
     retry_delay_seconds,
 )
@@ -47,11 +49,16 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
     for attempt in range(1, 4):
-        GLOBAL_REQUEST_BACKOFF.wait()
+        backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+        log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
+        started_at = time.perf_counter()
         try:
             with opener.open(req, timeout=30) as resp:
-                return decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+                body = decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+            log_slow_request(log, req.full_url, time.perf_counter() - started_at, attempt, 3, GLOBAL_REQUEST_BACKOFF)
+            return body
         except urllib.error.HTTPError as exc:
+            elapsed = time.perf_counter() - started_at
             if exc.code not in BLOCKED_HTTP_STATUSES:
                 raise
             delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
@@ -63,7 +70,10 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
                     retry_after=retry_after_seconds(exc),
                 ) from exc
             GLOBAL_REQUEST_BACKOFF.block_for(delay)
-            log(f"danmaku: XML got HTTP {exc.code}; cooling down for {delay:.0f}s before retry")
+            log(
+                f"danmaku: XML got HTTP {exc.code}; elapsed={elapsed:.1f}s "
+                f"cooling down for {delay:.0f}s before retry"
+            )
             time.sleep(delay)
     raise BilibiliRequestError(f"danmaku XML request failed cid={cid}")
 
@@ -132,11 +142,22 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
         opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
         payload = None
         for attempt in range(1, 4):
-            GLOBAL_REQUEST_BACKOFF.wait()
+            backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+            log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
+            started_at = time.perf_counter()
             try:
                 with opener.open(req, timeout=30) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
+                log_slow_request(
+                    log,
+                    req.full_url,
+                    time.perf_counter() - started_at,
+                    attempt,
+                    3,
+                    GLOBAL_REQUEST_BACKOFF,
+                )
             except urllib.error.HTTPError as exc:
+                elapsed = time.perf_counter() - started_at
                 if exc.code not in BLOCKED_HTTP_STATUSES:
                     raise
                 delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
@@ -148,7 +169,10 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
                         retry_after=retry_after_seconds(exc),
                     ) from exc
                 GLOBAL_REQUEST_BACKOFF.block_for(delay)
-                log(f"danmaku likes: got HTTP {exc.code}; cooling down for {delay:.0f}s before retry")
+                log(
+                    f"danmaku likes: got HTTP {exc.code}; elapsed={elapsed:.1f}s "
+                    f"cooling down for {delay:.0f}s before retry"
+                )
                 time.sleep(delay)
                 continue
 
