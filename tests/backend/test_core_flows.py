@@ -547,6 +547,103 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(cooldown, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0])
         self.assertEqual(blocked_for, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0])
 
+    def test_repeated_slow_limit_escalates_cooldown_during_recovery_window(self):
+        original_uniform = scraper.random.uniform
+        original_monotonic = scraper.time.monotonic
+        try:
+            scraper.random.uniform = lambda start, _end: start
+            now = [1000]
+            scraper.time.monotonic = lambda: now[0]
+            backoff = scraper.RequestBackoff()
+
+            backoff.note_slow_request(120)
+            now[0] += 100
+            backoff.note_slow_request(120)
+            now[0] += 100
+            first_cooldown = backoff.note_slow_request(120)
+            now[0] += scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0] + 60
+            second_cooldown = backoff.note_slow_request(120)
+        finally:
+            scraper.random.uniform = original_uniform
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(first_cooldown, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0])
+        self.assertEqual(second_cooldown, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0] * 2)
+        self.assertEqual(backoff.slow_limit_level, 2)
+
+    def test_fast_requests_reduce_slow_limit_level_after_recovery(self):
+        backoff = scraper.RequestBackoff()
+        backoff.slow_limit_level = 2
+
+        for _index in range(scraper.SLOW_LIMIT_FAST_RECOVERY_COUNT):
+            backoff.note_fast_request(1)
+
+        self.assertEqual(backoff.slow_limit_level, 1)
+        self.assertEqual(backoff.fast_request_count, 0)
+
+    def test_wbi_mixin_key_cache_reuses_recent_key(self):
+        calls = []
+
+        class FakeClient:
+            def request_json(self, _url, **_kwargs):
+                calls.append(_url)
+                return {
+                    "code": 0,
+                    "data": {
+                        "isLogin": True,
+                        "wbi_img": {
+                            "img_url": "https://i0.hdslb.com/bfs/wbi/" + ("a" * 64) + ".png",
+                            "sub_url": "https://i0.hdslb.com/bfs/wbi/" + ("b" * 64) + ".png",
+                        },
+                    },
+                }
+
+        original_time = scraper.time.time
+        try:
+            scraper.time.time = lambda: 1000
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            first = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
+            second = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
+        finally:
+            scraper.time.time = original_time
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 1)
+
+    def test_wbi_mixin_key_force_refresh_bypasses_cache(self):
+        calls = []
+
+        class FakeClient:
+            def request_json(self, _url, **_kwargs):
+                calls.append(_url)
+                return {
+                    "code": 0,
+                    "data": {
+                        "isLogin": True,
+                        "wbi_img": {
+                            "img_url": "https://i0.hdslb.com/bfs/wbi/" + ("c" * 64) + ".png",
+                            "sub_url": "https://i0.hdslb.com/bfs/wbi/" + ("d" * 64) + ".png",
+                        },
+                    },
+                }
+
+        original_time = scraper.time.time
+        try:
+            scraper.time.time = lambda: 1000
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = "cached-key"
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 2000
+            value = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None, force_refresh=True)
+        finally:
+            scraper.time.time = original_time
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+
+        self.assertNotEqual(value, "cached-key")
+        self.assertEqual(len(calls), 1)
+
     def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
         class FailingClient:
             def request_json(self, _url, **_kwargs):

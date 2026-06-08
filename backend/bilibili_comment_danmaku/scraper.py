@@ -42,6 +42,10 @@ SLOW_LIMIT_MIN_ELAPSED_SECONDS = 90
 SLOW_LIMIT_WINDOW_SECONDS = 900
 SLOW_LIMIT_TRIGGER_COUNT = 3
 SLOW_LIMIT_COOLDOWN_SECONDS = (900, 1800)
+SLOW_LIMIT_RECOVERY_WINDOW_SECONDS = 3600
+SLOW_LIMIT_MAX_LEVEL = 4
+SLOW_LIMIT_MAX_COOLDOWN_SECONDS = 21600
+SLOW_LIMIT_FAST_RECOVERY_COUNT = 8
 SIGNED_REQUEST_RETRIES = 3
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
@@ -112,6 +116,7 @@ MIXIN_KEY_ENC_TAB = [
 ]
 WBI_BAD_CHARS = "!'()*"
 BROWSER_ID_COOKIE_NAMES = {"buvid3", "buvid4", "buvid_fp", "b_nut"}
+WBI_MIXIN_KEY_TTL_SECONDS = 1800
 
 
 class BilibiliRequestError(RuntimeError):
@@ -134,6 +139,9 @@ class RequestBackoff:
         self.blocked_until = 0
         self.next_request_at = 0
         self.slow_request_times = []
+        self.slow_limit_level = 0
+        self.last_slow_limit_at = 0
+        self.fast_request_count = 0
         self.min_interval = min_interval
         self.interval_jitter = interval_jitter
 
@@ -169,19 +177,52 @@ class RequestBackoff:
 
         with self.lock:
             now = time.monotonic()
+            self.fast_request_count = 0
             cutoff = now - window
             self.slow_request_times = [event_at for event_at in self.slow_request_times if event_at >= cutoff]
             self.slow_request_times.append(now)
-            if len(self.slow_request_times) < trigger_count:
+            in_recovery_window = (
+                self.last_slow_limit_at > 0
+                and now - self.last_slow_limit_at <= SLOW_LIMIT_RECOVERY_WINDOW_SECONDS
+            )
+            if len(self.slow_request_times) < trigger_count and not in_recovery_window:
                 return 0
 
-            cooldown = random.uniform(*SLOW_LIMIT_COOLDOWN_SECONDS)
+            self.slow_limit_level = min(self.slow_limit_level + 1, SLOW_LIMIT_MAX_LEVEL)
+            multiplier = 2 ** max(self.slow_limit_level - 1, 0)
+            cooldown_min = min(SLOW_LIMIT_COOLDOWN_SECONDS[0] * multiplier, SLOW_LIMIT_MAX_COOLDOWN_SECONDS)
+            cooldown_max = min(SLOW_LIMIT_COOLDOWN_SECONDS[1] * multiplier, SLOW_LIMIT_MAX_COOLDOWN_SECONDS)
+            cooldown = random.uniform(cooldown_min, max(cooldown_min, cooldown_max))
             self.blocked_until = max(self.blocked_until, now + cooldown)
+            self.last_slow_limit_at = now
             self.slow_request_times.clear()
             return cooldown
 
+    def note_fast_request(
+        self,
+        elapsed,
+        *,
+        threshold=SLOW_LIMIT_MIN_ELAPSED_SECONDS,
+        recovery_count=SLOW_LIMIT_FAST_RECOVERY_COUNT,
+    ):
+        if elapsed >= threshold:
+            return
+
+        with self.lock:
+            if self.slow_limit_level <= 0:
+                return
+            self.fast_request_count += 1
+            if self.fast_request_count >= recovery_count:
+                self.slow_limit_level -= 1
+                self.fast_request_count = 0
+
 
 GLOBAL_REQUEST_BACKOFF = RequestBackoff()
+WBI_MIXIN_KEY_CACHE = {
+    "value": None,
+    "expires_at": 0,
+}
+WBI_MIXIN_KEY_CACHE_LOCK = threading.Lock()
 
 
 class BilibiliClient:
@@ -412,6 +453,22 @@ def sign_wbi_params(params, mixin_key):
     return cleaned
 
 
+def get_cached_wbi_mixin_key():
+    now = time.time()
+    with WBI_MIXIN_KEY_CACHE_LOCK:
+        value = WBI_MIXIN_KEY_CACHE.get("value")
+        expires_at = WBI_MIXIN_KEY_CACHE.get("expires_at") or 0
+        if value and expires_at > now:
+            return value
+    return None
+
+
+def remember_wbi_mixin_key(mixin_key):
+    with WBI_MIXIN_KEY_CACHE_LOCK:
+        WBI_MIXIN_KEY_CACHE["value"] = mixin_key
+        WBI_MIXIN_KEY_CACHE["expires_at"] = time.time() + WBI_MIXIN_KEY_TTL_SECONDS
+
+
 def retry_delay_seconds(attempt, status=None, api_code=None):
     if status in SESSION_RETRY_HTTP_STATUSES:
         index = min(max(attempt, 1), len(SESSION_RETRY_DELAYS)) - 1
@@ -448,16 +505,21 @@ def request_endpoint_label(url):
 
 
 def log_slow_request(log, url, elapsed, attempt, retries, backoff):
+    note_fast_request = getattr(backoff, "note_fast_request", None)
+    if note_fast_request is not None:
+        note_fast_request(elapsed)
     if elapsed < SLOW_REQUEST_WARN_SECONDS:
         return
     cooldown = 0
     slow_limit_cooldown = 0
+    slow_limit_level = 0
     if elapsed >= VERY_SLOW_REQUEST_SECONDS:
         cooldown = random.uniform(*VERY_SLOW_REQUEST_COOLDOWN_SECONDS)
         backoff.block_for(cooldown)
         note_slow_request = getattr(backoff, "note_slow_request", None)
         if note_slow_request is not None:
             slow_limit_cooldown = note_slow_request(elapsed)
+            slow_limit_level = getattr(backoff, "slow_limit_level", 0)
     message = (
         f"warning: slow request endpoint={request_endpoint_label(url)} "
         f"elapsed={elapsed:.1f}s attempt={attempt}/{retries}"
@@ -467,6 +529,7 @@ def log_slow_request(log, url, elapsed, attempt, retries, backoff):
     if slow_limit_cooldown:
         message += (
             f" slow_limit_cooldown={slow_limit_cooldown:.0f}s "
+            f"slow_limit_level={slow_limit_level} "
             f"reason=consecutive_very_slow_requests"
         )
     log(message)
@@ -525,7 +588,13 @@ def request_signed_json(endpoint, params_factory, client, mixin_key, log, refres
     raise last_error
 
 
-def get_wbi_mixin_key(client, log):
+def get_wbi_mixin_key(client, log, force_refresh=False):
+    if not force_refresh:
+        cached = get_cached_wbi_mixin_key()
+        if cached:
+            log("wbi: reused cached signature key")
+            return cached
+
     nav = client.request_json(
         "https://api.bilibili.com/x/web-interface/nav",
         timeout=30,
@@ -548,7 +617,9 @@ def get_wbi_mixin_key(client, log):
         raise RuntimeError(f"Could not get WBI image keys from nav API: code={nav_code} message={nav.get('message')}")
 
     log(f"login: isLogin={data.get('isLogin')} nav_code={nav_code}")
-    return get_mixin_key(filename_stem(img_url), filename_stem(sub_url))
+    mixin_key = get_mixin_key(filename_stem(img_url), filename_stem(sub_url))
+    remember_wbi_mixin_key(mixin_key)
+    return mixin_key
 
 
 def unix_to_iso(value, tz):
@@ -637,7 +708,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
             client,
             mixin_key,
             log,
-            refresh_mixin_key=lambda: get_wbi_mixin_key(client, log),
+            refresh_mixin_key=lambda: get_wbi_mixin_key(client, log, force_refresh=True),
         )["data"]
         page_replies = collect_main_reply_candidates(data)
         cursor = data.get("cursor") or {}
