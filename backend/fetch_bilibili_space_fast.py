@@ -7,6 +7,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
+DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
+DEFAULT_CACHE_DIR = ROOT / "data" / "space_cache"
+DEFAULT_BACKOFF_STATE = ROOT / "data" / "bilibili_backoff_fast_state.json"
+
+os.environ.setdefault("BILIBILI_BACKOFF_STATE_PATH", str(DEFAULT_BACKOFF_STATE))
+
 from bilibili_comment_danmaku import scraper
 from bilibili_comment_danmaku.danmaku import scrape_danmaku
 from bilibili_comment_danmaku.storage import (
@@ -18,19 +26,16 @@ from bilibili_comment_danmaku.storage import (
 )
 
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
-DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
-DEFAULT_CACHE_DIR = ROOT / "data" / "space_cache"
-
-
 def load_cookie(path):
     return scraper.load_cookie_file(path) if path and Path(path).exists() else ""
 
 
 def event(name, **fields):
     payload = {"ts": datetime.now(timezone.utc).isoformat(), "event": name, **fields}
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    try:
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+    except OSError:
+        pass
 
 
 def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, use_proxy=False):
