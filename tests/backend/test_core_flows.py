@@ -17,7 +17,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from server import extract_space_mid, progress_percent, progress_stats  # noqa: E402
+from server import BadRequestError, extract_space_mid, parse_json_object_body, progress_percent, progress_stats  # noqa: E402
 from task_queue import InMemoryTaskQueue  # noqa: E402
 from bilibili_comment_danmaku.danmaku import (  # noqa: E402
     decode_response_body,
@@ -1009,6 +1009,21 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(events, ["1", "2"])
         self.assertEqual([task["status"] for task in snapshot["recent"]], ["finished", "failed"])
         self.assertEqual(snapshot["recent"][1]["message"], "boom")
+
+
+class RequestParsingTests(unittest.TestCase):
+    def test_parse_json_object_body_accepts_empty_or_object(self):
+        self.assertEqual(parse_json_object_body(b""), {})
+        self.assertEqual(parse_json_object_body(b"  "), {})
+        self.assertEqual(parse_json_object_body(b'{"mid":"42"}'), {"mid": "42"})
+
+    def test_parse_json_object_body_rejects_invalid_or_non_object_json(self):
+        with self.assertRaises(BadRequestError):
+            parse_json_object_body(b"{")
+        with self.assertRaises(BadRequestError):
+            parse_json_object_body(b"[]")
+        with self.assertRaises(BadRequestError):
+            parse_json_object_body("{}".encode("utf-16"))
 
 
 if __name__ == "__main__":

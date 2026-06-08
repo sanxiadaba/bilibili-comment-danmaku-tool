@@ -52,6 +52,10 @@ progress_state = {
 }
 
 
+class BadRequestError(ValueError):
+    pass
+
+
 class CommentDanmakuServer(BaseHTTPRequestHandler):
     db_path = DEFAULT_DB
     static_dir = DEFAULT_STATIC
@@ -106,6 +110,16 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 self.handle_client_log_api()
                 return
             self.send_error(404)
+        except BadRequestError as exc:
+            log_event(
+                "http.request.bad_request",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                method=getattr(self, "command", ""),
+                path=parsed.path,
+                level="warning",
+            )
+            self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
             raise
@@ -668,10 +682,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
-        if not raw.strip():
-            return {}
-        return json.loads(raw)
+        raw = self.rfile.read(length)
+        return parse_json_object_body(raw)
 
     def log_message(self, fmt, *args):
         safe_print(f"{self.address_string()} - {fmt % args}")
@@ -679,6 +691,22 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_json_object_body(raw):
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BadRequestError("请求体必须是 UTF-8 编码的 JSON") from exc
+    if not text.strip():
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BadRequestError("请求体不是合法 JSON") from exc
+    if not isinstance(payload, dict):
+        raise BadRequestError("请求体 JSON 必须是对象")
+    return payload
 
 
 def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
