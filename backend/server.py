@@ -1173,14 +1173,17 @@ def progress_stage(kind, message):
 
 
 def progress_percent(kind, message, current=0):
-    if "完成" in message:
-        return 100
     if kind == "space":
+        if "UP 主归档完成" in message:
+            return 100
         if "视频列表" in message:
             return max(current, 5)
         index, total = parse_space_progress(message)
         if total:
             return max(current, min(99, 5 + int((index / total) * 94)))
+        return max(current, 8)
+    if "完成" in message:
+        return 100
     if "保存" in message:
         return max(current, 92)
     if kind == "danmaku":

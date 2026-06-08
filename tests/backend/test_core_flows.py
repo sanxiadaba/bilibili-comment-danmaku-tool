@@ -903,6 +903,15 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(stats["当前视频"], "BV1xx411c7mD")
         self.assertGreater(percent, 5)
 
+    def test_space_list_ready_does_not_finish_progress(self):
+        percent = progress_percent(
+            "space",
+            "UP视频列表完成 total=10 complete=0 archived=0 skipped=0",
+            5,
+        )
+
+        self.assertEqual(percent, 5)
+
 
 class LoggingTests(unittest.TestCase):
     def test_clean_fields_removes_sensitive_values_and_truncates_long_strings(self):
