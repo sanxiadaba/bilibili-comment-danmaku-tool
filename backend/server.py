@@ -1,6 +1,7 @@
 ﻿import argparse
 import json
 import mimetypes
+import random
 import re
 import threading
 import time
@@ -21,7 +22,9 @@ from bilibili_comment_danmaku import (
     scrape_comments,
     scrape_danmaku,
 )
+from bilibili_comment_danmaku import scraper
 from bilibili_comment_danmaku.scraper import BilibiliRequestError
+from bilibili_comment_danmaku.storage import connect, ensure_schema
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +32,7 @@ DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
 DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
+DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
 progress_state = {
@@ -87,6 +91,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/videos/parse":
                 self.handle_parse_video_api()
+                return
+            if parsed.path == "/api/space/archive":
+                self.handle_space_archive_api()
                 return
             if parsed.path == "/api/danmaku/refresh":
                 self.handle_danmaku_refresh_api(parsed)
@@ -306,6 +313,76 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             self.send_json(payload, status=status)
         finally:
             refresh_lock.release()
+
+    def handle_space_archive_api(self):
+        if not refresh_lock.acquire(blocking=False):
+            log_event(
+                "task.rejected",
+                "space archive rejected because another task is active",
+                request_id=getattr(self, "request_id", ""),
+                kind="space",
+                reason="busy",
+            )
+            self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
+            return
+
+        started = False
+        try:
+            body = self.read_json_body()
+            owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
+            mid = extract_space_mid(owner_ref)
+            if not mid:
+                log_event(
+                    "task.space_archive.invalid_input",
+                    "space archive request missing owner mid",
+                    request_id=getattr(self, "request_id", ""),
+                    level="warning",
+                )
+                self.send_json({"error": "请输入 UP 主主页链接或 mid"}, status=400)
+                return
+
+            options = {
+                "delay": clamp_float(parse_float(body.get("delay"), 1.0), 0.0, 5.0),
+                "comment_pages": clamp_int(parse_int(body.get("comment_pages"), 1), 1, 10),
+                "between_videos_min": clamp_float(parse_float(body.get("between_videos_min"), 8.0), 0.0, 3600.0),
+                "between_videos_max": clamp_float(parse_float(body.get("between_videos_max"), 20.0), 0.0, 3600.0),
+                "no_cache": bool(body.get("no_cache")),
+            }
+            if options["between_videos_max"] < options["between_videos_min"]:
+                options["between_videos_max"] = options["between_videos_min"]
+
+            start_progress("space", mid, f"准备抓取 UP {mid} 的视频列表")
+            log_event(
+                "task.space_archive.start",
+                "space archive task started",
+                request_id=getattr(self, "request_id", ""),
+                mid=mid,
+                **options,
+            )
+            worker = threading.Thread(
+                target=run_space_archive_task,
+                kwargs={
+                    "db_path": self.db_path,
+                    "mid": mid,
+                    "options": options,
+                    "request_id": getattr(self, "request_id", ""),
+                },
+                daemon=True,
+            )
+            worker.start()
+            started = True
+            self.send_json(
+                {
+                    "ok": True,
+                    "mid": mid,
+                    "message": "UP 主全部视频归档任务已开始",
+                    **options,
+                },
+                status=202,
+            )
+        finally:
+            if not started:
+                refresh_lock.release()
 
     def handle_comments_api(self, parsed):
         query = parse_qs(parsed.query)
@@ -622,6 +699,228 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
+    if use_cache and cache_path and cache_path.exists():
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        items = cached.get("items") if isinstance(cached, dict) else None
+        if isinstance(items, list):
+            log_event("task.space_archive.cache_hit", "loaded cached UP video list", mid=mid, total=len(items))
+            return items
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"https://space.bilibili.com/{mid}/video",
+        "Origin": "https://space.bilibili.com",
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+    client = scraper.BilibiliClient(headers, use_proxy=False)
+    mixin = scraper.get_wbi_mixin_key(client, lambda message: update_progress("space", mid, message))
+    endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
+    items = []
+    page = 1
+    while True:
+        params = scraper.sign_wbi_params(
+            {
+                "mid": mid,
+                "pn": page,
+                "ps": 30,
+                "tid": 0,
+                "order": "pubdate",
+                "platform": "web",
+                "web_location": 1550101,
+            },
+            mixin,
+        )
+        payload = client.request_json(scraper.build_url(endpoint, params), timeout=30)
+        data = payload.get("data") or {}
+        vlist = ((data.get("list") or {}).get("vlist") or [])
+        total = (data.get("page") or {}).get("count") or 0
+        update_progress("space", mid, f"UP视频列表页 page={page} got={len(vlist)} total={total}")
+        items.extend(vlist)
+        if not vlist or len(items) >= total:
+            break
+        page += 1
+        time.sleep(random.uniform(2.0, 5.0))
+
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "mid": str(mid),
+                    "cached_at": datetime.now(timezone.utc).isoformat(),
+                    "total": len(items),
+                    "items": items,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    return items
+
+
+def db_status(db_path, mid):
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        conn.commit()
+        rows = conn.execute(
+            """
+            SELECT v.bvid, COUNT(DISTINCT c.rpid) AS comments, COUNT(DISTINCT d.dmid) AS danmaku
+            FROM videos v
+            LEFT JOIN comments c ON c.bvid = v.bvid
+            LEFT JOIN danmaku d ON d.bvid = v.bvid
+            WHERE v.owner_mid = ?
+            GROUP BY v.bvid
+            """,
+            (str(mid),),
+        ).fetchall()
+        return {
+            row["bvid"]: {
+                "comments": row["comments"] or 0,
+                "danmaku": row["danmaku"] or 0,
+            }
+            for row in rows
+        }
+    finally:
+        conn.close()
+
+
+def is_complete(item, status):
+    bvid = item.get("bvid")
+    saved = status.get(bvid or "")
+    return bool(saved and saved["comments"] > 0 and saved["danmaku"] > 0)
+
+
+def run_space_archive_task(db_path, mid, options, request_id=""):
+    cache_path = DEFAULT_SPACE_CACHE_DIR / f"space_{mid}_videos.json"
+    cookie = scraper.load_cookie_file(DEFAULT_COOKIE_FILE) if DEFAULT_COOKIE_FILE.exists() else ""
+    total = 0
+    complete = 0
+    archived = 0
+    skipped = 0
+    current_bvid = ""
+    try:
+        update_progress("space", mid, f"正在读取 UP {mid} 的视频列表")
+        items = fetch_space_videos(
+            mid,
+            cookie,
+            cache_path=cache_path,
+            use_cache=not options.get("no_cache"),
+        )
+        total = len(items)
+        update_progress("space", mid, f"UP视频列表完成 total={total} complete=0 archived=0 skipped=0")
+        for index, item in enumerate(items, start=1):
+            current_bvid = item.get("bvid") or ""
+            status = db_status(db_path, mid)
+            complete = sum(1 for video in items if is_complete(video, status))
+            if is_complete(item, status):
+                skipped += 1
+                update_progress(
+                    "space",
+                    current_bvid or mid,
+                    f"UP视频跳过 {index}/{total} complete={complete} archived={archived} skipped={skipped} bvid={current_bvid}",
+                )
+                continue
+
+            update_progress(
+                "space",
+                current_bvid or mid,
+                f"UP视频抓取 {index}/{total} complete={complete} archived={archived} skipped={skipped} bvid={current_bvid}",
+            )
+            comments = scrape_comments(
+                current_bvid,
+                cookie=cookie,
+                cookie_file=str(DEFAULT_COOKIE_FILE),
+                delay=options.get("delay", 1.0),
+                logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
+                max_main_pages=options.get("comment_pages", 1),
+                fetch_children=False,
+            )
+            update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
+            save_comments_to_sqlite(comments, db_path, replace=False)
+
+            headers = scraper.make_headers(current_bvid, cookie)
+            danmaku_result = scrape_danmaku(
+                current_bvid,
+                comments.get("video_raw"),
+                headers=headers,
+                logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
+                fetch_likes=False,
+            )
+            if danmaku_result.get("items"):
+                update_progress("space", current_bvid, f"UP视频保存弹幕 {index}/{total} bvid={current_bvid}")
+                save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
+            else:
+                update_progress("space", current_bvid, f"UP视频弹幕为空已跳过保存 {index}/{total} bvid={current_bvid}")
+
+            archived += 1
+            complete += 1
+            log_event(
+                "task.space_archive.video_finish",
+                "space archive video finished",
+                request_id=request_id,
+                mid=mid,
+                bvid=current_bvid,
+                index=index,
+                total=total,
+                archived=archived,
+                complete=complete,
+            )
+            if index < total:
+                pause = random.uniform(options.get("between_videos_min", 8.0), options.get("between_videos_max", 20.0))
+                update_progress("space", current_bvid, f"UP视频间隔 {index}/{total} seconds={pause:.1f} next={index + 1}")
+                time.sleep(pause)
+
+        status = db_status(db_path, mid)
+        complete = sum(1 for video in items if is_complete(video, status))
+        finish_progress("space", mid, f"UP 主归档完成：{complete}/{total} 个视频已有评论和弹幕")
+        log_event(
+            "task.space_archive.finish",
+            "space archive task finished",
+            request_id=request_id,
+            mid=mid,
+            total=total,
+            complete=complete,
+            archived=archived,
+            skipped=skipped,
+        )
+    except Exception as exc:
+        payload, status_code = api_error_response(exc)
+        fail_progress("space", current_bvid or mid, payload["error"])
+        log_exception(
+            "task.space_archive.error",
+            payload["error"],
+            request_id=request_id,
+            mid=mid,
+            bvid=current_bvid,
+            total=total,
+            complete=complete,
+            archived=archived,
+            skipped=skipped,
+            status=status_code,
+        )
+    finally:
+        refresh_lock.release()
+
+
+def log_space_video_progress(bvid, message):
+    if (
+        message.startswith("main page")
+        or message.startswith("main page limit")
+        or message.startswith("skipping children")
+        or message.startswith("danmaku:")
+        or message.startswith("parsed xml")
+        or message.startswith("fetching xml")
+        or message.startswith("warning:")
+        or "slow request" in message
+    ):
+        update_progress("space", bvid, message)
+
+
 def start_progress(kind, bvid, message):
     now = utc_now()
     with progress_lock:
@@ -855,6 +1154,18 @@ def progress_stage(kind, message):
         return "抓取主评论"
     if "fetching children" in message or "children done" in message or "child root" in message:
         return "抓取楼中楼"
+    if kind == "space":
+        if "视频列表" in message:
+            return "读取UP视频"
+        if "保存评论" in message or "保存弹幕" in message:
+            return "保存档案"
+        if "弹幕" in message or "fetching xml" in message or "parsed xml" in message:
+            return "抓取弹幕"
+        if "跳过" in message:
+            return "跳过已完成"
+        if "间隔" in message:
+            return "等待下一条"
+        return "归档UP视频"
     if "评论抓取完成" in message:
         return "保存评论"
     if kind == "parse" and "准备解析" in message:
@@ -865,6 +1176,12 @@ def progress_stage(kind, message):
 def progress_percent(kind, message, current=0):
     if "完成" in message:
         return 100
+    if kind == "space":
+        if "视频列表" in message:
+            return max(current, 5)
+        index, total = parse_space_progress(message)
+        if total:
+            return max(current, min(99, 5 + int((index / total) * 94)))
     if "保存" in message:
         return max(current, 92)
     if kind == "danmaku":
@@ -952,6 +1269,30 @@ def progress_stats(kind, message, current):
         if batch:
             stats["点赞批次"] = batch.group(1)
             stats["本批 dmid"] = batch.group(2)
+    if kind == "space":
+        list_done = re.search(r"UP视频列表完成 total=(\d+) complete=(\d+) archived=(\d+) skipped=(\d+)", message)
+        if list_done:
+            stats["UP视频总数"] = list_done.group(1)
+            stats["已完成视频"] = list_done.group(2)
+            stats["本次新增"] = list_done.group(3)
+            stats["跳过视频"] = list_done.group(4)
+        video = re.search(
+            r"UP视频(?:抓取|跳过)\s+(\d+)/(\d+).*?complete=(\d+).*?archived=(\d+).*?skipped=(\d+).*?bvid=([^ ]*)",
+            message,
+        )
+        if video:
+            stats["UP视频进度"] = f"{video.group(1)} / {video.group(2)}"
+            stats["UP视频总数"] = video.group(2)
+            stats["已完成视频"] = video.group(3)
+            stats["本次新增"] = video.group(4)
+            stats["跳过视频"] = video.group(5)
+            if video.group(6):
+                stats["当前视频"] = video.group(6)
+        interval = re.search(r"UP视频间隔\s+(\d+)/(\d+)\s+seconds=([0-9.]+)\s+next=(\d+)", message)
+        if interval:
+            stats["UP视频进度"] = f"{interval.group(1)} / {interval.group(2)}"
+            stats["等待秒数"] = interval.group(3)
+            stats["下一条序号"] = interval.group(4)
     return stats
 
 
@@ -975,6 +1316,13 @@ def parse_child_root_progress(message):
     return (0, 0)
 
 
+def parse_space_progress(message):
+    match = re.search(r"UP视频(?:抓取|跳过|保存评论|保存弹幕|弹幕为空已跳过保存|间隔)\s+(\d+)/(\d+)", message)
+    if match:
+        return (int(match.group(1)), int(match.group(2)))
+    return (0, 0)
+
+
 def parse_float(value, default):
     if value is None:
         return default
@@ -991,6 +1339,27 @@ def parse_int(value, default):
         return int(value)
     except ValueError:
         return default
+
+
+def clamp_float(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def clamp_int(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def extract_space_mid(value):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    url_match = re.search(r"space\.bilibili\.com/(\d+)", value)
+    if url_match:
+        return url_match.group(1)
+    mid_match = re.search(r"^\d{2,}$", value)
+    if mid_match:
+        return mid_match.group(0)
+    return ""
 
 
 def parse_optional_int(value):

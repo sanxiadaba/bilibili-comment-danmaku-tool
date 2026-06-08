@@ -220,6 +220,17 @@ export type ParseVideoResponse = {
   logs?: string[];
 };
 
+export type SpaceArchiveResponse = {
+  ok: boolean;
+  mid: string;
+  message: string;
+  delay: number;
+  comment_pages: number;
+  between_videos_min: number;
+  between_videos_max: number;
+  no_cache: boolean;
+};
+
 export type ProgressState = {
   active: boolean;
   kind: string;

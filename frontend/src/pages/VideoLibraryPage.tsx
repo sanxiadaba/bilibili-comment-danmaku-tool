@@ -17,7 +17,7 @@
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
-import { fetchVideos, logClientEvent, parseVideo } from "../api/client";
+import { archiveSpaceVideos, fetchVideos, logClientEvent, parseVideo } from "../api/client";
 import { ProgressBanner } from "../components/common";
 import { InfoRow } from "../components/common";
 import { StatTile } from "../components/ui/StatTile";
@@ -34,16 +34,26 @@ export function VideoLibraryPage() {
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState("all");
+  const [ownerRef, setOwnerRef] = useState("");
+  const [isArchivingSpace, setIsArchivingSpace] = useState(false);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const parseProgress = useProgressPolling(isParsing, "parse");
+  const spaceProgress = useProgressPolling(isArchivingSpace, "space");
   const [parseDelay, setParseDelay] = useState(() => {
     const saved = window.localStorage.getItem("bilibili-comment-delay");
     return saved ? Number(saved) || 0.35 : 0.35;
   });
+  const [spaceCommentPages, setSpaceCommentPages] = useState(() => {
+    const saved = window.localStorage.getItem("bilibili-space-comment-pages");
+    return saved ? Number(saved) || 1 : 1;
+  });
+  const isTaskBusy = isParsing || isArchivingSpace;
 
-  const loadVideos = useCallback(async () => {
-    setIsLoading(true);
+  const loadVideos = useCallback(async (options?: { quiet?: boolean }) => {
+    if (!options?.quiet) {
+      setIsLoading(true);
+    }
     setError("");
     try {
       const payload = await fetchVideos();
@@ -58,6 +68,20 @@ export function VideoLibraryPage() {
   useEffect(() => {
     void loadVideos();
   }, [loadVideos]);
+
+  useEffect(() => {
+    if (!isArchivingSpace || !spaceProgress?.done) return;
+    setIsArchivingSpace(false);
+    void loadVideos();
+  }, [isArchivingSpace, loadVideos, spaceProgress?.done]);
+
+  useEffect(() => {
+    if (!isArchivingSpace) return;
+    const timer = window.setInterval(() => {
+      void loadVideos({ quiet: true });
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [isArchivingSpace, loadVideos]);
 
   const ownerGroups = useMemo(() => {
     const groups = new Map<
@@ -200,6 +224,44 @@ export function VideoLibraryPage() {
     }
   }
 
+  async function submitSpaceArchive(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const target = ownerRef.trim();
+    if (!target) {
+      logClientEvent("client.user.space_archive.invalid_input", "space archive submitted without owner reference");
+      setError("请输入 UP 主主页链接或 mid");
+      return;
+    }
+
+    logClientEvent("client.user.space_archive.start", "user started space archive", {
+      owner_ref: summarizeOwnerRef(target),
+      comment_pages: spaceCommentPages,
+      delay: parseDelay,
+    });
+    setIsArchivingSpace(true);
+    setError("");
+    setMessage("UP 主全部视频归档已开始，首页会显示当前进度");
+    try {
+      window.localStorage.setItem("bilibili-space-comment-pages", String(spaceCommentPages));
+      const payload = await archiveSpaceVideos(target, {
+        commentPages: spaceCommentPages,
+        delay: parseDelay,
+      });
+      setOwnerRef(payload.mid);
+      logClientEvent("client.user.space_archive.accepted", "space archive task accepted", {
+        mid: payload.mid,
+        comment_pages: payload.comment_pages,
+      });
+    } catch (reason: unknown) {
+      logClientEvent("client.user.space_archive.error", reason instanceof Error ? reason.message : String(reason), {
+        owner_ref: summarizeOwnerRef(target),
+      });
+      setIsArchivingSpace(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setMessage("");
+    }
+  }
+
   function openVideo(video: VideoSummary) {
     logClientEvent("client.user.video.open_existing", "opened existing local archive", {
       bvid: video.bvid,
@@ -274,6 +336,7 @@ export function VideoLibraryPage() {
       )}
 
       {isParsing && <ProgressBanner progress={parseProgress} fallback="正在抓取评论和弹幕" />}
+      {isArchivingSpace && <ProgressBanner progress={spaceProgress} fallback="正在归档 UP 主全部视频" />}
 
       <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-5 lg:px-6">
         <StatTile icon={PlayCircle} label="视频数量" value={videos.length} tone="pink" />
@@ -309,7 +372,7 @@ export function VideoLibraryPage() {
             <button
               className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
               type="submit"
-              disabled={isParsing}
+              disabled={isTaskBusy}
             >
               <RefreshCcw className={cn(isParsing && "animate-spin")} size={16} aria-hidden="true" />
               {isParsing ? "解析中" : "解析视频"}
@@ -340,7 +403,7 @@ export function VideoLibraryPage() {
                 <button
                   className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
                   type="button"
-                  disabled={isParsing}
+                  disabled={isTaskBusy}
                   onClick={() => {
                     logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
                       bvid: duplicateVideo.bvid,
@@ -354,6 +417,49 @@ export function VideoLibraryPage() {
               </div>
             </div>
           )}
+          <div className="mt-4 border-t border-line pt-4">
+            <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+              <Users size={18} aria-hidden="true" />
+              抓取UP主
+            </h2>
+            <form className="mt-4 grid gap-3" onSubmit={submitSpaceArchive}>
+              <label className="grid gap-2 text-sm text-muted">
+                UP 主主页或 mid
+                <span className="flex h-11 min-w-0 items-center gap-2 rounded-md border border-line px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
+                  <LinkIcon size={16} aria-hidden="true" />
+                  <input
+                    className="min-w-0 flex-1 bg-transparent text-ink outline-none"
+                    placeholder="https://space.bilibili.com/123456"
+                    value={ownerRef}
+                    onChange={(event) => setOwnerRef(event.target.value)}
+                  />
+                </span>
+              </label>
+              <label className="grid gap-2 text-sm text-muted">
+                每个视频评论页
+                <span className="flex h-10 items-center gap-3 rounded-md border border-line px-3">
+                  <input
+                    className="min-w-0 flex-1 accent-bilibili"
+                    max={10}
+                    min={1}
+                    step={1}
+                    type="range"
+                    value={spaceCommentPages}
+                    onChange={(event) => setSpaceCommentPages(Number(event.target.value))}
+                  />
+                  <span className="w-10 text-right font-medium text-ink">{spaceCommentPages}</span>
+                </span>
+              </label>
+              <button
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-bilibili px-4 text-sm font-medium text-white transition hover:bg-[#e85f89] disabled:cursor-wait disabled:opacity-70"
+                type="submit"
+                disabled={isTaskBusy}
+              >
+                <RefreshCcw className={cn(isArchivingSpace && "animate-spin")} size={16} aria-hidden="true" />
+                {isArchivingSpace ? "抓取中" : "抓取全部视频"}
+              </button>
+            </form>
+          </div>
           {showSettings && (
             <div className="mt-4 grid gap-3 border-t border-line pt-4">
               <label className="grid gap-2 text-sm text-muted">
@@ -424,7 +530,7 @@ export function VideoLibraryPage() {
           </div>
         </aside>
 
-        <section className="min-w-0 rounded-md border border-line bg-white shadow-soft">
+        <section className="flex min-h-[560px] min-w-0 flex-col rounded-md border border-line bg-white shadow-soft">
           <div className="border-b border-line p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
@@ -446,7 +552,7 @@ export function VideoLibraryPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 p-4">
+          <div className="grid max-h-[70vh] min-h-[420px] gap-3 overflow-y-auto p-4">
             {isLoading && <div className="p-6 text-center text-sm text-muted">正在载入视频库</div>}
             {!isLoading &&
               filteredVideos.map((video) => (
@@ -464,6 +570,10 @@ export function VideoLibraryPage() {
 
 function extractBvid(value: string) {
   return value.trim().match(/BV[0-9A-Za-z]{10}/)?.[0] || "";
+}
+
+function summarizeOwnerRef(value: string) {
+  return value.match(/space\.bilibili\.com\/(\d+)/)?.[1] || value.match(/^\d+$/)?.[0] || value.slice(0, 120);
 }
 
 function ownerName(video: VideoSummary) {
