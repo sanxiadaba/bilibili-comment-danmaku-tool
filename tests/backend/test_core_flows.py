@@ -15,7 +15,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from server import progress_percent, progress_stats  # noqa: E402
+from server import extract_space_mid, progress_percent, progress_stats  # noqa: E402
 from bilibili_comment_danmaku.danmaku import (  # noqa: E402
     decode_response_body,
     parse_danmaku_xml,
@@ -876,6 +876,41 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(stats["楼中楼总已抓"], "341")
         self.assertEqual(stats["楼中楼预期总数"], "1518")
         self.assertGreater(child_percent, 65)
+
+
+    def test_space_mid_can_be_extracted_from_url_or_plain_mid(self):
+        self.assertEqual(extract_space_mid("https://space.bilibili.com/395188578/video"), "395188578")
+        self.assertEqual(extract_space_mid("395188578"), "395188578")
+        self.assertEqual(extract_space_mid("https://www.bilibili.com/video/BV1xx411c7mD"), "")
+
+    def test_space_progress_reports_video_totals(self):
+        stats = progress_stats(
+            "space",
+            "UP视频抓取 3/178 complete=24 archived=2 skipped=1 bvid=BV1xx411c7mD",
+            {},
+        )
+        percent = progress_percent(
+            "space",
+            "UP视频抓取 3/178 complete=24 archived=2 skipped=1 bvid=BV1xx411c7mD",
+            5,
+        )
+
+        self.assertEqual(stats["UP视频进度"], "3 / 178")
+        self.assertEqual(stats["UP视频总数"], "178")
+        self.assertEqual(stats["已完成视频"], "24")
+        self.assertEqual(stats["本次新增"], "2")
+        self.assertEqual(stats["跳过视频"], "1")
+        self.assertEqual(stats["当前视频"], "BV1xx411c7mD")
+        self.assertGreater(percent, 5)
+
+    def test_space_list_ready_does_not_finish_progress(self):
+        percent = progress_percent(
+            "space",
+            "UP视频列表完成 total=10 complete=0 archived=0 skipped=0",
+            5,
+        )
+
+        self.assertEqual(percent, 5)
 
 
 class LoggingTests(unittest.TestCase):

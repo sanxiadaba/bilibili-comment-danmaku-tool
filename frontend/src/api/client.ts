@@ -1,4 +1,11 @@
-import type { CommentData, DanmakuData, ParseVideoResponse, ProgressState, VideoListResponse } from "../types";
+import type {
+  CommentData,
+  DanmakuData,
+  ParseVideoResponse,
+  ProgressState,
+  SpaceArchiveResponse,
+  VideoListResponse,
+} from "../types";
 
 type LogFields = Record<string, string | number | boolean | null | undefined>;
 
@@ -43,6 +50,23 @@ export async function parseVideo(url: string, delay: number) {
       body: JSON.stringify({ url, delay }),
     },
     { delay, video_ref: summarizeVideoRef(url) },
+  );
+}
+
+export async function archiveSpaceVideos(ownerRef: string, options: { delay: number }) {
+  return requestJson<SpaceArchiveResponse>(
+    "space.archive",
+    `/api/space/archive?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner_ref: ownerRef,
+        delay: options.delay,
+      }),
+    },
+    { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay },
   );
 }
 
@@ -148,4 +172,8 @@ function summarizeApiPath(url: string) {
 
 function summarizeVideoRef(value: string) {
   return value.match(/BV[0-9A-Za-z]{10}/)?.[0] || value.slice(0, 120);
+}
+
+function summarizeOwnerRef(value: string) {
+  return value.match(/space\.bilibili\.com\/(\d+)/)?.[1] || value.match(/^\d+$/)?.[0] || value.slice(0, 120);
 }
