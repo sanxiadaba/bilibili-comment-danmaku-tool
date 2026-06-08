@@ -204,7 +204,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
     return counts
 
 
-def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None):
+def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, fetch_likes=True):
     log = logger or (lambda message: None)
     cid = extract_cid(video_raw)
     if not cid:
@@ -214,17 +214,21 @@ def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None):
     xml_bytes = fetch_danmaku_xml(cid, headers=headers, use_proxy=use_proxy, logger=log)
     items = parse_danmaku_xml(xml_bytes, bvid, cid)
     log(f"danmaku: parsed xml items={len(items)}")
-    try:
-        like_counts = fetch_danmaku_like_counts(
-            cid,
-            [item["dmid"] for item in items],
-            headers=headers,
-            use_proxy=use_proxy,
-            logger=log,
-        )
-    except Exception as exc:
+    if fetch_likes:
+        try:
+            like_counts = fetch_danmaku_like_counts(
+                cid,
+                [item["dmid"] for item in items],
+                headers=headers,
+                use_proxy=use_proxy,
+                logger=log,
+            )
+        except Exception as exc:
+            like_counts = {}
+            log(f"danmaku likes: skipped because {exc}")
+    else:
         like_counts = {}
-        log(f"danmaku likes: skipped because {exc}")
+        log("danmaku likes: skipped by fast archive mode")
     for item in items:
         item["like_count"] = like_counts.get(item["dmid"], 0)
     log(f"danmaku: cid={cid} got={len(items)}")

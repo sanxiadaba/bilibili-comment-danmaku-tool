@@ -783,7 +783,7 @@ def fetch_video_info(bvid, client, log=None):
     return client.request_json(url, logger=log)["data"]
 
 
-def fetch_main_replies(oid, client, mixin_key, delay, log):
+def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None):
     endpoint = "https://api.bilibili.com/x/v2/reply/wbi/main"
     replies = []
     seen_rpids = set()
@@ -828,6 +828,9 @@ def fetch_main_replies(oid, client, mixin_key, delay, log):
             f"all_count={api_comment_count} next={cursor.get('next')} is_end={cursor.get('is_end')}"
         )
 
+        if isinstance(max_pages, int) and max_pages > 0 and page_index >= max_pages:
+            log(f"main page limit reached: max_pages={max_pages} unique={len(replies)}")
+            break
         if cursor.get("is_end"):
             break
         next_value = cursor.get("next")
@@ -898,7 +901,7 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
     return replies, api_count
 
 
-def build_threaded_output(main_replies, oid, client, delay, log):
+def build_threaded_output(main_replies, oid, client, delay, log, fetch_children=True):
     entries = []
     fetch_jobs = []
     expected_child_total = 0
@@ -929,7 +932,14 @@ def build_threaded_output(main_replies, oid, client, delay, log):
             expected_child_total += expected_count
             fetch_jobs.append(entry)
 
-    fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total)
+    if fetch_children:
+        fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total)
+    elif fetch_jobs:
+        log(
+            f"skipping children fetch: roots={len(fetch_jobs)} "
+            f"embedded_fetched={sum(len(entry['child_raw']) for entry in fetch_jobs)} "
+            f"total_expected={expected_child_total}"
+        )
 
     comments = []
     comment_items = []
@@ -1032,7 +1042,16 @@ def sleep_between_child_pages(delay, page_index):
     time.sleep(min(delay, CHILD_PAGE_YIELD_SECONDS))
 
 
-def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):
+def scrape_comments(
+    video_ref,
+    cookie="",
+    cookie_file="cookie.txt",
+    delay=0.35,
+    use_proxy=False,
+    logger=None,
+    max_main_pages=None,
+    fetch_children=True,
+):
     log = logger or (lambda message: print(message, flush=True))
     bvid = extract_bvid(video_ref)
     if use_proxy:
@@ -1055,8 +1074,22 @@ def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, 
     oid = video["aid"]
     log(f"video: bvid={bvid} aid={oid} title={video.get('title')}")
 
-    main_raw, api_comment_count = fetch_main_replies(oid, client, mixin_key, delay, log)
-    comments, comment_items, child_fetch_summary = build_threaded_output(main_raw, oid, client, delay, log)
+    main_raw, api_comment_count = fetch_main_replies(
+        oid,
+        client,
+        mixin_key,
+        delay,
+        log,
+        max_pages=max_main_pages,
+    )
+    comments, comment_items, child_fetch_summary = build_threaded_output(
+        main_raw,
+        oid,
+        client,
+        delay,
+        log,
+        fetch_children=fetch_children,
+    )
     expected_nested_comment_count = sum((reply.get("rcount") or 0) for reply in main_raw)
     fetched_nested_comment_count = max(len(comment_items) - len(comments), 0)
 
@@ -1073,6 +1106,11 @@ def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, 
             "expected_nested_comment_count": expected_nested_comment_count,
             "nested_comment_count": fetched_nested_comment_count,
             "comment_total_count": len(comment_items),
+            "is_partial_comment_archive": bool(
+                (isinstance(max_main_pages, int) and max_main_pages > 0) or not fetch_children
+            ),
+            "max_main_pages": max_main_pages,
+            "fetch_children": fetch_children,
             "child_fetch_summary": child_fetch_summary,
             "notes": [
                 "comments contains top-level comments sorted by ctime ascending; each replies array is also sorted by ctime ascending",
@@ -1086,7 +1124,17 @@ def scrape_comments(video_ref, cookie="", cookie_file="cookie.txt", delay=0.35, 
     }
 
 
-def scrape_comments_to_sqlite(video_ref, db_path="comment_danmaku.db", cookie="", cookie_file="cookie.txt", delay=0.35, use_proxy=False, logger=None):
+def scrape_comments_to_sqlite(
+    video_ref,
+    db_path="comment_danmaku.db",
+    cookie="",
+    cookie_file="cookie.txt",
+    delay=0.35,
+    use_proxy=False,
+    logger=None,
+    max_main_pages=None,
+    fetch_children=True,
+):
     output_data = scrape_comments(
         video_ref,
         cookie=cookie,
@@ -1094,6 +1142,8 @@ def scrape_comments_to_sqlite(video_ref, db_path="comment_danmaku.db", cookie=""
         delay=delay,
         use_proxy=use_proxy,
         logger=logger,
+        max_main_pages=max_main_pages,
+        fetch_children=fetch_children,
     )
     return save_comments_to_sqlite(output_data, db_path)
 

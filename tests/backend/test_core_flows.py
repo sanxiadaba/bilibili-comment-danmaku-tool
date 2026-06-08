@@ -759,6 +759,86 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(summary[0]["fetched_count"], 1)
         self.assertEqual(sleeps, [])
 
+    def test_main_reply_fetch_can_stop_after_page_limit(self):
+        calls = []
+
+        class FakeClient:
+            def request_json(self, url, **_kwargs):
+                calls.append(url)
+                return {
+                    "code": 0,
+                    "data": {
+                        "replies": [
+                            {
+                                "rpid_str": str(len(calls)),
+                                "oid_str": "123",
+                                "type": 1,
+                                "mid_str": "42",
+                                "root_str": "0",
+                                "parent_str": "0",
+                                "dialog_str": "0",
+                                "ctime": 1700000000 + len(calls),
+                                "content": {"message": "page"},
+                                "member": {"mid": "42", "uname": "owner"},
+                            }
+                        ],
+                        "cursor": {"all_count": 100, "next": len(calls), "is_end": False},
+                    },
+                }
+
+        replies, api_count = scraper.fetch_main_replies(
+            "123",
+            FakeClient(),
+            "1" * 32,
+            0,
+            lambda _message: None,
+            max_pages=2,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(replies), 2)
+        self.assertEqual(api_count, 100)
+
+    def test_child_fetch_can_be_skipped_for_fast_archive(self):
+        class FailingClient:
+            def clone(self):
+                raise AssertionError("child API should not be called in fast archive mode")
+
+        main_reply = {
+            "rpid_str": "1",
+            "oid_str": "123",
+            "type": 1,
+            "mid_str": "42",
+            "root_str": "0",
+            "parent_str": "0",
+            "dialog_str": "0",
+            "ctime": 1700000000,
+            "like": 8,
+            "rcount": 5,
+            "count": 5,
+            "state": 0,
+            "attr": 0,
+            "content": {"message": "parent"},
+            "member": {"mid": "42", "uname": "owner"},
+            "replies": [],
+        }
+        logs = []
+
+        comments, comment_items, summary = scraper.build_threaded_output(
+            [main_reply],
+            "123",
+            FailingClient(),
+            0.35,
+            logs.append,
+            fetch_children=False,
+        )
+
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(len(comment_items), 1)
+        self.assertEqual(summary[0]["expected_rcount"], 5)
+        self.assertEqual(summary[0]["fetched_count"], 0)
+        self.assertTrue(any("skipping children fetch" in item for item in logs))
+
     def test_child_progress_updates_stage_stats_after_main_pages(self):
         main_stats = progress_stats(
             "comments",
