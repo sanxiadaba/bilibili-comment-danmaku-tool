@@ -25,6 +25,7 @@ from bilibili_comment_danmaku import (
 from bilibili_comment_danmaku import scraper
 from bilibili_comment_danmaku.scraper import BilibiliRequestError
 from bilibili_comment_danmaku.storage import connect, ensure_schema
+from task_queue import InMemoryTaskQueue
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,13 +36,6 @@ DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
-space_queue_condition = threading.Condition()
-space_task_queue = []
-space_active_task = None
-space_task_history = []
-space_worker_running = False
-space_task_next_id = 0
-MAX_SPACE_TASK_HISTORY = 10
 progress_state = {
     "active": False,
     "kind": "",
@@ -56,6 +50,10 @@ progress_state = {
     "done": False,
     "error": "",
 }
+
+
+class BadRequestError(ValueError):
+    pass
 
 
 class CommentDanmakuServer(BaseHTTPRequestHandler):
@@ -112,6 +110,16 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 self.handle_client_log_api()
                 return
             self.send_error(404)
+        except BadRequestError as exc:
+            log_event(
+                "http.request.bad_request",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                method=getattr(self, "command", ""),
+                path=parsed.path,
+                level="warning",
+            )
+            self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
             raise
@@ -674,10 +682,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
-        if not raw.strip():
-            return {}
-        return json.loads(raw)
+        raw = self.rfile.read(length)
+        return parse_json_object_body(raw)
 
     def log_message(self, fmt, *args):
         safe_print(f"{self.address_string()} - {fmt % args}")
@@ -685,6 +691,22 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_json_object_body(raw):
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BadRequestError("请求体必须是 UTF-8 编码的 JSON") from exc
+    if not text.strip():
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BadRequestError("请求体不是合法 JSON") from exc
+    if not isinstance(payload, dict):
+        raise BadRequestError("请求体 JSON 必须是对象")
+    return payload
 
 
 def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
@@ -783,120 +805,42 @@ def is_complete(item, status):
     return bool(saved and saved["comments"] > 0 and saved["danmaku"] > 0)
 
 
+def run_space_queue_task(task):
+    refresh_lock.acquire()
+    try:
+        space_task_queue.update(
+            task,
+            status="running",
+            started_at=utc_now(),
+            message="正在抓取",
+        )
+        start_progress("space", task["mid"], f"准备抓取 UP {task['mid']} 的视频列表")
+        run_space_archive_task(task)
+    finally:
+        refresh_lock.release()
+
+
+space_task_queue = InMemoryTaskQueue("space", run_space_queue_task)
+
+
 def enqueue_space_task(db_path, mid, owner_ref, options, request_id=""):
-    global space_task_next_id, space_worker_running
-    now = utc_now()
-    with space_queue_condition:
-        space_task_next_id += 1
-        task = {
-            "id": f"space-{space_task_next_id}",
-            "kind": "space",
+    return space_task_queue.enqueue(
+        {
             "mid": str(mid),
             "owner_ref": owner_ref,
-            "status": "queued",
-            "message": "等待抓取",
-            "created_at": now,
-            "updated_at": now,
-            "started_at": "",
-            "finished_at": "",
             "request_id": request_id,
             "db_path": str(db_path),
             "options": dict(options),
-            "progress": 0,
-            "current_bvid": "",
-            "total": 0,
-            "complete": 0,
-            "archived": 0,
-            "skipped": 0,
         }
-        space_task_queue.append(task)
-        task["queue_position"] = len(space_task_queue)
-        if not space_worker_running:
-            space_worker_running = True
-            threading.Thread(target=space_queue_worker, daemon=True).start()
-        space_queue_condition.notify_all()
-        return public_space_task(task, task["queue_position"])
-
-
-def space_queue_worker():
-    global space_active_task, space_worker_running
-    while True:
-        with space_queue_condition:
-            while not space_task_queue:
-                space_worker_running = False
-                return
-            task = space_task_queue.pop(0)
-            task["status"] = "waiting"
-            task["message"] = "等待当前抓取任务结束"
-            task["updated_at"] = utc_now()
-            space_active_task = task
-            space_queue_condition.notify_all()
-
-        refresh_lock.acquire()
-        try:
-            task["status"] = "running"
-            task["started_at"] = utc_now()
-            task["updated_at"] = task["started_at"]
-            task["message"] = "正在抓取"
-            start_progress("space", task["mid"], f"准备抓取 UP {task['mid']} 的视频列表")
-            run_space_archive_task(task)
-        finally:
-            refresh_lock.release()
-            with space_queue_condition:
-                if task.get("status") == "running":
-                    task["status"] = "finished"
-                    task["message"] = "已完成"
-                    task["finished_at"] = utc_now()
-                    task["updated_at"] = task["finished_at"]
-                append_space_history(task)
-                space_active_task = None
-                space_queue_condition.notify_all()
-
-
-def append_space_history(task):
-    space_task_history.insert(0, public_space_task(task))
-    del space_task_history[MAX_SPACE_TASK_HISTORY:]
-
-
-def public_space_task(task, queue_position=None):
-    payload = {
-        "id": task.get("id", ""),
-        "kind": task.get("kind", "space"),
-        "mid": task.get("mid", ""),
-        "owner_ref": task.get("owner_ref", ""),
-        "status": task.get("status", ""),
-        "message": task.get("message", ""),
-        "created_at": task.get("created_at", ""),
-        "updated_at": task.get("updated_at", ""),
-        "started_at": task.get("started_at", ""),
-        "finished_at": task.get("finished_at", ""),
-        "progress": task.get("progress", 0),
-        "current_bvid": task.get("current_bvid", ""),
-        "total": task.get("total", 0),
-        "complete": task.get("complete", 0),
-        "archived": task.get("archived", 0),
-        "skipped": task.get("skipped", 0),
-    }
-    if queue_position is not None:
-        payload["queue_position"] = queue_position
-    return payload
+    )
 
 
 def get_space_queue_snapshot():
-    with space_queue_condition:
-        queued = [public_space_task(task, index + 1) for index, task in enumerate(space_task_queue)]
-        return {
-            "active": public_space_task(space_active_task) if space_active_task else None,
-            "queued": queued,
-            "recent": list(space_task_history),
-        }
+    return space_task_queue.snapshot()
 
 
 def update_space_task(task, **fields):
-    with space_queue_condition:
-        task.update(fields)
-        task["updated_at"] = utc_now()
-        space_queue_condition.notify_all()
+    space_task_queue.update(task, **fields)
 
 
 def run_space_archive_task(task):

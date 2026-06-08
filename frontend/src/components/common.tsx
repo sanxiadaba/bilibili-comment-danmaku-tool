@@ -50,7 +50,7 @@ export function ProgressBanner({ progress, fallback }: ProgressBannerProps) {
   const logs = progress?.logs?.slice(-4) || [];
   const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 8)));
   const stage = progress?.stage || "准备中";
-  const stats = selectProgressStats(progress?.stage || "", progress?.stats || {});
+  const stats = selectProgressStats(progress?.stats || {});
   return (
     <section className="border-b border-amber-100 bg-[#fff8e7]">
       <div className="mx-auto max-w-[1540px] px-4 py-3 text-sm text-[#5f4612] lg:px-6">
@@ -93,16 +93,30 @@ export function ProgressBanner({ progress, fallback }: ProgressBannerProps) {
   );
 }
 
-function selectProgressStats(stage: string, stats: ProgressState["stats"]) {
+function selectProgressStats(stats: ProgressState["stats"]) {
   const entries = Object.entries(stats);
-  const preferred =
-    stage === "抓取楼中楼"
-      ? ["楼中楼进度", "楼中楼总已抓", "楼中楼预期总数", "并发数", "当前根评论", "当前楼中楼已抓"]
-      : stage === "抓取主评论"
-        ? ["主评论页", "本页评论", "已抓评论", "接口总数"]
-        : stage === "弹幕点赞"
-          ? ["点赞批次", "本批 dmid", "弹幕条数"]
-          : ["弹幕条数", "主评论页", "已抓评论", "接口总数"];
+  const preferred = [
+    "UP视频进度",
+    "UP视频总数",
+    "已完成视频",
+    "本次新增",
+    "跳过视频",
+    "当前视频",
+    "楼中楼进度",
+    "楼中楼总已抓",
+    "楼中楼预期总数",
+    "并发数",
+    "当前根评论",
+    "当前楼中楼已抓",
+    "主评论页",
+    "本页评论",
+    "已抓评论",
+    "接口总数",
+    "弹幕条数",
+    "点赞批次",
+    "本批 dmid",
+    "等待秒数",
+  ];
 
   const ordered = [
     ...preferred

@@ -4,6 +4,8 @@ import logging
 import queue
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import zlib
 from pathlib import Path
@@ -15,7 +17,8 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from server import extract_space_mid, progress_percent, progress_stats  # noqa: E402
+from server import BadRequestError, extract_space_mid, parse_json_object_body, progress_percent, progress_stats  # noqa: E402
+from task_queue import InMemoryTaskQueue  # noqa: E402
 from bilibili_comment_danmaku.danmaku import (  # noqa: E402
     decode_response_body,
     parse_danmaku_xml,
@@ -941,6 +944,86 @@ class LoggingTests(unittest.TestCase):
 
         self.assertEqual(log_queue.qsize(), 1)
         self.assertEqual(log_queue.get_nowait().getMessage(), "warning")
+
+
+class TaskQueueTests(unittest.TestCase):
+    def test_in_memory_queue_runs_tasks_and_records_history(self):
+        events = []
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def runner(task):
+            events.append(task["mid"])
+            if task["mid"] == "1":
+                first_started.set()
+                release_first.wait(1)
+            queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+        queue = InMemoryTaskQueue("space", runner, history_limit=2)
+        first = queue.enqueue({"mid": "1", "owner_ref": "1"})
+        self.assertTrue(first_started.wait(1))
+        second = queue.enqueue({"mid": "2", "owner_ref": "2"})
+
+        self.assertEqual(first["queue_position"], 1)
+        self.assertEqual(second["queue_position"], 1)
+
+        snapshot = queue.snapshot()
+        self.assertEqual(snapshot["active"]["mid"], "1")
+        self.assertEqual([task["mid"] for task in snapshot["queued"]], ["2"])
+        release_first.set()
+
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            snapshot = queue.snapshot()
+            if len(snapshot["recent"]) == 2:
+                break
+            time.sleep(0.01)
+
+        snapshot = queue.snapshot()
+        self.assertEqual(events, ["1", "2"])
+        self.assertIsNone(snapshot["active"])
+        self.assertEqual(snapshot["queued"], [])
+        self.assertEqual([task["mid"] for task in snapshot["recent"]], ["2", "1"])
+
+    def test_in_memory_queue_marks_failures_and_continues(self):
+        events = []
+
+        def runner(task):
+            events.append(task["mid"])
+            if task["mid"] == "1":
+                raise RuntimeError("boom")
+            queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+        queue = InMemoryTaskQueue("space", runner, history_limit=3)
+        queue.enqueue({"mid": "1", "owner_ref": "1"})
+        queue.enqueue({"mid": "2", "owner_ref": "2"})
+
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            snapshot = queue.snapshot()
+            if len(snapshot["recent"]) == 2:
+                break
+            time.sleep(0.01)
+
+        snapshot = queue.snapshot()
+        self.assertEqual(events, ["1", "2"])
+        self.assertEqual([task["status"] for task in snapshot["recent"]], ["finished", "failed"])
+        self.assertEqual(snapshot["recent"][1]["message"], "boom")
+
+
+class RequestParsingTests(unittest.TestCase):
+    def test_parse_json_object_body_accepts_empty_or_object(self):
+        self.assertEqual(parse_json_object_body(b""), {})
+        self.assertEqual(parse_json_object_body(b"  "), {})
+        self.assertEqual(parse_json_object_body(b'{"mid":"42"}'), {"mid": "42"})
+
+    def test_parse_json_object_body_rejects_invalid_or_non_object_json(self):
+        with self.assertRaises(BadRequestError):
+            parse_json_object_body(b"{")
+        with self.assertRaises(BadRequestError):
+            parse_json_object_body(b"[]")
+        with self.assertRaises(BadRequestError):
+            parse_json_object_body("{}".encode("utf-16"))
 
 
 if __name__ == "__main__":
