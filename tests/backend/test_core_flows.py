@@ -532,7 +532,7 @@ class ScraperPerformanceTests(unittest.TestCase):
             scraper.random.uniform = lambda start, _end: start
             now = [1000]
             scraper.time.monotonic = lambda: now[0]
-            backoff = scraper.RequestBackoff()
+            backoff = scraper.RequestBackoff(persist=False)
 
             self.assertEqual(backoff.note_slow_request(120), 0)
             now[0] += 100
@@ -554,7 +554,7 @@ class ScraperPerformanceTests(unittest.TestCase):
             scraper.random.uniform = lambda start, _end: start
             now = [1000]
             scraper.time.monotonic = lambda: now[0]
-            backoff = scraper.RequestBackoff()
+            backoff = scraper.RequestBackoff(persist=False)
 
             backoff.note_slow_request(120)
             now[0] += 100
@@ -572,7 +572,7 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(backoff.slow_limit_level, 2)
 
     def test_fast_requests_reduce_slow_limit_level_after_recovery(self):
-        backoff = scraper.RequestBackoff()
+        backoff = scraper.RequestBackoff(persist=False)
         backoff.slow_limit_level = 2
 
         for _index in range(scraper.SLOW_LIMIT_FAST_RECOVERY_COUNT):
@@ -580,6 +580,62 @@ class ScraperPerformanceTests(unittest.TestCase):
 
         self.assertEqual(backoff.slow_limit_level, 1)
         self.assertEqual(backoff.fast_request_count, 0)
+
+    def test_backoff_persists_blocked_until_for_new_instance(self):
+        original_time = scraper.time.time
+        original_monotonic = scraper.time.monotonic
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                state_path = Path(tmpdir) / "backoff.json"
+                scraper.time.time = lambda: 1000
+                scraper.time.monotonic = lambda: 500
+
+                first = scraper.RequestBackoff(state_path=state_path)
+                first.block_for(120)
+
+                scraper.time.time = lambda: 1030
+                scraper.time.monotonic = lambda: 700
+                second = scraper.RequestBackoff(state_path=state_path)
+                remaining = round(second.blocked_until - scraper.time.monotonic())
+        finally:
+            scraper.time.time = original_time
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(remaining, 90)
+
+    def test_backoff_persists_slow_limit_level_for_restarted_worker(self):
+        original_uniform = scraper.random.uniform
+        original_time = scraper.time.time
+        original_monotonic = scraper.time.monotonic
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                state_path = Path(tmpdir) / "backoff.json"
+                scraper.random.uniform = lambda start, _end: start
+                wall_now = [1000]
+                mono_now = [500]
+                scraper.time.time = lambda: wall_now[0]
+                scraper.time.monotonic = lambda: mono_now[0]
+
+                first = scraper.RequestBackoff(state_path=state_path)
+                first.note_slow_request(120)
+                wall_now[0] += 100
+                mono_now[0] += 100
+                first.note_slow_request(120)
+                wall_now[0] += 100
+                mono_now[0] += 100
+                first.note_slow_request(120)
+
+                wall_now[0] += scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0] + 60
+                mono_now[0] += scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0] + 60
+                second = scraper.RequestBackoff(state_path=state_path)
+                cooldown = second.note_slow_request(120)
+        finally:
+            scraper.random.uniform = original_uniform
+            scraper.time.time = original_time
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(second.slow_limit_level, 2)
+        self.assertEqual(cooldown, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0] * 2)
 
     def test_wbi_mixin_key_cache_reuses_recent_key(self):
         calls = []

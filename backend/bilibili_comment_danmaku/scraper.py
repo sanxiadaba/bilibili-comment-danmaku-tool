@@ -117,6 +117,8 @@ MIXIN_KEY_ENC_TAB = [
 WBI_BAD_CHARS = "!'()*"
 BROWSER_ID_COOKIE_NAMES = {"buvid3", "buvid4", "buvid_fp", "b_nut"}
 WBI_MIXIN_KEY_TTL_SECONDS = 1800
+BACKOFF_STATE_PATH_ENV = "BILIBILI_BACKOFF_STATE_PATH"
+BACKOFF_STATE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 class BilibiliRequestError(RuntimeError):
@@ -129,11 +131,20 @@ class BilibiliRequestError(RuntimeError):
         self.__cause__ = cause
 
 
+def default_backoff_state_path():
+    configured = os.environ.get(BACKOFF_STATE_PATH_ENV)
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[2] / "data" / "bilibili_backoff_state.json"
+
+
 class RequestBackoff:
     def __init__(
         self,
         min_interval=GLOBAL_MIN_REQUEST_INTERVAL_SECONDS,
         interval_jitter=REQUEST_INTERVAL_JITTER_SECONDS,
+        state_path=None,
+        persist=True,
     ):
         self.lock = threading.Lock()
         self.blocked_until = 0
@@ -144,6 +155,9 @@ class RequestBackoff:
         self.fast_request_count = 0
         self.min_interval = min_interval
         self.interval_jitter = interval_jitter
+        self.state_path = Path(state_path) if state_path else default_backoff_state_path()
+        self.persist = persist
+        self.load_state()
 
     def wait(self):
         total_sleep = 0
@@ -163,6 +177,7 @@ class RequestBackoff:
             return
         with self.lock:
             self.blocked_until = max(self.blocked_until, time.monotonic() + seconds)
+            self.save_state_locked()
 
     def note_slow_request(
         self,
@@ -196,6 +211,7 @@ class RequestBackoff:
             self.blocked_until = max(self.blocked_until, now + cooldown)
             self.last_slow_limit_at = now
             self.slow_request_times.clear()
+            self.save_state_locked()
             return cooldown
 
     def note_fast_request(
@@ -215,6 +231,93 @@ class RequestBackoff:
             if self.fast_request_count >= recovery_count:
                 self.slow_limit_level -= 1
                 self.fast_request_count = 0
+                self.save_state_locked()
+
+    def load_state(self):
+        if not self.persist:
+            return
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        wall_now = time.time()
+        monotonic_now = time.monotonic()
+        try:
+            updated_at = float(payload.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            updated_at = 0
+        if updated_at and wall_now - updated_at > BACKOFF_STATE_MAX_AGE_SECONDS:
+            return
+
+        def epoch_to_monotonic(value):
+            try:
+                epoch_value = float(value)
+            except (TypeError, ValueError):
+                return None
+            return monotonic_now + (epoch_value - wall_now)
+
+        blocked_until = epoch_to_monotonic(payload.get("blocked_until"))
+        if blocked_until and blocked_until > monotonic_now:
+            self.blocked_until = blocked_until
+
+        cutoff_epoch = wall_now - SLOW_LIMIT_WINDOW_SECONDS
+        slow_times = []
+        for event_at in payload.get("slow_request_times") or []:
+            try:
+                event_epoch = float(event_at)
+            except (TypeError, ValueError):
+                continue
+            if event_epoch >= cutoff_epoch:
+                converted = epoch_to_monotonic(event_epoch)
+                if converted is not None:
+                    slow_times.append(converted)
+        self.slow_request_times = slow_times
+
+        try:
+            self.slow_limit_level = min(max(int(payload.get("slow_limit_level") or 0), 0), SLOW_LIMIT_MAX_LEVEL)
+        except (TypeError, ValueError):
+            self.slow_limit_level = 0
+        try:
+            self.fast_request_count = max(int(payload.get("fast_request_count") or 0), 0)
+        except (TypeError, ValueError):
+            self.fast_request_count = 0
+        last_slow_limit_at = epoch_to_monotonic(payload.get("last_slow_limit_at"))
+        if last_slow_limit_at:
+            self.last_slow_limit_at = last_slow_limit_at
+
+    def save_state_locked(self):
+        if not self.persist:
+            return
+        wall_now = time.time()
+        monotonic_now = time.monotonic()
+
+        def monotonic_to_epoch(value):
+            if not value:
+                return 0
+            return wall_now + (value - monotonic_now)
+
+        payload = {
+            "updated_at": wall_now,
+            "blocked_until": max(monotonic_to_epoch(self.blocked_until), 0),
+            "slow_request_times": [
+                monotonic_to_epoch(event_at)
+                for event_at in self.slow_request_times
+                if monotonic_to_epoch(event_at) > 0
+            ],
+            "slow_limit_level": self.slow_limit_level,
+            "last_slow_limit_at": max(monotonic_to_epoch(self.last_slow_limit_at), 0),
+            "fast_request_count": self.fast_request_count,
+        }
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self.state_path.with_name(
+                f"{self.state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temp_path.replace(self.state_path)
+        except OSError:
+            return
 
 
 GLOBAL_REQUEST_BACKOFF = RequestBackoff()
