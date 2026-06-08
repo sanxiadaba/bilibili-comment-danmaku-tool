@@ -461,6 +461,28 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertNotEqual(client.urls[0], client.urls[1])
         self.assertNotIn("w_rid=" + client.urls[0].split("w_rid=", 1)[1], client.urls[1])
 
+    def test_signed_request_passes_logger_to_client_request(self):
+        calls = []
+
+        class FakeClient:
+            def request_json(self, url, retries=1, logger=None, **_kwargs):
+                calls.append({"url": url, "retries": retries, "logger": logger})
+                return {"data": {"ok": True}}
+
+        def log(_message):
+            pass
+
+        result = scraper.request_signed_json(
+            "https://example.test/reply",
+            lambda: {"oid": 1, "next": 0},
+            FakeClient(),
+            "0" * 32,
+            log,
+        )
+
+        self.assertEqual(result, {"data": {"ok": True}})
+        self.assertIs(calls[0]["logger"], log)
+
     def test_retry_delay_distinguishes_session_retry_from_rate_limit(self):
         original_uniform = scraper.random.uniform
         try:
@@ -502,6 +524,28 @@ class ScraperPerformanceTests(unittest.TestCase):
 
         self.assertTrue(scraper.is_blocked_request_error(exc))
         self.assertEqual(scraper.blocked_error_label(exc), "API code -352")
+
+    def test_consecutive_very_slow_requests_trigger_long_cooldown(self):
+        original_uniform = scraper.random.uniform
+        original_monotonic = scraper.time.monotonic
+        try:
+            scraper.random.uniform = lambda start, _end: start
+            now = [1000]
+            scraper.time.monotonic = lambda: now[0]
+            backoff = scraper.RequestBackoff()
+
+            self.assertEqual(backoff.note_slow_request(120), 0)
+            now[0] += 100
+            self.assertEqual(backoff.note_slow_request(120), 0)
+            now[0] += 100
+            cooldown = backoff.note_slow_request(120)
+            blocked_for = round(backoff.blocked_until - now[0])
+        finally:
+            scraper.random.uniform = original_uniform
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(cooldown, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0])
+        self.assertEqual(blocked_for, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0])
 
     def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
         class FailingClient:

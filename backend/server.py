@@ -21,6 +21,7 @@ from bilibili_comment_danmaku import (
     scrape_comments,
     scrape_danmaku,
 )
+from bilibili_comment_danmaku.scraper import BilibiliRequestError
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -772,19 +773,47 @@ def api_error_response(exc):
     message = str(exc)
     lower_message = message.lower()
 
-    if "http error 412" in lower_message:
+    if (
+        (isinstance(exc, BilibiliRequestError) and exc.status == 412)
+        or "http error 412" in lower_message
+    ):
         return (
             {
-                "error": "Bilibili 接口返回 412，通常表示触发了风控、Cookie 状态异常或请求过快。工具已自动冷却退避并重试；如果仍失败，请暂停一段时间后再试，避免连续刷新延长风控。",
+                "error": "Bilibili 接口返回 412，通常表示当前 Cookie、会话指纹或请求上下文未通过接口预检。工具已重新签名、冷却退避并重试；如果仍失败，请暂停一段时间后再试，必要时更新 Cookie。",
                 "detail": message,
             },
             502,
         )
 
-    if "api code=-352" in lower_message or "api code -352" in lower_message:
+    if (
+        (isinstance(exc, BilibiliRequestError) and exc.api_code == -352)
+        or "api code=-352" in lower_message
+        or "api code -352" in lower_message
+    ):
         return (
             {
-                "error": "Bilibili 接口返回风控校验失败，通常与请求频率、Cookie 状态或访问环境有关。工具已自动冷却退避；请暂停一段时间后再试。",
+                "error": "Bilibili 接口返回风控校验失败，通常与请求频率、Cookie 状态或访问环境有关。工具已自动进入长冷却退避；请暂停一段时间后再试。",
+                "detail": message,
+            },
+            502,
+        )
+
+    if (
+        (isinstance(exc, BilibiliRequestError) and exc.status == 429)
+        or "http error 429" in lower_message
+    ):
+        return (
+            {
+                "error": "Bilibili 接口返回 429，说明当前访问频率已被明确限制。工具已自动进入长冷却退避；请避免连续手动刷新。",
+                "detail": message,
+            },
+            502,
+        )
+
+    if "consecutive_very_slow_requests" in lower_message or "slow_limit_cooldown" in lower_message:
+        return (
+            {
+                "error": "Bilibili 接口响应持续异常变慢，通常是软限流或账号/IP 级降速。工具已进入更长冷却，避免继续把风控时间拉长。",
                 "detail": message,
             },
             502,

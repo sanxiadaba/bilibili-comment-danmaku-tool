@@ -36,7 +36,12 @@ RATE_LIMIT_RETRY_JITTER_SECONDS = (15, 90)
 GLOBAL_MIN_REQUEST_INTERVAL_SECONDS = 0.85
 REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
 SLOW_REQUEST_WARN_SECONDS = 12
+VERY_SLOW_REQUEST_SECONDS = 60
 VERY_SLOW_REQUEST_COOLDOWN_SECONDS = (30, 90)
+SLOW_LIMIT_MIN_ELAPSED_SECONDS = 90
+SLOW_LIMIT_WINDOW_SECONDS = 900
+SLOW_LIMIT_TRIGGER_COUNT = 3
+SLOW_LIMIT_COOLDOWN_SECONDS = (900, 1800)
 SIGNED_REQUEST_RETRIES = 3
 CHINA_TZ = timezone(timedelta(hours=8))
 MIXIN_KEY_ENC_TAB = [
@@ -128,6 +133,7 @@ class RequestBackoff:
         self.lock = threading.Lock()
         self.blocked_until = 0
         self.next_request_at = 0
+        self.slow_request_times = []
         self.min_interval = min_interval
         self.interval_jitter = interval_jitter
 
@@ -149,6 +155,30 @@ class RequestBackoff:
             return
         with self.lock:
             self.blocked_until = max(self.blocked_until, time.monotonic() + seconds)
+
+    def note_slow_request(
+        self,
+        elapsed,
+        *,
+        threshold=SLOW_LIMIT_MIN_ELAPSED_SECONDS,
+        window=SLOW_LIMIT_WINDOW_SECONDS,
+        trigger_count=SLOW_LIMIT_TRIGGER_COUNT,
+    ):
+        if elapsed < threshold:
+            return 0
+
+        with self.lock:
+            now = time.monotonic()
+            cutoff = now - window
+            self.slow_request_times = [event_at for event_at in self.slow_request_times if event_at >= cutoff]
+            self.slow_request_times.append(now)
+            if len(self.slow_request_times) < trigger_count:
+                return 0
+
+            cooldown = random.uniform(*SLOW_LIMIT_COOLDOWN_SECONDS)
+            self.blocked_until = max(self.blocked_until, now + cooldown)
+            self.slow_request_times.clear()
+            return cooldown
 
 
 GLOBAL_REQUEST_BACKOFF = RequestBackoff()
@@ -421,15 +451,24 @@ def log_slow_request(log, url, elapsed, attempt, retries, backoff):
     if elapsed < SLOW_REQUEST_WARN_SECONDS:
         return
     cooldown = 0
-    if elapsed >= 60:
+    slow_limit_cooldown = 0
+    if elapsed >= VERY_SLOW_REQUEST_SECONDS:
         cooldown = random.uniform(*VERY_SLOW_REQUEST_COOLDOWN_SECONDS)
         backoff.block_for(cooldown)
+        note_slow_request = getattr(backoff, "note_slow_request", None)
+        if note_slow_request is not None:
+            slow_limit_cooldown = note_slow_request(elapsed)
     message = (
         f"warning: slow request endpoint={request_endpoint_label(url)} "
         f"elapsed={elapsed:.1f}s attempt={attempt}/{retries}"
     )
     if cooldown:
         message += f" adaptive_cooldown={cooldown:.0f}s"
+    if slow_limit_cooldown:
+        message += (
+            f" slow_limit_cooldown={slow_limit_cooldown:.0f}s "
+            f"reason=consecutive_very_slow_requests"
+        )
     log(message)
 
 
@@ -460,7 +499,7 @@ def request_signed_json(endpoint, params_factory, client, mixin_key, log, refres
     for attempt in range(1, SIGNED_REQUEST_RETRIES + 1):
         params = sign_wbi_params(params_factory(), mixin_key)
         try:
-            return client.request_json(build_url(endpoint, params), retries=1)
+            return client.request_json(build_url(endpoint, params), retries=1, logger=log)
         except BilibiliRequestError as exc:
             last_error = exc
             if not is_blocked_request_error(exc) or attempt == SIGNED_REQUEST_RETRIES:
