@@ -3,13 +3,24 @@ import gzip
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zlib
 from datetime import datetime, timezone
 
-from .scraper import DEFAULT_PROXY
+from .scraper import (
+    BLOCKED_API_CODES,
+    BLOCKED_HTTP_STATUSES,
+    DEFAULT_PROXY,
+    GLOBAL_REQUEST_BACKOFF,
+    BilibiliRequestError,
+    log_backoff_wait,
+    log_slow_request,
+    retry_after_seconds,
+    retry_delay_seconds,
+)
 
 
 def extract_cid(video_raw):
@@ -23,7 +34,8 @@ def extract_cid(video_raw):
     return None
 
 
-def fetch_danmaku_xml(cid, headers=None, use_proxy=False):
+def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
+    log = logger or (lambda message: None)
     if use_proxy:
         os.environ.setdefault("HTTP_PROXY", DEFAULT_PROXY)
         os.environ.setdefault("HTTPS_PROXY", DEFAULT_PROXY)
@@ -36,8 +48,34 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False):
         },
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=30) as resp:
-        return decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+    for attempt in range(1, 4):
+        backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+        log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
+        started_at = time.perf_counter()
+        try:
+            with opener.open(req, timeout=30) as resp:
+                body = decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+            log_slow_request(log, req.full_url, time.perf_counter() - started_at, attempt, 3, GLOBAL_REQUEST_BACKOFF)
+            return body
+        except urllib.error.HTTPError as exc:
+            elapsed = time.perf_counter() - started_at
+            if exc.code not in BLOCKED_HTTP_STATUSES:
+                raise
+            delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
+            if attempt == 3:
+                raise BilibiliRequestError(
+                    f"HTTP Error {exc.code}: danmaku XML request blocked",
+                    status=exc.code,
+                    cause=exc,
+                    retry_after=retry_after_seconds(exc),
+                ) from exc
+            GLOBAL_REQUEST_BACKOFF.block_for(delay)
+            log(
+                f"danmaku: XML got HTTP {exc.code}; elapsed={elapsed:.1f}s "
+                f"cooling down for {delay:.0f}s before retry"
+            )
+            time.sleep(delay)
+    raise BilibiliRequestError(f"danmaku XML request failed cid={cid}")
 
 
 def decode_response_body(body, content_encoding):
@@ -102,9 +140,59 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
             },
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        if payload.get("code") != 0:
+        payload = None
+        for attempt in range(1, 4):
+            backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+            log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
+            started_at = time.perf_counter()
+            try:
+                with opener.open(req, timeout=30) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                log_slow_request(
+                    log,
+                    req.full_url,
+                    time.perf_counter() - started_at,
+                    attempt,
+                    3,
+                    GLOBAL_REQUEST_BACKOFF,
+                )
+            except urllib.error.HTTPError as exc:
+                elapsed = time.perf_counter() - started_at
+                if exc.code not in BLOCKED_HTTP_STATUSES:
+                    raise
+                delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
+                if attempt == 3:
+                    raise BilibiliRequestError(
+                        f"HTTP Error {exc.code}: danmaku like request blocked",
+                        status=exc.code,
+                        cause=exc,
+                        retry_after=retry_after_seconds(exc),
+                    ) from exc
+                GLOBAL_REQUEST_BACKOFF.block_for(delay)
+                log(
+                    f"danmaku likes: got HTTP {exc.code}; elapsed={elapsed:.1f}s "
+                    f"cooling down for {delay:.0f}s before retry"
+                )
+                time.sleep(delay)
+                continue
+
+            api_code = payload.get("code")
+            if api_code not in BLOCKED_API_CODES:
+                break
+            delay = retry_delay_seconds(attempt, api_code=api_code)
+            if attempt == 3:
+                raise BilibiliRequestError(
+                    f"API code={api_code} message={payload.get('message')}",
+                    api_code=api_code,
+                )
+            GLOBAL_REQUEST_BACKOFF.block_for(delay)
+            log(f"danmaku likes: got API code {api_code}; cooling down for {delay:.0f}s before retry")
+            time.sleep(delay)
+
+        if payload is None:
+            continue
+        api_code = payload.get("code")
+        if api_code != 0:
             continue
         data = payload.get("data") or {}
         for dmid, value in data.items():
@@ -116,27 +204,31 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
     return counts
 
 
-def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None):
+def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, fetch_likes=True):
     log = logger or (lambda message: None)
     cid = extract_cid(video_raw)
     if not cid:
         log("danmaku: skipped because video cid is missing")
         return {"bvid": bvid, "cid": None, "items": []}
     log(f"danmaku: fetching xml cid={cid}")
-    xml_bytes = fetch_danmaku_xml(cid, headers=headers, use_proxy=use_proxy)
+    xml_bytes = fetch_danmaku_xml(cid, headers=headers, use_proxy=use_proxy, logger=log)
     items = parse_danmaku_xml(xml_bytes, bvid, cid)
     log(f"danmaku: parsed xml items={len(items)}")
-    try:
-        like_counts = fetch_danmaku_like_counts(
-            cid,
-            [item["dmid"] for item in items],
-            headers=headers,
-            use_proxy=use_proxy,
-            logger=log,
-        )
-    except Exception as exc:
+    if fetch_likes:
+        try:
+            like_counts = fetch_danmaku_like_counts(
+                cid,
+                [item["dmid"] for item in items],
+                headers=headers,
+                use_proxy=use_proxy,
+                logger=log,
+            )
+        except Exception as exc:
+            like_counts = {}
+            log(f"danmaku likes: skipped because {exc}")
+    else:
         like_counts = {}
-        log(f"danmaku likes: skipped because {exc}")
+        log("danmaku likes: skipped by fast archive mode")
     for item in items:
         item["like_count"] = like_counts.get(item["dmid"], 0)
     log(f"danmaku: cid={cid} got={len(items)}")

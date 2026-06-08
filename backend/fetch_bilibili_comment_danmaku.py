@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--cookie", default=os.environ.get("BILIBILI_COOKIE", ""))
     parser.add_argument("--cookie-file", default=str(DEFAULT_COOKIE_FILE))
     parser.add_argument("--proxy", action="store_true", help="Use the scraper HTTP proxy for Bilibili requests.")
+    parser.add_argument("--comment-pages", type=int, default=0, help="Only fetch the first N main comment pages.")
+    parser.add_argument("--skip-children", action="store_true", help="Skip nested reply API requests.")
     args = parser.parse_args()
 
     video_ref = args.bvid or args.video
@@ -31,6 +33,8 @@ def main():
         cookie_file=args.cookie_file,
         delay=args.delay,
         use_proxy=args.proxy,
+        max_main_pages=args.comment_pages if args.comment_pages > 0 else None,
+        fetch_children=not args.skip_children,
     )
     print(f"saved sqlite database: {summary['db']}", flush=True)
     print(f"bvid: {summary['bvid']}", flush=True)
