@@ -35,6 +35,13 @@ DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
+space_queue_condition = threading.Condition()
+space_task_queue = []
+space_active_task = None
+space_task_history = []
+space_worker_running = False
+space_task_next_id = 0
+MAX_SPACE_TASK_HISTORY = 10
 progress_state = {
     "active": False,
     "kind": "",
@@ -315,73 +322,55 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             refresh_lock.release()
 
     def handle_space_archive_api(self):
-        if not refresh_lock.acquire(blocking=False):
+        body = self.read_json_body()
+        owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
+        mid = extract_space_mid(owner_ref)
+        if not mid:
             log_event(
-                "task.rejected",
-                "space archive rejected because another task is active",
+                "task.space_archive.invalid_input",
+                "space archive request missing owner mid",
                 request_id=getattr(self, "request_id", ""),
-                kind="space",
-                reason="busy",
+                level="warning",
             )
-            self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
+            self.send_json({"error": "请输入 UP 主主页链接或 mid"}, status=400)
             return
 
-        started = False
-        try:
-            body = self.read_json_body()
-            owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
-            mid = extract_space_mid(owner_ref)
-            if not mid:
-                log_event(
-                    "task.space_archive.invalid_input",
-                    "space archive request missing owner mid",
-                    request_id=getattr(self, "request_id", ""),
-                    level="warning",
-                )
-                self.send_json({"error": "请输入 UP 主主页链接或 mid"}, status=400)
-                return
+        options = {
+            "delay": clamp_float(parse_float(body.get("delay"), 1.0), 0.0, 5.0),
+            "between_videos_min": clamp_float(parse_float(body.get("between_videos_min"), 8.0), 0.0, 3600.0),
+            "between_videos_max": clamp_float(parse_float(body.get("between_videos_max"), 20.0), 0.0, 3600.0),
+            "no_cache": bool(body.get("no_cache")),
+        }
+        if options["between_videos_max"] < options["between_videos_min"]:
+            options["between_videos_max"] = options["between_videos_min"]
 
-            options = {
-                "delay": clamp_float(parse_float(body.get("delay"), 1.0), 0.0, 5.0),
-                "between_videos_min": clamp_float(parse_float(body.get("between_videos_min"), 8.0), 0.0, 3600.0),
-                "between_videos_max": clamp_float(parse_float(body.get("between_videos_max"), 20.0), 0.0, 3600.0),
-                "no_cache": bool(body.get("no_cache")),
-            }
-            if options["between_videos_max"] < options["between_videos_min"]:
-                options["between_videos_max"] = options["between_videos_min"]
-
-            start_progress("space", mid, f"准备抓取 UP {mid} 的视频列表")
-            log_event(
-                "task.space_archive.start",
-                "space archive task started",
-                request_id=getattr(self, "request_id", ""),
-                mid=mid,
+        task = enqueue_space_task(
+            db_path=self.db_path,
+            mid=mid,
+            owner_ref=owner_ref,
+            options=options,
+            request_id=getattr(self, "request_id", ""),
+        )
+        log_event(
+            "task.space_archive.queued",
+            "space archive task queued",
+            request_id=getattr(self, "request_id", ""),
+            mid=mid,
+            task_id=task["id"],
+            queue_position=task["queue_position"],
+            **options,
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "mid": mid,
+                "task_id": task["id"],
+                "queue_position": task["queue_position"],
+                "message": "UP 主全部视频归档任务已加入队列",
                 **options,
-            )
-            worker = threading.Thread(
-                target=run_space_archive_task,
-                kwargs={
-                    "db_path": self.db_path,
-                    "mid": mid,
-                    "options": options,
-                    "request_id": getattr(self, "request_id", ""),
-                },
-                daemon=True,
-            )
-            worker.start()
-            started = True
-            self.send_json(
-                {
-                    "ok": True,
-                    "mid": mid,
-                    "message": "UP 主全部视频归档任务已开始",
-                    **options,
-                },
-                status=202,
-            )
-        finally:
-            if not started:
-                refresh_lock.release()
+            },
+            status=202,
+        )
 
     def handle_comments_api(self, parsed):
         query = parse_qs(parsed.query)
@@ -794,7 +783,127 @@ def is_complete(item, status):
     return bool(saved and saved["comments"] > 0 and saved["danmaku"] > 0)
 
 
-def run_space_archive_task(db_path, mid, options, request_id=""):
+def enqueue_space_task(db_path, mid, owner_ref, options, request_id=""):
+    global space_task_next_id, space_worker_running
+    now = utc_now()
+    with space_queue_condition:
+        space_task_next_id += 1
+        task = {
+            "id": f"space-{space_task_next_id}",
+            "kind": "space",
+            "mid": str(mid),
+            "owner_ref": owner_ref,
+            "status": "queued",
+            "message": "等待抓取",
+            "created_at": now,
+            "updated_at": now,
+            "started_at": "",
+            "finished_at": "",
+            "request_id": request_id,
+            "db_path": str(db_path),
+            "options": dict(options),
+            "progress": 0,
+            "current_bvid": "",
+            "total": 0,
+            "complete": 0,
+            "archived": 0,
+            "skipped": 0,
+        }
+        space_task_queue.append(task)
+        task["queue_position"] = len(space_task_queue)
+        if not space_worker_running:
+            space_worker_running = True
+            threading.Thread(target=space_queue_worker, daemon=True).start()
+        space_queue_condition.notify_all()
+        return public_space_task(task, task["queue_position"])
+
+
+def space_queue_worker():
+    global space_active_task, space_worker_running
+    while True:
+        with space_queue_condition:
+            while not space_task_queue:
+                space_worker_running = False
+                return
+            task = space_task_queue.pop(0)
+            task["status"] = "waiting"
+            task["message"] = "等待当前抓取任务结束"
+            task["updated_at"] = utc_now()
+            space_active_task = task
+            space_queue_condition.notify_all()
+
+        refresh_lock.acquire()
+        try:
+            task["status"] = "running"
+            task["started_at"] = utc_now()
+            task["updated_at"] = task["started_at"]
+            task["message"] = "正在抓取"
+            start_progress("space", task["mid"], f"准备抓取 UP {task['mid']} 的视频列表")
+            run_space_archive_task(task)
+        finally:
+            refresh_lock.release()
+            with space_queue_condition:
+                if task.get("status") == "running":
+                    task["status"] = "finished"
+                    task["message"] = "已完成"
+                    task["finished_at"] = utc_now()
+                    task["updated_at"] = task["finished_at"]
+                append_space_history(task)
+                space_active_task = None
+                space_queue_condition.notify_all()
+
+
+def append_space_history(task):
+    space_task_history.insert(0, public_space_task(task))
+    del space_task_history[MAX_SPACE_TASK_HISTORY:]
+
+
+def public_space_task(task, queue_position=None):
+    payload = {
+        "id": task.get("id", ""),
+        "kind": task.get("kind", "space"),
+        "mid": task.get("mid", ""),
+        "owner_ref": task.get("owner_ref", ""),
+        "status": task.get("status", ""),
+        "message": task.get("message", ""),
+        "created_at": task.get("created_at", ""),
+        "updated_at": task.get("updated_at", ""),
+        "started_at": task.get("started_at", ""),
+        "finished_at": task.get("finished_at", ""),
+        "progress": task.get("progress", 0),
+        "current_bvid": task.get("current_bvid", ""),
+        "total": task.get("total", 0),
+        "complete": task.get("complete", 0),
+        "archived": task.get("archived", 0),
+        "skipped": task.get("skipped", 0),
+    }
+    if queue_position is not None:
+        payload["queue_position"] = queue_position
+    return payload
+
+
+def get_space_queue_snapshot():
+    with space_queue_condition:
+        queued = [public_space_task(task, index + 1) for index, task in enumerate(space_task_queue)]
+        return {
+            "active": public_space_task(space_active_task) if space_active_task else None,
+            "queued": queued,
+            "recent": list(space_task_history),
+        }
+
+
+def update_space_task(task, **fields):
+    with space_queue_condition:
+        task.update(fields)
+        task["updated_at"] = utc_now()
+        space_queue_condition.notify_all()
+
+
+def run_space_archive_task(task):
+    db_path = task["db_path"]
+    mid = task["mid"]
+    options = task["options"]
+    request_id = task.get("request_id", "")
     cache_path = DEFAULT_SPACE_CACHE_DIR / f"space_{mid}_videos.json"
     cookie = scraper.load_cookie_file(DEFAULT_COOKIE_FILE) if DEFAULT_COOKIE_FILE.exists() else ""
     total = 0
@@ -803,7 +912,16 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
     skipped = 0
     current_bvid = ""
     try:
+        log_event(
+            "task.space_archive.start",
+            "space archive task started",
+            request_id=request_id,
+            mid=mid,
+            task_id=task["id"],
+            **options,
+        )
         update_progress("space", mid, f"正在读取 UP {mid} 的视频列表")
+        update_space_task(task, message="正在读取视频列表", progress=5)
         items = fetch_space_videos(
             mid,
             cookie,
@@ -811,6 +929,7 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
             use_cache=not options.get("no_cache"),
         )
         total = len(items)
+        update_space_task(task, total=total, message=f"视频列表完成，共 {total} 个视频")
         update_progress("space", mid, f"UP视频列表完成 total={total} complete=0 archived=0 skipped=0")
         for index, item in enumerate(items, start=1):
             current_bvid = item.get("bvid") or ""
@@ -818,6 +937,16 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
             complete = sum(1 for video in items if is_complete(video, status))
             if is_complete(item, status):
                 skipped += 1
+                update_space_task(
+                    task,
+                    current_bvid=current_bvid,
+                    total=total,
+                    complete=complete,
+                    archived=archived,
+                    skipped=skipped,
+                    progress=space_task_percent(index, total),
+                    message=f"跳过已完成视频 {index}/{total}",
+                )
                 update_progress(
                     "space",
                     current_bvid or mid,
@@ -825,6 +954,16 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
                 )
                 continue
 
+            update_space_task(
+                task,
+                current_bvid=current_bvid,
+                total=total,
+                complete=complete,
+                archived=archived,
+                skipped=skipped,
+                progress=space_task_percent(index, total),
+                message=f"正在抓取视频 {index}/{total}",
+            )
             update_progress(
                 "space",
                 current_bvid or mid,
@@ -839,6 +978,7 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
                 max_main_pages=None,
                 fetch_children=True,
             )
+            update_space_task(task, message=f"正在保存评论 {index}/{total}")
             update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
             save_comments_to_sqlite(comments, db_path, replace=False)
 
@@ -851,6 +991,7 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
                 fetch_likes=True,
             )
             if danmaku_result.get("items"):
+                update_space_task(task, message=f"正在保存弹幕 {index}/{total}")
                 update_progress("space", current_bvid, f"UP视频保存弹幕 {index}/{total} bvid={current_bvid}")
                 save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
             else:
@@ -858,11 +999,20 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
 
             archived += 1
             complete += 1
+            update_space_task(
+                task,
+                complete=complete,
+                archived=archived,
+                skipped=skipped,
+                progress=space_task_percent(index, total),
+                message=f"视频完成 {index}/{total}",
+            )
             log_event(
                 "task.space_archive.video_finish",
                 "space archive video finished",
                 request_id=request_id,
                 mid=mid,
+                task_id=task["id"],
                 bvid=current_bvid,
                 index=index,
                 total=total,
@@ -871,17 +1021,30 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
             )
             if index < total:
                 pause = random.uniform(options.get("between_videos_min", 8.0), options.get("between_videos_max", 20.0))
+                update_space_task(task, message=f"等待下一条 {index}/{total}")
                 update_progress("space", current_bvid, f"UP视频间隔 {index}/{total} seconds={pause:.1f} next={index + 1}")
                 time.sleep(pause)
 
         status = db_status(db_path, mid)
         complete = sum(1 for video in items if is_complete(video, status))
+        update_space_task(
+            task,
+            status="finished",
+            message=f"已完成 {complete}/{total}",
+            finished_at=utc_now(),
+            total=total,
+            complete=complete,
+            archived=archived,
+            skipped=skipped,
+            progress=100,
+        )
         finish_progress("space", mid, f"UP 主归档完成：{complete}/{total} 个视频已有评论和弹幕")
         log_event(
             "task.space_archive.finish",
             "space archive task finished",
             request_id=request_id,
             mid=mid,
+            task_id=task["id"],
             total=total,
             complete=complete,
             archived=archived,
@@ -889,12 +1052,24 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
         )
     except Exception as exc:
         payload, status_code = api_error_response(exc)
+        update_space_task(
+            task,
+            status="failed",
+            message=payload["error"],
+            finished_at=utc_now(),
+            current_bvid=current_bvid,
+            total=total,
+            complete=complete,
+            archived=archived,
+            skipped=skipped,
+        )
         fail_progress("space", current_bvid or mid, payload["error"])
         log_exception(
             "task.space_archive.error",
             payload["error"],
             request_id=request_id,
             mid=mid,
+            task_id=task["id"],
             bvid=current_bvid,
             total=total,
             complete=complete,
@@ -902,8 +1077,12 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
             skipped=skipped,
             status=status_code,
         )
-    finally:
-        refresh_lock.release()
+
+
+def space_task_percent(index, total):
+    if not total:
+        return 0
+    return min(99, max(1, int((index / total) * 100)))
 
 
 def log_space_video_progress(bvid, message):
@@ -1045,11 +1224,13 @@ def fail_progress(kind, bvid, message):
 
 def get_progress_snapshot():
     with progress_lock:
-        return {
+        snapshot = {
             **progress_state,
             "logs": list(progress_state.get("logs", [])),
             "stats": dict(progress_state.get("stats", {})),
         }
+    snapshot["queue"] = get_space_queue_snapshot()
+    return snapshot
 
 
 def make_progress_logger(kind, bvid, logs):

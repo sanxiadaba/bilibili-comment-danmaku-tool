@@ -23,7 +23,7 @@ import { InfoRow } from "../components/common";
 import { StatTile } from "../components/ui/StatTile";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { cn, formatFullDateTime, formatNumber, normalizeImageUrl } from "../lib/utils";
-import type { VideoSummary } from "../types";
+import type { ProgressQueue, ProgressTask, VideoSummary } from "../types";
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
   const [url, setUrl] = useState("");
@@ -36,15 +36,18 @@ export function VideoLibraryPage() {
   const [ownerFilter, setOwnerFilter] = useState("all");
   const [ownerRef, setOwnerRef] = useState("");
   const [isArchivingSpace, setIsArchivingSpace] = useState(false);
+  const [isSubmittingSpace, setIsSubmittingSpace] = useState(false);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const parseProgress = useProgressPolling(isParsing, "parse");
-  const spaceProgress = useProgressPolling(isArchivingSpace, "space");
+  const spaceProgress = useProgressPolling(true);
   const [parseDelay, setParseDelay] = useState(() => {
     const saved = window.localStorage.getItem("bilibili-comment-delay");
     return saved ? Number(saved) || 0.35 : 0.35;
   });
-  const isTaskBusy = isParsing || isArchivingSpace;
+  const spaceQueue = spaceProgress?.queue;
+  const hasSpaceQueueWork = Boolean(spaceQueue?.active || spaceQueue?.queued?.length);
+  const isTaskBusy = isParsing || hasSpaceQueueWork;
 
   const loadVideos = useCallback(async (options?: { quiet?: boolean }) => {
     if (!options?.quiet) {
@@ -66,18 +69,18 @@ export function VideoLibraryPage() {
   }, [loadVideos]);
 
   useEffect(() => {
-    if (!isArchivingSpace || !spaceProgress?.done) return;
+    if (!isArchivingSpace || hasSpaceQueueWork) return;
     setIsArchivingSpace(false);
     void loadVideos();
-  }, [isArchivingSpace, loadVideos, spaceProgress?.done]);
+  }, [hasSpaceQueueWork, isArchivingSpace, loadVideos]);
 
   useEffect(() => {
-    if (!isArchivingSpace) return;
+    if (!hasSpaceQueueWork) return;
     const timer = window.setInterval(() => {
       void loadVideos({ quiet: true });
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [isArchivingSpace, loadVideos]);
+  }, [hasSpaceQueueWork, loadVideos]);
 
   const ownerGroups = useMemo(() => {
     const groups = new Map<
@@ -234,15 +237,19 @@ export function VideoLibraryPage() {
       delay: parseDelay,
     });
     setIsArchivingSpace(true);
+    setIsSubmittingSpace(true);
     setError("");
-    setMessage("UP 主全部视频归档已开始，首页会显示当前进度");
+    setMessage("UP 主全部视频归档已加入队列，首页会显示当前进度");
     try {
       const payload = await archiveSpaceVideos(target, {
         delay: parseDelay,
       });
       setOwnerRef(payload.mid);
+      setMessage(`已加入抓取队列：${payload.mid}，排队第 ${payload.queue_position} 个`);
       logClientEvent("client.user.space_archive.accepted", "space archive task accepted", {
         mid: payload.mid,
+        task_id: payload.task_id,
+        queue_position: payload.queue_position,
       });
     } catch (reason: unknown) {
       logClientEvent("client.user.space_archive.error", reason instanceof Error ? reason.message : String(reason), {
@@ -251,6 +258,8 @@ export function VideoLibraryPage() {
       setIsArchivingSpace(false);
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
+    } finally {
+      setIsSubmittingSpace(false);
     }
   }
 
@@ -328,7 +337,7 @@ export function VideoLibraryPage() {
       )}
 
       {isParsing && <ProgressBanner progress={parseProgress} fallback="正在抓取评论和弹幕" />}
-      {isArchivingSpace && <ProgressBanner progress={spaceProgress} fallback="正在归档 UP 主全部视频" />}
+      {hasSpaceQueueWork && <ProgressBanner progress={spaceProgress} fallback="正在归档 UP 主全部视频" />}
 
       <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-5 lg:px-6">
         <StatTile icon={PlayCircle} label="视频数量" value={videos.length} tone="pink" />
@@ -336,6 +345,10 @@ export function VideoLibraryPage() {
         <StatTile icon={AlertTriangle} label="仍可见 / 未返回" value={`${totals.active} / ${totals.deleted}`} tone="mint" />
         <StatTile icon={Sparkles} label="弹幕档案" value={totals.danmaku} tone="amber" />
         <StatTile icon={Heart} label="评论点赞" value={totals.likes} tone="amber" />
+      </section>
+
+      <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
+        <ProgressQueuePanel queue={spaceQueue} />
       </section>
 
       <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
@@ -430,10 +443,10 @@ export function VideoLibraryPage() {
               <button
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-bilibili px-4 text-sm font-medium text-white transition hover:bg-[#e85f89] disabled:cursor-wait disabled:opacity-70"
                 type="submit"
-                disabled={isTaskBusy}
+                disabled={isSubmittingSpace}
               >
-                <RefreshCcw className={cn(isArchivingSpace && "animate-spin")} size={16} aria-hidden="true" />
-                {isArchivingSpace ? "抓取中" : "抓取全部视频"}
+                <RefreshCcw className={cn((isSubmittingSpace || hasSpaceQueueWork) && "animate-spin")} size={16} aria-hidden="true" />
+                {isSubmittingSpace ? "加入队列中" : "抓取全部视频"}
               </button>
             </form>
           </div>
@@ -547,6 +560,103 @@ export function VideoLibraryPage() {
 
 function extractBvid(value: string) {
   return value.trim().match(/BV[0-9A-Za-z]{10}/)?.[0] || "";
+}
+
+function ProgressQueuePanel({ queue }: { queue?: ProgressQueue }) {
+  const queued = queue?.queued || [];
+  const recent = queue?.recent || [];
+  const active = queue?.active || null;
+
+  return (
+    <section className="rounded-md border border-line bg-white shadow-soft">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+          <RefreshCcw className={cn(active && "animate-spin text-bilibili")} size={18} aria-hidden="true" />
+          抓取队列
+        </h2>
+        <span className="text-sm text-muted">
+          {active ? "1 个运行中" : "无运行任务"} · {queued.length} 个排队中
+        </span>
+      </div>
+      <div className="grid gap-3 p-4">
+        {active ? (
+          <QueueTaskRow task={active} tone="active" />
+        ) : (
+          <div className="rounded-md border border-dashed border-line bg-[#fbfcfe] px-3 py-3 text-sm text-muted">
+            暂无正在运行的抓取任务
+          </div>
+        )}
+        {queued.length > 0 && (
+          <div className="grid gap-2">
+            {queued.map((task) => (
+              <QueueTaskRow key={task.id} task={task} tone="queued" />
+            ))}
+          </div>
+        )}
+        {queued.length === 0 && !active && recent.length === 0 && (
+          <div className="text-sm text-muted">暂无排队任务</div>
+        )}
+        {recent.length > 0 && (
+          <div className="grid gap-2 border-t border-line pt-3">
+            <div className="text-xs font-medium uppercase tracking-normal text-muted">最近完成</div>
+            {recent.slice(0, 3).map((task) => (
+              <QueueTaskRow key={task.id} task={task} tone="recent" />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function QueueTaskRow({ task, tone }: { task: ProgressTask; tone: "active" | "queued" | "recent" }) {
+  const percent = Math.max(0, Math.min(100, Math.round(task.progress || 0)));
+  const status = taskStatusLabel(task);
+  const title = task.mid ? `UP ${task.mid}` : task.owner_ref || task.id;
+  return (
+    <div
+      className={cn(
+        "min-w-0 rounded-md border px-3 py-3",
+        tone === "active"
+          ? "border-bilibili/30 bg-pink-50"
+          : tone === "queued"
+            ? "border-line bg-[#fbfcfe]"
+            : "border-line bg-white",
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-semibold text-ink">{title}</span>
+            <span className="rounded bg-white px-2 py-0.5 text-xs text-muted">{status}</span>
+            {task.queue_position && <span className="text-xs text-muted">排队第 {task.queue_position}</span>}
+          </div>
+          <div className="mt-1 truncate text-xs text-muted">
+            {task.message || "等待抓取"}
+            {task.current_bvid ? ` · ${task.current_bvid}` : ""}
+          </div>
+        </div>
+        <div className="shrink-0 text-right text-xs text-muted">
+          <div className="font-medium text-ink">{percent}%</div>
+          <div>
+            {task.complete || 0}/{task.total || 0}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
+        <div className="h-full rounded-full bg-bilibili transition-all duration-300" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function taskStatusLabel(task: ProgressTask) {
+  if (task.status === "running") return "运行中";
+  if (task.status === "waiting") return "等待当前任务";
+  if (task.status === "queued") return "排队中";
+  if (task.status === "finished") return "已完成";
+  if (task.status === "failed") return "失败";
+  return task.status || "未知";
 }
 
 function summarizeOwnerRef(value: string) {

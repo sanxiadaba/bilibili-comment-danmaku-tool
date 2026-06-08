@@ -223,11 +223,39 @@ export type ParseVideoResponse = {
 export type SpaceArchiveResponse = {
   ok: boolean;
   mid: string;
+  task_id: string;
+  queue_position: number;
   message: string;
   delay: number;
   between_videos_min: number;
   between_videos_max: number;
   no_cache: boolean;
+};
+
+export type ProgressTask = {
+  id: string;
+  kind: string;
+  mid: string;
+  owner_ref: string;
+  status: "queued" | "waiting" | "running" | "finished" | "failed" | string;
+  message: string;
+  created_at: string;
+  updated_at: string;
+  started_at: string;
+  finished_at: string;
+  progress: number;
+  current_bvid: string;
+  total: number;
+  complete: number;
+  archived: number;
+  skipped: number;
+  queue_position?: number;
+};
+
+export type ProgressQueue = {
+  active: ProgressTask | null;
+  queued: ProgressTask[];
+  recent: ProgressTask[];
 };
 
 export type ProgressState = {
@@ -243,6 +271,7 @@ export type ProgressState = {
   updated_at: string;
   done: boolean;
   error?: string;
+  queue?: ProgressQueue;
 };
 
 export type SortMode = "time_asc" | "time_desc" | "like_desc" | "reply_desc";
