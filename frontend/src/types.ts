@@ -225,7 +225,6 @@ export type SpaceArchiveResponse = {
   mid: string;
   message: string;
   delay: number;
-  comment_pages: number;
   between_videos_min: number;
   between_videos_max: number;
   no_cache: boolean;

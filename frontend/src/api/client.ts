@@ -53,7 +53,7 @@ export async function parseVideo(url: string, delay: number) {
   );
 }
 
-export async function archiveSpaceVideos(ownerRef: string, options: { delay: number; commentPages: number }) {
+export async function archiveSpaceVideos(ownerRef: string, options: { delay: number }) {
   return requestJson<SpaceArchiveResponse>(
     "space.archive",
     `/api/space/archive?ts=${Date.now()}`,
@@ -64,10 +64,9 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
       body: JSON.stringify({
         owner_ref: ownerRef,
         delay: options.delay,
-        comment_pages: options.commentPages,
       }),
     },
-    { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay, comment_pages: options.commentPages },
+    { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay },
   );
 }
 

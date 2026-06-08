@@ -343,7 +343,6 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
             options = {
                 "delay": clamp_float(parse_float(body.get("delay"), 1.0), 0.0, 5.0),
-                "comment_pages": clamp_int(parse_int(body.get("comment_pages"), 1), 1, 10),
                 "between_videos_min": clamp_float(parse_float(body.get("between_videos_min"), 8.0), 0.0, 3600.0),
                 "between_videos_max": clamp_float(parse_float(body.get("between_videos_max"), 20.0), 0.0, 3600.0),
                 "no_cache": bool(body.get("no_cache")),
@@ -837,8 +836,8 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
                 cookie_file=str(DEFAULT_COOKIE_FILE),
                 delay=options.get("delay", 1.0),
                 logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
-                max_main_pages=options.get("comment_pages", 1),
-                fetch_children=False,
+                max_main_pages=None,
+                fetch_children=True,
             )
             update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
             save_comments_to_sqlite(comments, db_path, replace=False)
@@ -849,7 +848,7 @@ def run_space_archive_task(db_path, mid, options, request_id=""):
                 comments.get("video_raw"),
                 headers=headers,
                 logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
-                fetch_likes=False,
+                fetch_likes=True,
             )
             if danmaku_result.get("items"):
                 update_progress("space", current_bvid, f"UP视频保存弹幕 {index}/{total} bvid={current_bvid}")

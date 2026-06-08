@@ -44,10 +44,6 @@ export function VideoLibraryPage() {
     const saved = window.localStorage.getItem("bilibili-comment-delay");
     return saved ? Number(saved) || 0.35 : 0.35;
   });
-  const [spaceCommentPages, setSpaceCommentPages] = useState(() => {
-    const saved = window.localStorage.getItem("bilibili-space-comment-pages");
-    return saved ? Number(saved) || 1 : 1;
-  });
   const isTaskBusy = isParsing || isArchivingSpace;
 
   const loadVideos = useCallback(async (options?: { quiet?: boolean }) => {
@@ -235,22 +231,18 @@ export function VideoLibraryPage() {
 
     logClientEvent("client.user.space_archive.start", "user started space archive", {
       owner_ref: summarizeOwnerRef(target),
-      comment_pages: spaceCommentPages,
       delay: parseDelay,
     });
     setIsArchivingSpace(true);
     setError("");
     setMessage("UP 主全部视频归档已开始，首页会显示当前进度");
     try {
-      window.localStorage.setItem("bilibili-space-comment-pages", String(spaceCommentPages));
       const payload = await archiveSpaceVideos(target, {
-        commentPages: spaceCommentPages,
         delay: parseDelay,
       });
       setOwnerRef(payload.mid);
       logClientEvent("client.user.space_archive.accepted", "space archive task accepted", {
         mid: payload.mid,
-        comment_pages: payload.comment_pages,
       });
     } catch (reason: unknown) {
       logClientEvent("client.user.space_archive.error", reason instanceof Error ? reason.message : String(reason), {
@@ -433,21 +425,6 @@ export function VideoLibraryPage() {
                     value={ownerRef}
                     onChange={(event) => setOwnerRef(event.target.value)}
                   />
-                </span>
-              </label>
-              <label className="grid gap-2 text-sm text-muted">
-                每个视频评论页
-                <span className="flex h-10 items-center gap-3 rounded-md border border-line px-3">
-                  <input
-                    className="min-w-0 flex-1 accent-bilibili"
-                    max={10}
-                    min={1}
-                    step={1}
-                    type="range"
-                    value={spaceCommentPages}
-                    onChange={(event) => setSpaceCommentPages(Number(event.target.value))}
-                  />
-                  <span className="w-10 text-right font-medium text-ink">{spaceCommentPages}</span>
                 </span>
               </label>
               <button
