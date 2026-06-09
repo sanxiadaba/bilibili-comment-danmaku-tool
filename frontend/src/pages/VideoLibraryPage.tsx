@@ -641,6 +641,9 @@ function QueueTaskRow({ task, tone }: { task: ProgressTask; tone: "active" | "qu
           <div>
             {task.complete || 0}/{task.total || 0}
           </div>
+          <div>
+            新增 {task.archived || 0} · 跳过 {task.skipped || 0} · 失败 {task.failed || 0}
+          </div>
         </div>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">

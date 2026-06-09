@@ -249,6 +249,7 @@ export type ProgressTask = {
   complete: number;
   archived: number;
   skipped: number;
+  failed: number;
   queue_position?: number;
 };
 

@@ -40,6 +40,7 @@ class InMemoryTaskQueue:
                 "complete": 0,
                 "archived": 0,
                 "skipped": 0,
+                "failed": 0,
                 **fields,
             }
             self.queued.append(task)
@@ -119,6 +120,7 @@ class InMemoryTaskQueue:
             "complete": task.get("complete", 0),
             "archived": task.get("archived", 0),
             "skipped": task.get("skipped", 0),
+            "failed": task.get("failed", 0),
         }
         if queue_position is not None:
             payload["queue_position"] = queue_position

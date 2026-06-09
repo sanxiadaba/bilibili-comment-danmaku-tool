@@ -101,6 +101,7 @@ function selectProgressStats(stats: ProgressState["stats"]) {
     "已完成视频",
     "本次新增",
     "跳过视频",
+    "失败视频",
     "当前视频",
     "楼中楼进度",
     "楼中楼总已抓",

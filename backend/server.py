@@ -779,17 +779,29 @@ def db_status(db_path, mid):
         conn.commit()
         rows = conn.execute(
             """
-            SELECT v.bvid, COUNT(DISTINCT c.rpid) AS comments, COUNT(DISTINCT d.dmid) AS danmaku
+            SELECT
+                v.bvid,
+                v.api_comment_count,
+                COALESCE(c.comments, 0) AS comments,
+                COALESCE(d.danmaku, 0) AS danmaku
             FROM videos v
-            LEFT JOIN comments c ON c.bvid = v.bvid
-            LEFT JOIN danmaku d ON d.bvid = v.bvid
+            LEFT JOIN (
+                SELECT bvid, COUNT(*) AS comments
+                FROM comments
+                GROUP BY bvid
+            ) c ON c.bvid = v.bvid
+            LEFT JOIN (
+                SELECT bvid, COUNT(*) AS danmaku
+                FROM danmaku
+                GROUP BY bvid
+            ) d ON d.bvid = v.bvid
             WHERE v.owner_mid = ?
-            GROUP BY v.bvid
             """,
             (str(mid),),
         ).fetchall()
         return {
             row["bvid"]: {
+                "api_comment_count": row["api_comment_count"],
                 "comments": row["comments"] or 0,
                 "danmaku": row["danmaku"] or 0,
             }
@@ -802,7 +814,11 @@ def db_status(db_path, mid):
 def is_complete(item, status):
     bvid = item.get("bvid")
     saved = status.get(bvid or "")
-    return bool(saved and saved["comments"] > 0 and saved["danmaku"] > 0)
+    return bool(
+        saved
+        and saved["danmaku"] > 0
+        and (saved["comments"] > 0 or saved.get("api_comment_count") == 0)
+    )
 
 
 def run_space_queue_task(task):
@@ -854,6 +870,7 @@ def run_space_archive_task(task):
     complete = 0
     archived = 0
     skipped = 0
+    failed = 0
     current_bvid = ""
     try:
         log_event(
@@ -874,11 +891,11 @@ def run_space_archive_task(task):
         )
         total = len(items)
         update_space_task(task, total=total, message=f"视频列表完成，共 {total} 个视频")
-        update_progress("space", mid, f"UP视频列表完成 total={total} complete=0 archived=0 skipped=0")
+        update_progress("space", mid, f"UP视频列表完成 total={total} complete=0 archived=0 skipped=0 failed=0")
+        status = db_status(db_path, mid)
+        complete = sum(1 for video in items if is_complete(video, status))
         for index, item in enumerate(items, start=1):
             current_bvid = item.get("bvid") or ""
-            status = db_status(db_path, mid)
-            complete = sum(1 for video in items if is_complete(video, status))
             if is_complete(item, status):
                 skipped += 1
                 update_space_task(
@@ -888,13 +905,14 @@ def run_space_archive_task(task):
                     complete=complete,
                     archived=archived,
                     skipped=skipped,
+                    failed=failed,
                     progress=space_task_percent(index, total),
                     message=f"跳过已完成视频 {index}/{total}",
                 )
                 update_progress(
                     "space",
                     current_bvid or mid,
-                    f"UP视频跳过 {index}/{total} complete={complete} archived={archived} skipped={skipped} bvid={current_bvid}",
+                    f"UP视频跳过 {index}/{total} complete={complete} archived={archived} skipped={skipped} failed={failed} bvid={current_bvid}",
                 )
                 continue
 
@@ -905,64 +923,105 @@ def run_space_archive_task(task):
                 complete=complete,
                 archived=archived,
                 skipped=skipped,
+                failed=failed,
                 progress=space_task_percent(index, total),
                 message=f"正在抓取视频 {index}/{total}",
             )
             update_progress(
                 "space",
                 current_bvid or mid,
-                f"UP视频抓取 {index}/{total} complete={complete} archived={archived} skipped={skipped} bvid={current_bvid}",
+                f"UP视频抓取 {index}/{total} complete={complete} archived={archived} skipped={skipped} failed={failed} bvid={current_bvid}",
             )
-            comments = scrape_comments(
-                current_bvid,
-                cookie=cookie,
-                cookie_file=str(DEFAULT_COOKIE_FILE),
-                delay=options.get("delay", 1.0),
-                logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
-                max_main_pages=None,
-                fetch_children=True,
-            )
-            update_space_task(task, message=f"正在保存评论 {index}/{total}")
-            update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
-            save_comments_to_sqlite(comments, db_path, replace=False)
+            try:
+                comments = scrape_comments(
+                    current_bvid,
+                    cookie=cookie,
+                    cookie_file=str(DEFAULT_COOKIE_FILE),
+                    delay=options.get("delay", 1.0),
+                    logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
+                    max_main_pages=None,
+                    fetch_children=True,
+                )
+                update_space_task(task, message=f"正在保存评论 {index}/{total}")
+                update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
+                save_comments_to_sqlite(comments, db_path, replace=False)
 
-            headers = scraper.make_headers(current_bvid, cookie)
-            danmaku_result = scrape_danmaku(
-                current_bvid,
-                comments.get("video_raw"),
-                headers=headers,
-                logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
-                fetch_likes=True,
-            )
-            if danmaku_result.get("items"):
-                update_space_task(task, message=f"正在保存弹幕 {index}/{total}")
-                update_progress("space", current_bvid, f"UP视频保存弹幕 {index}/{total} bvid={current_bvid}")
-                save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
-            else:
-                update_progress("space", current_bvid, f"UP视频弹幕为空已跳过保存 {index}/{total} bvid={current_bvid}")
+                headers = scraper.make_headers(current_bvid, cookie)
+                danmaku_result = scrape_danmaku(
+                    current_bvid,
+                    comments.get("video_raw"),
+                    headers=headers,
+                    logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
+                    fetch_likes=True,
+                )
+                if danmaku_result.get("items"):
+                    update_space_task(task, message=f"正在保存弹幕 {index}/{total}")
+                    update_progress("space", current_bvid, f"UP视频保存弹幕 {index}/{total} bvid={current_bvid}")
+                    save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
+                else:
+                    update_progress("space", current_bvid, f"UP视频弹幕为空已跳过保存 {index}/{total} bvid={current_bvid}")
 
-            archived += 1
-            complete += 1
-            update_space_task(
-                task,
-                complete=complete,
-                archived=archived,
-                skipped=skipped,
-                progress=space_task_percent(index, total),
-                message=f"视频完成 {index}/{total}",
-            )
-            log_event(
-                "task.space_archive.video_finish",
-                "space archive video finished",
-                request_id=request_id,
-                mid=mid,
-                task_id=task["id"],
-                bvid=current_bvid,
-                index=index,
-                total=total,
-                archived=archived,
-                complete=complete,
-            )
+                archived += 1
+                status[current_bvid] = {
+                    "api_comment_count": comments.get("metadata", {}).get("api_comment_count"),
+                    "comments": len(comments.get("comment_items") or []),
+                    "danmaku": len(danmaku_result.get("items") or []),
+                }
+                complete += 1
+                update_space_task(
+                    task,
+                    complete=complete,
+                    archived=archived,
+                    skipped=skipped,
+                    failed=failed,
+                    progress=space_task_percent(index, total),
+                    message=f"视频完成 {index}/{total}",
+                )
+                log_event(
+                    "task.space_archive.video_finish",
+                    "space archive video finished",
+                    request_id=request_id,
+                    mid=mid,
+                    task_id=task["id"],
+                    bvid=current_bvid,
+                    index=index,
+                    total=total,
+                    archived=archived,
+                    complete=complete,
+                    failed=failed,
+                )
+            except Exception as exc:
+                if should_abort_space_archive(exc):
+                    raise
+                failed += 1
+                payload, status_code = api_error_response(exc)
+                update_space_task(
+                    task,
+                    failed=failed,
+                    current_bvid=current_bvid,
+                    progress=space_task_percent(index, total),
+                    message=f"视频失败，已跳过 {index}/{total}",
+                )
+                update_progress(
+                    "space",
+                    current_bvid or mid,
+                    f"UP视频失败 {index}/{total} complete={complete} archived={archived} skipped={skipped} failed={failed} bvid={current_bvid}",
+                )
+                log_exception(
+                    "task.space_archive.video_error",
+                    payload["error"],
+                    request_id=request_id,
+                    mid=mid,
+                    task_id=task["id"],
+                    bvid=current_bvid,
+                    index=index,
+                    total=total,
+                    complete=complete,
+                    archived=archived,
+                    skipped=skipped,
+                    failed=failed,
+                    status=status_code,
+                )
             if index < total:
                 pause = random.uniform(options.get("between_videos_min", 8.0), options.get("between_videos_max", 20.0))
                 update_space_task(task, message=f"等待下一条 {index}/{total}")
@@ -980,9 +1039,10 @@ def run_space_archive_task(task):
             complete=complete,
             archived=archived,
             skipped=skipped,
+            failed=failed,
             progress=100,
         )
-        finish_progress("space", mid, f"UP 主归档完成：{complete}/{total} 个视频已有评论和弹幕")
+        finish_progress("space", mid, f"UP 主归档完成：{complete}/{total} 个视频已有评论和弹幕，失败 {failed} 个")
         log_event(
             "task.space_archive.finish",
             "space archive task finished",
@@ -993,6 +1053,7 @@ def run_space_archive_task(task):
             complete=complete,
             archived=archived,
             skipped=skipped,
+            failed=failed,
         )
     except Exception as exc:
         payload, status_code = api_error_response(exc)
@@ -1006,6 +1067,7 @@ def run_space_archive_task(task):
             complete=complete,
             archived=archived,
             skipped=skipped,
+            failed=failed,
         )
         fail_progress("space", current_bvid or mid, payload["error"])
         log_exception(
@@ -1019,6 +1081,7 @@ def run_space_archive_task(task):
             complete=complete,
             archived=archived,
             skipped=skipped,
+            failed=failed,
             status=status_code,
         )
 
@@ -1037,7 +1100,13 @@ def log_space_video_progress(bvid, message):
         or message.startswith("danmaku:")
         or message.startswith("parsed xml")
         or message.startswith("fetching xml")
+        or message.startswith("warmup:")
+        or message.startswith("wbi:")
+        or message.startswith("video info:")
+        or message.startswith("video:")
+        or message.startswith("main replies:")
         or message.startswith("warning:")
+        or message.startswith("comments closed:")
         or "slow request" in message
     ):
         update_progress("space", bvid, message)
@@ -1137,6 +1206,7 @@ def finish_progress(kind, bvid, message):
 
 def fail_progress(kind, bvid, message):
     now = utc_now()
+    stage = progress_stage(kind, message)
     with progress_lock:
         logs = [*progress_state.get("logs", []), f"失败：{message}"][-80:]
         progress_state.update(
@@ -1147,7 +1217,7 @@ def fail_progress(kind, bvid, message):
                 "message": message,
                 "logs": logs,
                 "percent": progress_state.get("percent", 0),
-                "stage": "失败",
+                "stage": stage,
                 "stats": progress_state.get("stats", {}),
                 "updated_at": now,
                 "done": True,
@@ -1161,7 +1231,7 @@ def fail_progress(kind, bvid, message):
         kind=kind,
         bvid=bvid or "",
         percent=percent,
-        stage="失败",
+        stage=stage,
         level="error",
     )
 
@@ -1195,6 +1265,15 @@ def safe_print(message):
 def api_error_response(exc):
     message = str(exc)
     lower_message = message.lower()
+
+    if isinstance(exc, scraper.WbiSignatureUnavailableError):
+        return (
+            {
+                "error": "WBI 签名接口暂不可用，已暂停本轮 UP 归档。稍后重新抓取同一个 UP 时，已归档视频会自动跳过。",
+                "detail": message,
+            },
+            502,
+        )
 
     if (
         (isinstance(exc, BilibiliRequestError) and exc.status == 412)
@@ -1263,7 +1342,28 @@ def api_error_response(exc):
     return ({"error": message}, 500)
 
 
+def should_abort_space_archive(exc):
+    lower_message = str(exc).lower()
+    return (
+        isinstance(exc, scraper.WbiSignatureUnavailableError)
+        or scraper.is_blocked_request_error(exc)
+        or (isinstance(exc, BilibiliRequestError) and exc.status in {412, 429})
+        or "http error 412" in lower_message
+        or "http error 429" in lower_message
+        or "api code=-352" in lower_message
+        or "api code -352" in lower_message
+        or "consecutive_very_slow_requests" in lower_message
+        or "slow_limit_cooldown" in lower_message
+    )
+
+
 def progress_stage(kind, message):
+    if "HTTP 412" in message or "HTTP 429" in message or "cooling down" in message:
+        return "接口冷却"
+    if kind == "space" and ("暂停" in message or "暂不可用" in message):
+        return "暂停归档"
+    if kind == "space" and "UP视频失败" in message:
+        return "跳过失败视频"
     if "失败" in message:
         return "失败"
     if "保存" in message:
@@ -1397,14 +1497,15 @@ def progress_stats(kind, message, current):
             stats["点赞批次"] = batch.group(1)
             stats["本批 dmid"] = batch.group(2)
     if kind == "space":
-        list_done = re.search(r"UP视频列表完成 total=(\d+) complete=(\d+) archived=(\d+) skipped=(\d+)", message)
+        list_done = re.search(r"UP视频列表完成 total=(\d+) complete=(\d+) archived=(\d+) skipped=(\d+)(?: failed=(\d+))?", message)
         if list_done:
             stats["UP视频总数"] = list_done.group(1)
             stats["已完成视频"] = list_done.group(2)
             stats["本次新增"] = list_done.group(3)
             stats["跳过视频"] = list_done.group(4)
+            stats["失败视频"] = list_done.group(5) or "0"
         video = re.search(
-            r"UP视频(?:抓取|跳过)\s+(\d+)/(\d+).*?complete=(\d+).*?archived=(\d+).*?skipped=(\d+).*?bvid=([^ ]*)",
+            r"UP视频(?:抓取|跳过|失败)\s+(\d+)/(\d+).*?complete=(\d+).*?archived=(\d+).*?skipped=(\d+)(?:.*?failed=(\d+))?.*?bvid=([^ ]*)",
             message,
         )
         if video:
@@ -1413,8 +1514,10 @@ def progress_stats(kind, message, current):
             stats["已完成视频"] = video.group(3)
             stats["本次新增"] = video.group(4)
             stats["跳过视频"] = video.group(5)
-            if video.group(6):
-                stats["当前视频"] = video.group(6)
+            if video.group(6) is not None:
+                stats["失败视频"] = video.group(6)
+            if video.group(7):
+                stats["当前视频"] = video.group(7)
         interval = re.search(r"UP视频间隔\s+(\d+)/(\d+)\s+seconds=([0-9.]+)\s+next=(\d+)", message)
         if interval:
             stats["UP视频进度"] = f"{interval.group(1)} / {interval.group(2)}"
@@ -1444,7 +1547,7 @@ def parse_child_root_progress(message):
 
 
 def parse_space_progress(message):
-    match = re.search(r"UP视频(?:抓取|跳过|保存评论|保存弹幕|弹幕为空已跳过保存|间隔)\s+(\d+)/(\d+)", message)
+    match = re.search(r"UP视频(?:抓取|跳过|失败|保存评论|保存弹幕|弹幕为空已跳过保存|间隔)\s+(\d+)/(\d+)", message)
     if match:
         return (int(match.group(1)), int(match.group(2)))
     return (0, 0)
