@@ -1225,14 +1225,41 @@ class ScraperPerformanceTests(unittest.TestCase):
 
     def test_space_completion_accepts_zero_comment_video_when_api_count_is_zero(self):
         status = {
-            "BV1closed": {"api_comment_count": 0, "comments": 0, "danmaku": 12},
-            "BV1empty": {"api_comment_count": 0, "comments": 0, "danmaku": 0},
-            "BV1partial": {"api_comment_count": 10, "comments": 0, "danmaku": 12},
+            "BV1closed": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 0, "stat_reply": 0, "stat_danmaku": 7, "comments": 0, "danmaku": 12},
+            "BV1empty": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 0, "stat_reply": 0, "stat_danmaku": 0, "comments": 0, "danmaku": 0},
+            "BV1partial": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 10, "stat_reply": 10, "stat_danmaku": 7, "comments": 0, "danmaku": 12},
+            "BV1missing_danmaku": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 1, "stat_reply": 1, "stat_danmaku": 7, "comments": 1, "danmaku": 0},
+            "BV1not_saved": {"api_comment_count": 0, "stat_reply": 0, "stat_danmaku": 0, "comments": 0, "danmaku": 0},
         }
 
-        self.assertTrue(is_complete({"bvid": "BV1closed"}, status))
-        self.assertFalse(is_complete({"bvid": "BV1empty"}, status))
+        self.assertTrue(is_complete({"bvid": "BV1closed", "comment": 0, "video_review": 7}, status))
+        self.assertTrue(is_complete({"bvid": "BV1empty", "comment": 0, "video_review": 0}, status))
         self.assertFalse(is_complete({"bvid": "BV1partial"}, status))
+        self.assertFalse(is_complete({"bvid": "BV1missing_danmaku", "comment": 1, "video_review": 7}, status))
+        self.assertFalse(is_complete({"bvid": "BV1not_saved", "comment": 0, "video_review": 0}, status))
+
+    def test_space_completion_uses_space_list_expected_counts(self):
+        status = {
+            "BV1zero_danmaku": {
+                "fetched_at": "2026-06-09T00:00:00+00:00",
+                "api_comment_count": 1,
+                "stat_reply": 1,
+                "stat_danmaku": None,
+                "comments": 1,
+                "danmaku": 0,
+            },
+            "BV1zero_all": {
+                "fetched_at": "2026-06-09T00:00:00+00:00",
+                "api_comment_count": None,
+                "stat_reply": None,
+                "stat_danmaku": None,
+                "comments": 0,
+                "danmaku": 0,
+            },
+        }
+
+        self.assertTrue(is_complete({"bvid": "BV1zero_danmaku", "comment": 1, "video_review": 0}, status))
+        self.assertTrue(is_complete({"bvid": "BV1zero_all", "comment": 0, "video_review": 0}, status))
 
     def test_space_progress_reports_video_totals(self):
         stats = progress_stats(

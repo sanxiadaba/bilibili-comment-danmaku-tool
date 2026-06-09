@@ -781,7 +781,11 @@ def db_status(db_path, mid):
             """
             SELECT
                 v.bvid,
+                v.fetched_at,
+                v.video_cid,
                 v.api_comment_count,
+                v.stat_reply,
+                v.stat_danmaku,
                 COALESCE(c.comments, 0) AS comments,
                 COALESCE(d.danmaku, 0) AS danmaku
             FROM videos v
@@ -801,7 +805,11 @@ def db_status(db_path, mid):
         ).fetchall()
         return {
             row["bvid"]: {
+                "fetched_at": row["fetched_at"],
+                "video_cid": row["video_cid"],
                 "api_comment_count": row["api_comment_count"],
+                "stat_reply": row["stat_reply"],
+                "stat_danmaku": row["stat_danmaku"],
                 "comments": row["comments"] or 0,
                 "danmaku": row["danmaku"] or 0,
             }
@@ -814,11 +822,19 @@ def db_status(db_path, mid):
 def is_complete(item, status):
     bvid = item.get("bvid")
     saved = status.get(bvid or "")
-    return bool(
-        saved
-        and saved["danmaku"] > 0
-        and (saved["comments"] > 0 or saved.get("api_comment_count") == 0)
+    if not saved or not saved.get("fetched_at"):
+        return False
+
+    expected_comments = first_int(item.get("comment"), saved.get("stat_reply"), saved.get("api_comment_count"))
+    expected_danmaku = first_int(item.get("video_review"), saved.get("stat_danmaku"))
+
+    comments_complete = (
+        expected_comments == 0
+        or saved["comments"] > 0
+        or saved.get("api_comment_count") == 0
     )
+    danmaku_complete = expected_danmaku == 0 or saved["danmaku"] > 0
+    return bool(comments_complete and danmaku_complete)
 
 
 def run_space_queue_task(task):
@@ -1560,6 +1576,17 @@ def parse_float(value, default):
         return float(value)
     except ValueError:
         return default
+
+
+def first_int(*values):
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def parse_int(value, default):
