@@ -1,7 +1,9 @@
 import gzip
 import json
 import logging
+import os
 import queue
+import socket
 import sys
 import tempfile
 import threading
@@ -17,7 +19,16 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from server import BadRequestError, extract_space_mid, parse_json_object_body, progress_percent, progress_stats  # noqa: E402
+from server import (  # noqa: E402
+    BadRequestError,
+    api_error_response,
+    extract_space_mid,
+    is_complete,
+    parse_json_object_body,
+    progress_percent,
+    progress_stats,
+    should_abort_space_archive,
+)
 from task_queue import InMemoryTaskQueue  # noqa: E402
 from bilibili_comment_danmaku.danmaku import (  # noqa: E402
     decode_response_body,
@@ -584,6 +595,66 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(backoff.slow_limit_level, 1)
         self.assertEqual(backoff.fast_request_count, 0)
 
+    def test_backoff_can_skip_regular_spacing_but_keep_cooldown(self):
+        original_sleep = scraper.time.sleep
+        original_monotonic = scraper.time.monotonic
+        sleeps = []
+        now = [1000]
+        try:
+            scraper.time.sleep = lambda seconds: sleeps.append(seconds)
+            scraper.time.monotonic = lambda: now[0]
+            backoff = scraper.RequestBackoff(persist=False)
+            backoff.next_request_at = now[0] + 30
+
+            waited = backoff.wait(include_spacing=False)
+        finally:
+            scraper.time.sleep = original_sleep
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(waited, 0)
+        self.assertEqual(sleeps, [])
+
+    def test_backoff_skip_spacing_still_waits_for_blocked_until(self):
+        original_sleep = scraper.time.sleep
+        original_monotonic = scraper.time.monotonic
+        sleeps = []
+        now = [1000]
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        try:
+            scraper.time.sleep = fake_sleep
+            scraper.time.monotonic = lambda: now[0]
+            backoff = scraper.RequestBackoff(persist=False)
+            backoff.blocked_until = now[0] + 12
+            backoff.next_request_at = now[0] + 30
+
+            waited = backoff.wait(include_spacing=False)
+        finally:
+            scraper.time.sleep = original_sleep
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(round(waited), 12)
+        self.assertEqual([round(value) for value in sleeps], [12])
+
+    def test_backoff_spacing_factor_scales_regular_interval(self):
+        original_uniform = scraper.random.uniform
+        original_monotonic = scraper.time.monotonic
+        try:
+            scraper.random.uniform = lambda start, _end: start
+            scraper.time.monotonic = lambda: 1000
+            backoff = scraper.RequestBackoff(min_interval=1.0, interval_jitter=(0.2, 0.4), persist=False)
+
+            waited = backoff.wait(spacing_factor=0.5)
+        finally:
+            scraper.random.uniform = original_uniform
+            scraper.time.monotonic = original_monotonic
+
+        self.assertEqual(waited, 0)
+        self.assertAlmostEqual(backoff.next_request_at, 1000.6)
+
     def test_backoff_persists_blocked_until_for_new_instance(self):
         original_time = scraper.time.time
         original_monotonic = scraper.time.monotonic
@@ -640,6 +711,44 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(second.slow_limit_level, 2)
         self.assertEqual(cooldown, scraper.SLOW_LIMIT_COOLDOWN_SECONDS[0] * 2)
 
+    def test_warmup_skips_transient_network_failure(self):
+        class FailingOpener:
+            def open(self, _req, timeout=30):
+                raise TimeoutError("timed out")
+
+        client = scraper.BilibiliClient(scraper.make_headers(BVID, ""), use_proxy=False)
+        client.opener = FailingOpener()
+        logs = []
+
+        client.warmup(BVID, logger=logs.append)
+
+        self.assertTrue(any("warmup skipped" in item for item in logs))
+
+    def test_ipv4_first_dns_prefers_ipv4_results(self):
+        original_getaddrinfo = scraper.socket.getaddrinfo
+        original_original_getaddrinfo = scraper.ORIGINAL_GETADDRINFO
+        original_installed = scraper.IPV4_FIRST_DNS_INSTALLED
+
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [
+                (socket.AF_INET6, None, None, "", ("2409::1", 443, 0, 0)),
+                (socket.AF_INET, None, None, "", ("1.2.3.4", 443)),
+            ]
+
+        try:
+            scraper.socket.getaddrinfo = fake_getaddrinfo
+            scraper.ORIGINAL_GETADDRINFO = fake_getaddrinfo
+            scraper.IPV4_FIRST_DNS_INSTALLED = False
+            scraper.install_ipv4_first_dns()
+
+            infos = scraper.socket.getaddrinfo("api.bilibili.com", 443)
+        finally:
+            scraper.socket.getaddrinfo = original_getaddrinfo
+            scraper.ORIGINAL_GETADDRINFO = original_original_getaddrinfo
+            scraper.IPV4_FIRST_DNS_INSTALLED = original_installed
+
+        self.assertEqual(infos[0][0], socket.AF_INET)
+
     def test_wbi_mixin_key_cache_reuses_recent_key(self):
         calls = []
 
@@ -658,16 +767,23 @@ class ScraperPerformanceTests(unittest.TestCase):
                 }
 
         original_time = scraper.time.time
+        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
         try:
-            scraper.time.time = lambda: 1000
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
-            first = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
-            second = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                scraper.time.time = lambda: 1000
+                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                first = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
+                second = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
         finally:
             scraper.time.time = original_time
             scraper.WBI_MIXIN_KEY_CACHE["value"] = None
             scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            if original_env is None:
+                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+            else:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertEqual(first, second)
         self.assertEqual(len(calls), 1)
@@ -690,18 +806,197 @@ class ScraperPerformanceTests(unittest.TestCase):
                 }
 
         original_time = scraper.time.time
+        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
         try:
-            scraper.time.time = lambda: 1000
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = "cached-key"
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 2000
-            value = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None, force_refresh=True)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                scraper.time.time = lambda: 1000
+                scraper.WBI_MIXIN_KEY_CACHE["value"] = "cached-key"
+                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 2000
+                value = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None, force_refresh=True)
         finally:
             scraper.time.time = original_time
             scraper.WBI_MIXIN_KEY_CACHE["value"] = None
             scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            if original_env is None:
+                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+            else:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertNotEqual(value, "cached-key")
         self.assertEqual(len(calls), 1)
+
+    def test_wbi_mixin_key_fetch_does_not_wait_for_global_backoff(self):
+        kwargs_seen = []
+
+        class FakeClient:
+            def request_json(self, _url, **kwargs):
+                kwargs_seen.append(kwargs)
+                return {
+                    "code": 0,
+                    "data": {
+                        "isLogin": True,
+                        "wbi_img": {
+                            "img_url": "https://i0.hdslb.com/bfs/wbi/" + ("f" * 64) + ".png",
+                            "sub_url": "https://i0.hdslb.com/bfs/wbi/" + ("0" * 64) + ".png",
+                        },
+                    },
+                }
+
+        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None, force_refresh=True)
+        finally:
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            if original_env is None:
+                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+            else:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+
+        self.assertEqual(kwargs_seen[0]["wait_for_backoff"], False)
+
+    def test_wbi_mixin_key_uses_persisted_key_when_nav_is_unavailable(self):
+        class FailingClient:
+            def request_json(self, _url, **_kwargs):
+                raise TimeoutError("nav timed out")
+
+        original_time = scraper.time.time
+        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_fallback = scraper.fetch_wbi_nav_with_system_opener
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cache_path = Path(tmpdir) / "wbi.json"
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(cache_path)
+                scraper.time.time = lambda: 1000
+                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                scraper.persist_wbi_mixin_key("e" * 32, expires_at=2000)
+                scraper.fetch_wbi_nav_with_system_opener = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    TimeoutError("fallback timed out")
+                )
+                logs = []
+
+                value = scraper.get_wbi_mixin_key(FailingClient(), logs.append, force_refresh=True)
+        finally:
+            scraper.time.time = original_time
+            scraper.fetch_wbi_nav_with_system_opener = original_fallback
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            if original_env is None:
+                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+            else:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+
+        self.assertEqual(value, "e" * 32)
+        self.assertTrue(any("reused persisted WBI" in item for item in logs))
+
+    def test_wbi_mixin_key_raises_specific_error_without_cache(self):
+        class FailingClient:
+            def request_json(self, _url, **_kwargs):
+                raise TimeoutError("nav timed out")
+
+        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_fallback = scraper.fetch_wbi_nav_with_system_opener
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                scraper.fetch_wbi_nav_with_system_opener = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    TimeoutError("fallback timed out")
+                )
+
+                with self.assertRaises(scraper.WbiSignatureUnavailableError):
+                    scraper.get_wbi_mixin_key(FailingClient(), lambda _message: None, force_refresh=True)
+        finally:
+            scraper.fetch_wbi_nav_with_system_opener = original_fallback
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            if original_env is None:
+                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+            else:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+
+    def test_wbi_mixin_key_uses_system_opener_fallback(self):
+        class FailingClient:
+            headers = {"Cookie": "SESSDATA=secret", "User-Agent": "test-agent"}
+
+            def request_json(self, _url, **_kwargs):
+                raise TimeoutError("direct nav timed out")
+
+        def fallback(headers, **_kwargs):
+            fallback_headers.append(headers)
+            return {
+                "code": 0,
+                "data": {
+                    "isLogin": False,
+                    "wbi_img": {
+                        "img_url": "https://i0.hdslb.com/bfs/wbi/" + ("1" * 64) + ".png",
+                        "sub_url": "https://i0.hdslb.com/bfs/wbi/" + ("2" * 64) + ".png",
+                    },
+                },
+            }
+
+        fallback_headers = []
+        logs = []
+        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_fallback = scraper.fetch_wbi_nav_with_system_opener
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                scraper.fetch_wbi_nav_with_system_opener = fallback
+
+                value = scraper.get_wbi_mixin_key(FailingClient(), logs.append, force_refresh=True)
+        finally:
+            scraper.fetch_wbi_nav_with_system_opener = original_fallback
+            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
+            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            if original_env is None:
+                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+            else:
+                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+
+        self.assertEqual(len(value), 32)
+        self.assertEqual(fallback_headers[0]["Cookie"], "SESSDATA=secret")
+        self.assertTrue(any("system opener fallback" in item for item in logs))
+
+    def test_call_with_hard_timeout_raises_timeout(self):
+        original_thread = scraper.threading.Thread
+        original_queue = scraper.queue.Queue
+
+        class NeverStartedThread:
+            def __init__(self, target=None, daemon=None):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                return None
+
+        class AlwaysEmptyQueue:
+            def __init__(self, maxsize=0):
+                self.maxsize = maxsize
+
+            def put(self, _value):
+                return None
+
+            def get(self, timeout=None):
+                raise scraper.queue.Empty()
+
+        try:
+            scraper.threading.Thread = NeverStartedThread
+            scraper.queue.Queue = AlwaysEmptyQueue
+            with self.assertRaises(TimeoutError):
+                scraper.call_with_hard_timeout(lambda: "ok", 0.01, "too slow")
+        finally:
+            scraper.threading.Thread = original_thread
+            scraper.queue.Queue = original_queue
 
     def test_child_fetch_is_skipped_when_main_reply_already_has_all_children(self):
         class FailingClient:
@@ -762,6 +1057,25 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(summary[0]["fetched_count"], 1)
         self.assertEqual(sleeps, [])
 
+    def test_child_fetch_blocked_request_raises_without_internal_retries(self):
+        calls = []
+        logs = []
+
+        class BlockedClient:
+            backoff = scraper.RequestBackoff(persist=False)
+
+            def request_json(self, url, **kwargs):
+                calls.append((url, kwargs))
+                raise scraper.BilibiliRequestError("blocked", status=412, url=url)
+
+        with self.assertRaises(scraper.BilibiliRequestError):
+            scraper.fetch_child_replies("123", "456", 10, BlockedClient(), 0, logs.append)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["retries"], 1)
+        self.assertTrue(any("blocked by HTTP 412" in item for item in logs))
+        self.assertGreater(BlockedClient.backoff.blocked_until, 0)
+
     def test_main_reply_fetch_can_stop_after_page_limit(self):
         calls = []
 
@@ -801,6 +1115,29 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(len(replies), 2)
         self.assertEqual(api_count, 100)
+
+    def test_main_reply_fetch_treats_closed_comments_as_empty_archive(self):
+        class ClosedCommentClient:
+            def request_json(self, url, **_kwargs):
+                raise scraper.BilibiliRequestError(
+                    "API code=12061 message=UP主已关闭评论区",
+                    api_code=12061,
+                    api_message="UP主已关闭评论区",
+                    url=url,
+                )
+
+        logs = []
+        replies, api_count = scraper.fetch_main_replies(
+            "123",
+            ClosedCommentClient(),
+            "1" * 32,
+            0,
+            logs.append,
+        )
+
+        self.assertEqual(replies, [])
+        self.assertEqual(api_count, 0)
+        self.assertTrue(any("comments closed" in item for item in logs))
 
     def test_child_fetch_can_be_skipped_for_fast_archive(self):
         class FailingClient:
@@ -886,15 +1223,53 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(extract_space_mid("395188578"), "395188578")
         self.assertEqual(extract_space_mid("https://www.bilibili.com/video/BV1xx411c7mD"), "")
 
+    def test_space_completion_accepts_zero_comment_video_when_api_count_is_zero(self):
+        status = {
+            "BV1closed": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 0, "stat_reply": 0, "stat_danmaku": 7, "comments": 0, "danmaku": 12},
+            "BV1empty": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 0, "stat_reply": 0, "stat_danmaku": 0, "comments": 0, "danmaku": 0},
+            "BV1partial": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 10, "stat_reply": 10, "stat_danmaku": 7, "comments": 0, "danmaku": 12},
+            "BV1missing_danmaku": {"fetched_at": "2026-06-09T00:00:00+00:00", "api_comment_count": 1, "stat_reply": 1, "stat_danmaku": 7, "comments": 1, "danmaku": 0},
+            "BV1not_saved": {"api_comment_count": 0, "stat_reply": 0, "stat_danmaku": 0, "comments": 0, "danmaku": 0},
+        }
+
+        self.assertTrue(is_complete({"bvid": "BV1closed", "comment": 0, "video_review": 7}, status))
+        self.assertTrue(is_complete({"bvid": "BV1empty", "comment": 0, "video_review": 0}, status))
+        self.assertFalse(is_complete({"bvid": "BV1partial"}, status))
+        self.assertFalse(is_complete({"bvid": "BV1missing_danmaku", "comment": 1, "video_review": 7}, status))
+        self.assertFalse(is_complete({"bvid": "BV1not_saved", "comment": 0, "video_review": 0}, status))
+
+    def test_space_completion_uses_space_list_expected_counts(self):
+        status = {
+            "BV1zero_danmaku": {
+                "fetched_at": "2026-06-09T00:00:00+00:00",
+                "api_comment_count": 1,
+                "stat_reply": 1,
+                "stat_danmaku": None,
+                "comments": 1,
+                "danmaku": 0,
+            },
+            "BV1zero_all": {
+                "fetched_at": "2026-06-09T00:00:00+00:00",
+                "api_comment_count": None,
+                "stat_reply": None,
+                "stat_danmaku": None,
+                "comments": 0,
+                "danmaku": 0,
+            },
+        }
+
+        self.assertTrue(is_complete({"bvid": "BV1zero_danmaku", "comment": 1, "video_review": 0}, status))
+        self.assertTrue(is_complete({"bvid": "BV1zero_all", "comment": 0, "video_review": 0}, status))
+
     def test_space_progress_reports_video_totals(self):
         stats = progress_stats(
             "space",
-            "UP视频抓取 3/178 complete=24 archived=2 skipped=1 bvid=BV1xx411c7mD",
+            "UP视频失败 3/178 complete=24 archived=2 skipped=1 failed=1 bvid=BV1xx411c7mD",
             {},
         )
         percent = progress_percent(
             "space",
-            "UP视频抓取 3/178 complete=24 archived=2 skipped=1 bvid=BV1xx411c7mD",
+            "UP视频失败 3/178 complete=24 archived=2 skipped=1 failed=1 bvid=BV1xx411c7mD",
             5,
         )
 
@@ -903,6 +1278,7 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(stats["已完成视频"], "24")
         self.assertEqual(stats["本次新增"], "2")
         self.assertEqual(stats["跳过视频"], "1")
+        self.assertEqual(stats["失败视频"], "1")
         self.assertEqual(stats["当前视频"], "BV1xx411c7mD")
         self.assertGreater(percent, 5)
 
@@ -914,6 +1290,16 @@ class ScraperPerformanceTests(unittest.TestCase):
         )
 
         self.assertEqual(percent, 5)
+
+
+    def test_wbi_unavailable_aborts_space_archive_with_clear_error(self):
+        exc = scraper.WbiSignatureUnavailableError("WBI signature key is temporarily unavailable")
+        payload, status = api_error_response(exc)
+
+        self.assertTrue(should_abort_space_archive(exc))
+        self.assertEqual(status, 502)
+        self.assertIn("WBI", payload["error"])
+        self.assertIn("暂停", payload["error"])
 
 
 class LoggingTests(unittest.TestCase):
@@ -984,6 +1370,7 @@ class TaskQueueTests(unittest.TestCase):
         self.assertIsNone(snapshot["active"])
         self.assertEqual(snapshot["queued"], [])
         self.assertEqual([task["mid"] for task in snapshot["recent"]], ["2", "1"])
+        self.assertEqual(snapshot["recent"][0]["failed"], 0)
 
     def test_in_memory_queue_marks_failures_and_continues(self):
         events = []
@@ -1009,6 +1396,7 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(events, ["1", "2"])
         self.assertEqual([task["status"] for task in snapshot["recent"]], ["finished", "failed"])
         self.assertEqual(snapshot["recent"][1]["message"], "boom")
+        self.assertEqual(snapshot["recent"][1]["failed"], 0)
 
 
 class RequestParsingTests(unittest.TestCase):

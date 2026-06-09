@@ -16,6 +16,7 @@ from .scraper import (
     DEFAULT_PROXY,
     GLOBAL_REQUEST_BACKOFF,
     BilibiliRequestError,
+    install_ipv4_first_dns,
     log_backoff_wait,
     log_slow_request,
     retry_after_seconds,
@@ -36,6 +37,7 @@ def extract_cid(video_raw):
 
 def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
     log = logger or (lambda message: None)
+    install_ipv4_first_dns()
     if use_proxy:
         os.environ.setdefault("HTTP_PROXY", DEFAULT_PROXY)
         os.environ.setdefault("HTTPS_PROXY", DEFAULT_PROXY)
@@ -123,6 +125,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
     if not dmids:
         return {}
     log = logger or (lambda message: None)
+    install_ipv4_first_dns()
     if use_proxy:
         os.environ.setdefault("HTTP_PROXY", DEFAULT_PROXY)
         os.environ.setdefault("HTTPS_PROXY", DEFAULT_PROXY)

@@ -3,7 +3,9 @@ import http.cookiejar
 import copy
 import json
 import os
+import queue
 import random
+import socket
 import threading
 import time
 import urllib.error
@@ -35,6 +37,7 @@ RATE_LIMIT_RETRY_DELAYS = (180, 600, 1800)
 RATE_LIMIT_RETRY_JITTER_SECONDS = (15, 90)
 GLOBAL_MIN_REQUEST_INTERVAL_SECONDS = 0.85
 REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
+CHILD_REQUEST_SPACING_FACTOR = 0.65
 SLOW_REQUEST_WARN_SECONDS = 12
 VERY_SLOW_REQUEST_SECONDS = 60
 VERY_SLOW_REQUEST_COOLDOWN_SECONDS = (30, 90)
@@ -117,18 +120,58 @@ MIXIN_KEY_ENC_TAB = [
 WBI_BAD_CHARS = "!'()*"
 BROWSER_ID_COOKIE_NAMES = {"buvid3", "buvid4", "buvid_fp", "b_nut"}
 WBI_MIXIN_KEY_TTL_SECONDS = 1800
+WBI_MIXIN_KEY_STALE_TTL_SECONDS = 24 * 60 * 60
+WBI_NAV_HARD_TIMEOUT_SECONDS = 10
+WBI_CACHE_PATH_ENV = "BILIBILI_WBI_CACHE_PATH"
 BACKOFF_STATE_PATH_ENV = "BILIBILI_BACKOFF_STATE_PATH"
 BACKOFF_STATE_MAX_AGE_SECONDS = 24 * 60 * 60
+COMMENTS_CLOSED_API_CODES = {12061}
+ORIGINAL_GETADDRINFO = socket.getaddrinfo
+IPV4_FIRST_DNS_INSTALLED = False
+IPV4_FIRST_DNS_LOCK = threading.Lock()
 
 
 class BilibiliRequestError(RuntimeError):
-    def __init__(self, message, *, status=None, api_code=None, url=None, cause=None, retry_after=None):
+    def __init__(
+        self,
+        message,
+        *,
+        status=None,
+        api_code=None,
+        api_message=None,
+        url=None,
+        cause=None,
+        retry_after=None,
+    ):
         super().__init__(message)
         self.status = status
         self.api_code = api_code
+        self.api_message = api_message
         self.url = url
         self.retry_after = retry_after
         self.__cause__ = cause
+
+
+class WbiSignatureUnavailableError(RuntimeError):
+    def __init__(self, message, *, cause=None):
+        super().__init__(message)
+        self.__cause__ = cause
+
+
+def install_ipv4_first_dns():
+    global IPV4_FIRST_DNS_INSTALLED
+    if IPV4_FIRST_DNS_INSTALLED:
+        return
+    with IPV4_FIRST_DNS_LOCK:
+        if IPV4_FIRST_DNS_INSTALLED:
+            return
+
+        def ipv4_first_getaddrinfo(*args, **kwargs):
+            infos = ORIGINAL_GETADDRINFO(*args, **kwargs)
+            return sorted(infos, key=lambda item: 0 if item[0] == socket.AF_INET else 1)
+
+        socket.getaddrinfo = ipv4_first_getaddrinfo
+        IPV4_FIRST_DNS_INSTALLED = True
 
 
 def default_backoff_state_path():
@@ -136,6 +179,13 @@ def default_backoff_state_path():
     if configured:
         return Path(configured)
     return Path(__file__).resolve().parents[2] / "data" / "bilibili_backoff_state.json"
+
+
+def default_wbi_cache_path():
+    configured = os.environ.get(WBI_CACHE_PATH_ENV)
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[2] / "data" / "wbi_mixin_key.json"
 
 
 class RequestBackoff:
@@ -159,15 +209,24 @@ class RequestBackoff:
         self.persist = persist
         self.load_state()
 
-    def wait(self):
+    def wait(self, include_spacing=True, spacing_factor=1.0):
         total_sleep = 0
+        try:
+            spacing_factor = max(float(spacing_factor), 0)
+        except (TypeError, ValueError):
+            spacing_factor = 1.0
         while True:
             with self.lock:
                 now = time.monotonic()
-                sleep_for = max(self.blocked_until - now, self.next_request_at - now)
+                spacing_until = self.next_request_at if include_spacing else 0
+                sleep_for = max(self.blocked_until - now, spacing_until - now)
                 if sleep_for <= 0:
-                    spacing = self.min_interval + random.uniform(*self.interval_jitter)
-                    self.next_request_at = now + max(spacing, 0)
+                    if include_spacing:
+                        spacing = (
+                            self.min_interval * spacing_factor
+                            + random.uniform(*self.interval_jitter) * spacing_factor
+                        )
+                        self.next_request_at = now + max(spacing, 0)
                     return total_sleep
             total_sleep += sleep_for
             time.sleep(sleep_for)
@@ -330,6 +389,7 @@ WBI_MIXIN_KEY_CACHE_LOCK = threading.Lock()
 
 class BilibiliClient:
     def __init__(self, headers, use_proxy=False, backoff=None):
+        install_ipv4_first_dns()
         self.headers = dict(headers)
         self.use_proxy = use_proxy
         self.backoff = backoff or GLOBAL_REQUEST_BACKOFF
@@ -346,30 +406,47 @@ class BilibiliClient:
             cloned.cookie_jar.set_cookie(copy.copy(cookie))
         return cloned
 
-    def request_json(self, url, timeout=30, retries=4, allow_api_error=False, logger=None):
+    def open_request(self, req, timeout):
+        return self.opener.open(req, timeout=timeout)
+
+    def request_json(
+        self,
+        url,
+        timeout=30,
+        retries=4,
+        allow_api_error=False,
+        logger=None,
+        wait_for_backoff=True,
+        wait_for_spacing=True,
+        spacing_factor=1.0,
+    ):
         log = logger or (lambda _message: None)
         last_error = None
         for attempt in range(1, retries + 1):
             request_elapsed = 0
             try:
-                backoff_wait = self.backoff.wait()
-                log_backoff_wait(log, url, backoff_wait, attempt, retries)
+                if wait_for_backoff:
+                    backoff_wait = self.backoff.wait(
+                        include_spacing=wait_for_spacing,
+                        spacing_factor=spacing_factor,
+                    )
+                    log_backoff_wait(log, url, backoff_wait, attempt, retries)
                 started_at = time.perf_counter()
                 req = urllib.request.Request(url, headers=self.headers)
-                with self.opener.open(req, timeout=timeout) as resp:
+                with self.open_request(req, timeout=timeout) as resp:
                     body = resp.read().decode("utf-8")
                 request_elapsed = time.perf_counter() - started_at
                 log_slow_request(log, url, request_elapsed, attempt, retries, self.backoff)
                 data = json.loads(body)
                 if data.get("code") != 0 and not allow_api_error:
                     api_code = data.get("code")
-                    if api_code in BLOCKED_API_CODES:
-                        raise BilibiliRequestError(
-                            f"API code={api_code} message={data.get('message')}",
-                            api_code=api_code,
-                            url=url,
-                        )
-                    raise RuntimeError(f"API code={data.get('code')} message={data.get('message')}")
+                    api_message = data.get("message")
+                    raise BilibiliRequestError(
+                        f"API code={api_code} message={api_message}",
+                        api_code=api_code,
+                        api_message=api_message,
+                        url=url,
+                    )
                 return data
             except urllib.error.HTTPError as exc:
                 if request_elapsed == 0:
@@ -412,10 +489,18 @@ class BilibiliClient:
                     )
                 time.sleep(delay)
             except Exception as exc:
+                if request_elapsed == 0 and "started_at" in locals():
+                    request_elapsed = time.perf_counter() - started_at
                 last_error = exc
                 if attempt == retries:
                     break
-                time.sleep(retry_delay_seconds(attempt))
+                delay = retry_delay_seconds(attempt)
+                log(
+                    f"warning: request failed endpoint={request_endpoint_label(url)} "
+                    f"elapsed={request_elapsed:.1f}s retrying in {delay:.0f}s "
+                    f"(attempt {attempt}/{retries}) error={type(exc).__name__}"
+                )
+                time.sleep(delay)
 
         status = getattr(last_error, "code", None)
         if status:
@@ -441,7 +526,8 @@ class BilibiliClient:
             backoff_wait = self.backoff.wait()
             log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
             try:
-                with self.opener.open(req, timeout=30) as resp:
+                log(f"warmup: fetching video page attempt={attempt}/3")
+                with self.open_request(req, timeout=8) as resp:
                     resp.read(1024)
                 return
             except urllib.error.HTTPError as exc:
@@ -451,6 +537,9 @@ class BilibiliClient:
                 self.backoff.block_for(delay)
                 log(f"warning: warmup got HTTP {exc.code}; cooling down for {delay:.0f}s before retry")
                 time.sleep(delay)
+            except Exception as exc:
+                log(f"warning: warmup skipped after {type(exc).__name__}: {exc}")
+                return
 
 
 def load_cookie_file(path):
@@ -563,13 +652,90 @@ def get_cached_wbi_mixin_key():
         expires_at = WBI_MIXIN_KEY_CACHE.get("expires_at") or 0
         if value and expires_at > now:
             return value
+    cached = load_persisted_wbi_mixin_key(max_age_seconds=WBI_MIXIN_KEY_TTL_SECONDS)
+    if cached:
+        remember_wbi_mixin_key(cached)
+        return cached
     return None
 
 
 def remember_wbi_mixin_key(mixin_key):
+    expires_at = time.time() + WBI_MIXIN_KEY_TTL_SECONDS
     with WBI_MIXIN_KEY_CACHE_LOCK:
         WBI_MIXIN_KEY_CACHE["value"] = mixin_key
-        WBI_MIXIN_KEY_CACHE["expires_at"] = time.time() + WBI_MIXIN_KEY_TTL_SECONDS
+        WBI_MIXIN_KEY_CACHE["expires_at"] = expires_at
+    persist_wbi_mixin_key(mixin_key, expires_at)
+
+
+def load_persisted_wbi_mixin_key(max_age_seconds=WBI_MIXIN_KEY_STALE_TTL_SECONDS):
+    try:
+        payload = json.loads(default_wbi_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = payload.get("value")
+    if not isinstance(value, str) or len(value) != 32:
+        return None
+    try:
+        updated_at = float(payload.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    if updated_at <= 0 or time.time() - updated_at > max_age_seconds:
+        return None
+    return value
+
+
+def persist_wbi_mixin_key(mixin_key, expires_at):
+    if not mixin_key:
+        return
+    path = default_wbi_cache_path()
+    payload = {
+        "value": mixin_key,
+        "expires_at": expires_at,
+        "updated_at": time.time(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(path)
+    except OSError:
+        return
+
+
+def call_with_hard_timeout(func, timeout_seconds, timeout_message):
+    results = queue.Queue(maxsize=1)
+
+    def target():
+        try:
+            results.put(("ok", func()))
+        except Exception as exc:
+            results.put(("error", exc))
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    try:
+        kind, value = results.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        raise TimeoutError(timeout_message) from exc
+    if kind == "error":
+        raise value
+    return value
+
+
+def fetch_wbi_nav_with_system_opener(headers, timeout=8):
+    nav_headers = {
+        key: value
+        for key, value in dict(headers or {}).items()
+        if key.lower() != "cookie"
+    }
+    nav_headers["Connection"] = "close"
+    req = urllib.request.Request(
+        "https://api.bilibili.com/x/web-interface/nav",
+        headers=nav_headers,
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        charset = resp.headers.get_content_charset() or "utf-8"
+        return json.loads(resp.read().decode(charset, errors="replace"))
 
 
 def retry_delay_seconds(attempt, status=None, api_code=None):
@@ -654,6 +820,13 @@ def is_blocked_request_error(exc):
     )
 
 
+def is_comments_closed_error(exc):
+    return (
+        isinstance(exc, BilibiliRequestError)
+        and exc.api_code in COMMENTS_CLOSED_API_CODES
+    )
+
+
 def blocked_error_label(exc):
     if exc.status in BLOCKED_HTTP_STATUSES:
         return f"HTTP {exc.status}"
@@ -698,12 +871,42 @@ def get_wbi_mixin_key(client, log, force_refresh=False):
             log("wbi: reused cached signature key")
             return cached
 
-    nav = client.request_json(
-        "https://api.bilibili.com/x/web-interface/nav",
-        timeout=30,
-        allow_api_error=True,
-        logger=log,
-    )
+    try:
+        nav = call_with_hard_timeout(
+            lambda: client.request_json(
+                "https://api.bilibili.com/x/web-interface/nav",
+                timeout=8,
+                retries=2,
+                allow_api_error=True,
+                logger=log,
+                wait_for_backoff=False,
+            ),
+            WBI_NAV_HARD_TIMEOUT_SECONDS,
+            "nav API timed out while fetching WBI signature key",
+        )
+    except Exception as exc:
+        try:
+            log("warning: direct nav API unavailable; trying system opener fallback without Cookie")
+            nav = call_with_hard_timeout(
+                lambda: fetch_wbi_nav_with_system_opener(client.headers, timeout=8),
+                WBI_NAV_HARD_TIMEOUT_SECONDS,
+                "system opener nav API timed out while fetching WBI signature key",
+            )
+            log("wbi: fetched signature key with system opener fallback")
+        except Exception as fallback_exc:
+            stale = load_persisted_wbi_mixin_key()
+            if stale:
+                remember_wbi_mixin_key(stale)
+                log(
+                    "warning: nav API unavailable; reused persisted WBI signature key "
+                    f"({type(fallback_exc).__name__})"
+                )
+                return stale
+            raise WbiSignatureUnavailableError(
+                "WBI signature key is temporarily unavailable; nav API did not respond and no persisted key is available",
+                cause=fallback_exc,
+            ) from fallback_exc
+
     nav_code = nav.get("code")
     if nav_code in BLOCKED_API_CODES:
         delay = retry_delay_seconds(1, api_code=nav_code)
@@ -805,14 +1008,20 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None):
                 "web_location": 1315875,
             }
 
-        data = request_signed_json(
-            endpoint,
-            make_params,
-            client,
-            mixin_key,
-            log,
-            refresh_mixin_key=lambda: get_wbi_mixin_key(client, log, force_refresh=True),
-        )["data"]
+        try:
+            data = request_signed_json(
+                endpoint,
+                make_params,
+                client,
+                mixin_key,
+                log,
+                refresh_mixin_key=lambda: get_wbi_mixin_key(client, log, force_refresh=True),
+            )["data"]
+        except BilibiliRequestError as exc:
+            if is_comments_closed_error(exc):
+                log(f"comments closed: oid={oid} api_code={exc.api_code}; using empty comment archive")
+                return [], 0
+            raise
         page_replies = collect_main_reply_candidates(data)
         cursor = data.get("cursor") or {}
         api_comment_count = cursor.get("all_count", api_comment_count)
@@ -873,7 +1082,25 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
             "pn": page,
             "ps": 20,
         }
-        data = client.request_json(build_url(endpoint, params), logger=log)["data"]
+        try:
+            data = client.request_json(
+                build_url(endpoint, params),
+                logger=log,
+                retries=1,
+                spacing_factor=CHILD_REQUEST_SPACING_FACTOR,
+            )["data"]
+        except BilibiliRequestError as exc:
+            if is_blocked_request_error(exc):
+                delay = max(
+                    exc.retry_after or 0,
+                    retry_delay_seconds(1, status=exc.status, api_code=exc.api_code),
+                )
+                client.backoff.block_for(delay)
+                log(
+                    f"child root={root_rpid} blocked by {blocked_error_label(exc)}; "
+                    f"cooling down for {delay:.0f}s and pausing current archive task"
+                )
+            raise
         page_replies = collect_main_reply_candidates(data)
         page_info = data.get("page") or {}
         api_count = page_info.get("count", api_count)
@@ -1069,10 +1296,13 @@ def scrape_comments(
         log("warmup: skipped because cookie already has browser identifiers")
     else:
         client.warmup(bvid, logger=log)
+    log("wbi: fetching signature key")
     mixin_key = get_wbi_mixin_key(client, log)
+    log(f"video info: fetching bvid={bvid}")
     video = fetch_video_info(bvid, client, log)
     oid = video["aid"]
     log(f"video: bvid={bvid} aid={oid} title={video.get('title')}")
+    log(f"main replies: fetching first page oid={oid}")
 
     main_raw, api_comment_count = fetch_main_replies(
         oid,
