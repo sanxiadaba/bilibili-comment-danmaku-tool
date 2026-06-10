@@ -21,6 +21,7 @@
   X,
   XCircle,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
@@ -39,6 +40,9 @@ import { StatTile } from "../components/ui/StatTile";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { cn, formatFullDateTime, formatNumber, normalizeImageUrl } from "../lib/utils";
 import type { DatabaseInfo, ProgressQueue, ProgressTask, VideoSummary } from "../types";
+
+type ManagementView = "queue" | "database";
+
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
@@ -55,6 +59,7 @@ export function VideoLibraryPage() {
   const [importPath, setImportPath] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [exportFormat, setExportFormat] = useState<"sqlite" | "json">("sqlite");
+  const [managementView, setManagementView] = useState<ManagementView>("queue");
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState("all");
@@ -141,6 +146,7 @@ export function VideoLibraryPage() {
 
   useEffect(() => {
     if (!hasSpaceQueueWork) return;
+    setManagementView("queue");
     const timer = window.setInterval(() => {
       void loadVideos({ quiet: true });
       void loadDatabases({ quiet: true });
@@ -449,7 +455,7 @@ export function VideoLibraryPage() {
     event.preventDefault();
     const target = importPath.trim();
     if (!target) {
-      setError("请输入要导入的 SQLite 数据库路径");
+      setError("请输入要导入的 SQLite 数据库或 JSON 数据文件路径");
       return;
     }
     setIsImporting(true);
@@ -487,14 +493,14 @@ export function VideoLibraryPage() {
   }
 
   async function importSelectedFiles(fileList: FileList | null, source: "file" | "folder") {
-    const selectedFiles = Array.from(fileList || []).filter((file) => /\.(db|sqlite|sqlite3)$/i.test(file.name));
+    const selectedFiles = Array.from(fileList || []).filter((file) => /\.(db|sqlite|sqlite3|json)$/i.test(file.name));
     if (!selectedFiles.length) {
-      setNotice({ kind: "error", title: "未选择数据库文件", message: "请选择 .db / .sqlite / .sqlite3 文件" });
+      setNotice({ kind: "error", title: "未选择导入文件", message: "请选择 .db / .sqlite / .sqlite3 或 .json 文件" });
       return;
     }
     setIsImporting(true);
     setError("");
-    setMessage(`正在导入 ${selectedFiles.length} 个数据库文件`);
+    setMessage(`正在导入 ${selectedFiles.length} 个数据库或 JSON 文件`);
     try {
       const payload = await importDatabaseFiles(selectedFiles);
       const database = payload.database;
@@ -620,11 +626,7 @@ export function VideoLibraryPage() {
       </section>
 
       <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
-        <ProgressQueuePanel queue={spaceQueue} />
-      </section>
-
-      <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
-        <DatabaseManagerPanel
+        <ManagementPanel
           activeDbId={activeDbId}
           databases={databases}
           exportFormat={exportFormat}
@@ -633,12 +635,15 @@ export function VideoLibraryPage() {
           isImporting={isImporting}
           isLoading={isLoadingDatabases}
           legacyExportDir={legacyExportDir}
+          queue={spaceQueue}
+          view={managementView}
           onImportPathChange={setImportPath}
           onPickFiles={() => fileInputRef.current?.click()}
           onPickFolder={() => folderInputRef.current?.click()}
           onRefresh={() => void refreshDatabaseCatalog()}
           onSelect={setActiveDatabase}
           onExportFormatChange={setExportFormat}
+          onViewChange={setManagementView}
           onSubmitImport={submitDatabaseImport}
         />
         <input
@@ -856,7 +861,7 @@ export function VideoLibraryPage() {
             </div>
           </div>
 
-          <div className="grid max-h-[70vh] min-h-[420px] gap-3 overflow-y-auto p-4">
+          <div className="grid max-h-[70vh] min-h-[420px] content-start gap-3 overflow-y-auto p-4">
             {isLoading && <div className="p-6 text-center text-sm text-muted">正在载入视频库</div>}
             {!isLoading &&
               filteredVideos.map((video) => (
@@ -945,10 +950,141 @@ function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () =>
   );
 }
 
-function DatabaseManagerPanel({
+function ManagementPanel({
   activeDbId,
   databases,
   exportFormat,
+  hotplugDir,
+  importPath,
+  isImporting,
+  isLoading,
+  legacyExportDir,
+  queue,
+  view,
+  onImportPathChange,
+  onPickFiles,
+  onPickFolder,
+  onRefresh,
+  onSelect,
+  onExportFormatChange,
+  onViewChange,
+  onSubmitImport,
+}: {
+  activeDbId: string;
+  databases: DatabaseInfo[];
+  exportFormat: "sqlite" | "json";
+  hotplugDir: string;
+  importPath: string;
+  isImporting: boolean;
+  isLoading: boolean;
+  legacyExportDir: string;
+  queue?: ProgressQueue;
+  view: ManagementView;
+  onImportPathChange: (value: string) => void;
+  onPickFiles: () => void;
+  onPickFolder: () => void;
+  onRefresh: () => void;
+  onSelect: (dbId: string) => void;
+  onExportFormatChange: (format: "sqlite" | "json") => void;
+  onViewChange: (view: ManagementView) => void;
+  onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const queuedCount = queue?.queued?.length || 0;
+  const hasActiveTask = Boolean(queue?.active);
+  const activeDatabase = databases.find((database) => database.id === activeDbId);
+  const healthyCount = databases.filter((database) => database.ok).length;
+
+  return (
+    <section className="rounded-md border border-line bg-white shadow-soft">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+            <Settings size={18} aria-hidden="true" />
+            管理工具
+          </h2>
+          <div className="mt-1 text-sm text-muted">
+            队列 {hasActiveTask ? "运行中" : "空闲"} · {queuedCount} 个排队 · 数据库 {healthyCount}/{databases.length} 可用
+          </div>
+        </div>
+        <div className="inline-flex rounded-md border border-line bg-[#fbfcfe] p-1">
+          <ManagementTab
+            active={view === "queue"}
+            icon={RefreshCcw}
+            label="抓取队列"
+            meta={hasActiveTask || queuedCount ? `${queuedCount} 排队` : "空闲"}
+            onClick={() => onViewChange("queue")}
+          />
+          <ManagementTab
+            active={view === "database"}
+            icon={Database}
+            label="数据库"
+            meta={`${databases.length} 个`}
+            onClick={() => onViewChange("database")}
+          />
+        </div>
+      </div>
+      {view === "queue" ? (
+        <ProgressQueuePanel queue={queue} embedded />
+      ) : (
+        <DatabaseManagerPanel
+          activeDatabaseName={activeDatabase?.name || activeDbId}
+          activeDbId={activeDbId}
+          databases={databases}
+          exportFormat={exportFormat}
+          healthyCount={healthyCount}
+          hotplugDir={hotplugDir}
+          importPath={importPath}
+          isImporting={isImporting}
+          isLoading={isLoading}
+          legacyExportDir={legacyExportDir}
+          onImportPathChange={onImportPathChange}
+          onPickFiles={onPickFiles}
+          onPickFolder={onPickFolder}
+          onRefresh={onRefresh}
+          onSelect={onSelect}
+          onExportFormatChange={onExportFormatChange}
+          onSubmitImport={onSubmitImport}
+        />
+      )}
+    </section>
+  );
+}
+
+function ManagementTab({
+  active,
+  icon: Icon,
+  label,
+  meta,
+  onClick,
+}: {
+  active: boolean;
+  icon: LucideIcon;
+  label: string;
+  meta: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition",
+        active ? "bg-ink text-white" : "text-muted hover:bg-white hover:text-ink",
+      )}
+      type="button"
+      onClick={onClick}
+    >
+      <Icon className={cn(label === "抓取队列" && active && "text-bilibili")} size={16} aria-hidden="true" />
+      <span>{label}</span>
+      <span className={cn("hidden text-xs sm:inline", active ? "text-white/75" : "text-muted")}>{meta}</span>
+    </button>
+  );
+}
+
+function DatabaseManagerPanel({
+  activeDatabaseName,
+  activeDbId,
+  databases,
+  exportFormat,
+  healthyCount,
   hotplugDir,
   importPath,
   isImporting,
@@ -962,9 +1098,11 @@ function DatabaseManagerPanel({
   onExportFormatChange,
   onSubmitImport,
 }: {
+  activeDatabaseName: string;
   activeDbId: string;
   databases: DatabaseInfo[];
   exportFormat: "sqlite" | "json";
+  healthyCount: number;
   hotplugDir: string;
   importPath: string;
   isImporting: boolean;
@@ -978,23 +1116,14 @@ function DatabaseManagerPanel({
   onExportFormatChange: (format: "sqlite" | "json") => void;
   onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
-  const activeDatabase = databases.find((database) => database.id === activeDbId);
-  const healthyCount = databases.filter((database) => database.ok).length;
-
   return (
-    <section className="rounded-md border border-line bg-white shadow-soft">
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <div className="min-w-0">
-          <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-            <Database size={18} aria-hidden="true" />
-            数据库
-          </h2>
-          <div className="mt-1 text-sm text-muted">
-            {databases.length} 个已发现 · {healthyCount} 个可用 · 当前 {activeDatabase?.name || activeDbId}
-          </div>
+        <div className="min-w-0 text-sm text-muted">
+          {databases.length} 个已发现 · {healthyCount} 个可用 · 当前 {activeDatabaseName}
         </div>
         <button
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
           type="button"
           disabled={isLoading}
           onClick={onRefresh}
@@ -1097,7 +1226,7 @@ function DatabaseManagerPanel({
           </button>
         </form>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -1165,22 +1294,23 @@ function databaseKindLabel(kind: string) {
   return "未标注";
 }
 
-function ProgressQueuePanel({ queue }: { queue?: ProgressQueue }) {
+function ProgressQueuePanel({ embedded = false, queue }: { embedded?: boolean; queue?: ProgressQueue }) {
   const queued = queue?.queued || [];
   const recent = queue?.recent || [];
   const active = queue?.active || null;
-
-  return (
-    <section className="rounded-md border border-line bg-white shadow-soft">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-          <RefreshCcw className={cn(active && "animate-spin text-bilibili")} size={18} aria-hidden="true" />
-          抓取队列
-        </h2>
-        <span className="text-sm text-muted">
-          {active ? "1 个运行中" : "无运行任务"} · {queued.length} 个排队中
-        </span>
-      </div>
+  const content = (
+    <>
+      {!embedded && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+            <RefreshCcw className={cn(active && "animate-spin text-bilibili")} size={18} aria-hidden="true" />
+            抓取队列
+          </h2>
+          <span className="text-sm text-muted">
+            {active ? "1 个运行中" : "无运行任务"} · {queued.length} 个排队中
+          </span>
+        </div>
+      )}
       <div className="grid gap-3 p-4">
         {active ? (
           <QueueTaskRow task={active} tone="active" />
@@ -1208,6 +1338,16 @@ function ProgressQueuePanel({ queue }: { queue?: ProgressQueue }) {
           </div>
         )}
       </div>
+    </>
+  );
+
+  if (embedded) {
+    return <div>{content}</div>;
+  }
+
+  return (
+    <section className="rounded-md border border-line bg-white shadow-soft">
+      {content}
     </section>
   );
 }
