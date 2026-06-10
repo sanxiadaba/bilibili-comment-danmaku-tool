@@ -113,7 +113,7 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
   );
 }
 
-export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string; db_id?: string }) {
+export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string; db_id?: string; format?: "sqlite" | "json" }) {
   return requestJson<DatabaseExportResponse>(
     "database.export",
     `/api/database/export?ts=${Date.now()}`,
@@ -126,6 +126,7 @@ export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: st
     {
       bvid: payload.bvid,
       db_id: payload.db_id,
+      format: payload.format,
       owner_mid: payload.owner_mid,
       video_count: payload.bvids?.length,
     },

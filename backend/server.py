@@ -13,7 +13,9 @@ from urllib.parse import parse_qs, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, new_request_id, shutdown_logging
 from bilibili_comment_danmaku import (
+    export_archive_to_json,
     export_archive_to_sqlite,
+    import_archive_json_to_sqlite,
     extract_bvid,
     list_video_summaries,
     load_comment_data,
@@ -40,6 +42,7 @@ DEFAULT_DATABASE_DIR = ROOT / "data" / "databases"
 LEGACY_EXPORT_DIR = ROOT / "data" / "exports"
 DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
+IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
 progress_state = {
@@ -434,6 +437,10 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         bvid = (body.get("bvid") or "").strip()
         owner_mid = (body.get("owner_mid") or "").strip()
         label = (body.get("label") or body.get("owner_name") or bvid or owner_mid or "archive").strip()
+        export_format = str(body.get("format") or "sqlite").strip().lower()
+        if export_format not in {"sqlite", "json"}:
+            self.send_json({"error": "导出格式只支持 sqlite 或 json"}, status=400)
+            return
         if isinstance(bvids, list):
             selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
         else:
@@ -446,9 +453,10 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         if owner_mid and not bvid:
             selected_bvids = []
 
-        target_path = export_database_path(label, self.database_dir)
+        target_path = export_database_path(label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
         try:
-            result = export_archive_to_sqlite(
+            exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
+            result = exporter(
                 db_path,
                 target_path,
                 bvids=selected_bvids or None,
@@ -487,6 +495,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             request_id=getattr(self, "request_id", ""),
             path=result["path"],
             source_db=str(db_path),
+            export_format=export_format,
             video_count=len(result["bvids"]),
             size_bytes=result["size_bytes"],
             counts=result["counts"],
@@ -497,10 +506,13 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 "path": result["path"],
                 "relative_path": str(Path(result["path"]).resolve().relative_to(ROOT)),
                 "file_name": Path(result["path"]).name,
-                "json_path": result["json_path"],
-                "json_relative_path": relative_to_root(result["json_path"]),
-                "json_file_name": Path(result["json_path"]).name,
-                "database": public_database_info(database_info_for_path(Path(result["path"]), self.db_path, self.database_dir)),
+                "format": export_format,
+                "json_path": result.get("json_path", ""),
+                "json_relative_path": relative_to_root(result["json_path"]) if result.get("json_path") else "",
+                "json_file_name": Path(result["json_path"]).name if result.get("json_path") else "",
+                "database": public_database_info(database_info_for_path(Path(result["path"]), self.db_path, self.database_dir))
+                if export_format == "sqlite"
+                else None,
                 "video_count": len(result["bvids"]),
                 "bvids": result["bvids"],
                 "counts": result["counts"],
@@ -513,7 +525,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         body = self.read_json_body()
         source_value = (body.get("path") or body.get("source_path") or "").strip()
         if not source_value:
-            self.send_json({"error": "请输入要导入的 SQLite 数据库路径"}, status=400)
+            self.send_json({"error": "请输入要导入的 SQLite 数据库或 JSON 归档路径"}, status=400)
             return
         source_path = Path(source_value).expanduser().resolve()
         try:
@@ -554,10 +566,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         for item in files:
             filename = item["filename"]
             suffix = Path(filename).suffix.lower()
-            if suffix == ".json":
-                continue
-            if suffix not in DATABASE_EXTENSIONS:
-                errors.append(f"{filename}: 只支持 .db / .sqlite / .sqlite3")
+            if suffix not in IMPORT_EXTENSIONS:
+                errors.append(f"{filename}: 只支持 .db / .sqlite / .sqlite3 / .json")
                 continue
             try:
                 target_path = import_uploaded_database_file(filename, item["content"], self.database_dir)
@@ -955,6 +965,7 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
     main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
     database_dir.mkdir(parents=True, exist_ok=True)
+    convert_hotplug_json_archives(database_dir)
     databases = [database_info_for_path(main_db_path, main_db_path, database_dir, db_id="main", role="main")]
     seen = {main_db_path}
 
@@ -980,6 +991,36 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
             )
     annotate_database_coverage(databases)
     return [public_database_info(database) for database in databases]
+
+
+def convert_hotplug_json_archives(database_dir=DEFAULT_DATABASE_DIR):
+    database_dir = Path(database_dir).resolve()
+    if not database_dir.exists():
+        return []
+    converted = []
+    for source_path in sorted(database_dir.iterdir(), key=lambda item: item.name.lower()):
+        if not source_path.is_file() or source_path.suffix.lower() != ".json":
+            continue
+        target_path = source_path.with_suffix(".db")
+        if target_path.exists():
+            continue
+        try:
+            import_archive_json_to_sqlite(source_path, target_path)
+            converted.append(target_path)
+            log_event(
+                "api.databases.hotplug_json_converted",
+                "converted hotplug json archive",
+                source_path=str(source_path),
+                target_path=str(target_path),
+            )
+        except Exception as exc:
+            log_event(
+                "api.databases.hotplug_json_convert_failed",
+                str(exc),
+                source_path=str(source_path),
+                level="warning",
+            )
+    return converted
 
 
 def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, db_id=None, role=None):
@@ -1193,8 +1234,13 @@ def import_database_file(source_path, database_dir=DEFAULT_DATABASE_DIR):
     database_dir = Path(database_dir).resolve()
     if not source_path.exists() or not source_path.is_file():
         raise LookupError("导入文件不存在")
-    if source_path.suffix.lower() not in DATABASE_EXTENSIONS:
-        raise ValueError("只支持 .db / .sqlite / .sqlite3 数据库")
+    if source_path.suffix.lower() not in IMPORT_EXTENSIONS:
+        raise ValueError("只支持 .db / .sqlite / .sqlite3 / .json 归档")
+    if source_path.suffix.lower() == ".json":
+        database_dir.mkdir(parents=True, exist_ok=True)
+        target_path = unique_database_path(database_dir / normalize_database_filename(source_path.with_suffix(".db").name))
+        import_archive_json_to_sqlite(source_path, target_path)
+        return target_path
     info = database_info_for_path(source_path)
     if not info["ok"]:
         raise ValueError(f"不是可用的归档数据库：{info['error']}")
@@ -1211,6 +1257,16 @@ def import_uploaded_database_file(filename, content, database_dir=DEFAULT_DATABA
         raise ValueError("上传文件为空")
     database_dir = Path(database_dir).resolve()
     database_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".json":
+        source_path = unique_database_path(database_dir / normalize_database_filename(filename, allowed_extensions=IMPORT_EXTENSIONS))
+        source_path.write_bytes(content)
+        target_path = unique_database_path(database_dir / normalize_database_filename(source_path.with_suffix(".db").name))
+        try:
+            import_archive_json_to_sqlite(source_path, target_path)
+            return target_path
+        finally:
+            remove_file_quietly(source_path)
     target_path = unique_database_path(database_dir / normalize_database_filename(filename))
     target_path.write_bytes(content)
     try:
@@ -1223,9 +1279,9 @@ def import_uploaded_database_file(filename, content, database_dir=DEFAULT_DATABA
         raise
 
 
-def normalize_database_filename(name):
+def normalize_database_filename(name, allowed_extensions=DATABASE_EXTENSIONS):
     path = Path(name)
-    suffix = path.suffix.lower() if path.suffix.lower() in DATABASE_EXTENSIONS else ".db"
+    suffix = path.suffix.lower() if path.suffix.lower() in allowed_extensions else ".db"
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", path.stem).strip("._-") or "archive"
     return f"{stem[:100]}{suffix}"
 
@@ -2207,20 +2263,21 @@ def clamp_int(value, minimum, maximum):
     return max(minimum, min(maximum, value))
 
 
-def export_database_path(label, export_dir=DEFAULT_EXPORT_DIR):
+def export_database_path(label, export_dir=DEFAULT_EXPORT_DIR, suffix=".db"):
     export_dir = Path(export_dir).resolve()
     export_dir.mkdir(parents=True, exist_ok=True)
+    suffix = suffix if suffix in {".db", ".json"} else ".db"
     safe_label = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(label or "archive")).strip("._-")
     safe_label = safe_label[:80] or "archive"
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
-    base_path = export_dir / f"{timestamp}_{safe_label}.db"
+    base_path = export_dir / f"{timestamp}_{safe_label}{suffix}"
     if not base_path.exists():
         return base_path
     for index in range(2, 1000):
-        candidate = export_dir / f"{timestamp}_{safe_label}_{index}.db"
+        candidate = export_dir / f"{timestamp}_{safe_label}_{index}{suffix}"
         if not candidate.exists():
             return candidate
-    return export_dir / f"{timestamp}_{safe_label}_{int(time.time() * 1000)}.db"
+    return export_dir / f"{timestamp}_{safe_label}_{int(time.time() * 1000)}{suffix}"
 
 
 def extract_space_mid(value):

@@ -238,6 +238,7 @@ export type DatabaseExportResponse = {
   path: string;
   relative_path: string;
   file_name: string;
+  format: "sqlite" | "json" | string;
   json_path?: string;
   json_relative_path?: string;
   json_file_name?: string;

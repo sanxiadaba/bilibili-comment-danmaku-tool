@@ -41,7 +41,9 @@ from bilibili_comment_danmaku.danmaku import (  # noqa: E402
 from bilibili_comment_danmaku import scraper  # noqa: E402
 from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
+    export_archive_to_json,
     export_archive_to_sqlite,
+    import_archive_json_to_sqlite,
     load_comment_data,
     load_danmaku_data,
     list_video_summaries,
@@ -299,10 +301,55 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(comments["comment_items"][0]["normalized"]["pictures"][0]["img_src"], "http://i.example/a.jpg")
             self.assertEqual(danmaku["metadata"]["total_count"], 1)
             self.assertTrue(export_path.exists())
-            self.assertTrue(Path(result["json_path"]).exists())
+            self.assertEqual(result["json_path"], "")
             self.assertEqual(result["manifest"]["archive_kind"], "video")
             self.assertEqual(result["manifest"]["bvids"], [BVID])
             self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
+
+    def test_export_archive_to_json_can_be_imported_back_to_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            json_path = Path(tmp) / "exports" / "one_video.json"
+            imported_db = Path(tmp) / "imported.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": "100",
+                            "progress": 1.2,
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000001,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 9,
+                            "like_count": 12,
+                            "content": "danmaku",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+
+            result = export_archive_to_json(db_path, json_path, bvids=[BVID])
+            imported = import_archive_json_to_sqlite(json_path, imported_db)
+            comments = load_comment_data(imported_db, bvid=BVID)
+            danmaku = load_danmaku_data(imported_db, bvid=BVID)
+
+            self.assertTrue(json_path.exists())
+            self.assertEqual(result["json_path"], str(json_path.resolve()))
+            self.assertEqual(imported["bvids"], [BVID])
+            self.assertEqual(comments["metadata"]["bvid"], BVID)
+            self.assertEqual(danmaku["metadata"]["total_count"], 1)
 
     def test_export_archive_to_sqlite_filters_by_owner(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -339,6 +386,23 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(by_id["db:owner_archive.db"]["video_count"], 1)
             self.assertTrue(by_id["db:owner_archive.db"]["ok"])
             self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
+
+    def test_database_catalog_converts_hotplug_json_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            json_path = hotplug_dir / "video_archive.json"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), main_db, replace=True)
+            export_archive_to_json(main_db, json_path, bvids=[BVID])
+
+            catalog = list_database_catalog(main_db, hotplug_dir)
+            by_id = {item["id"]: item for item in catalog}
+            converted_db = hotplug_dir / "video_archive.db"
+
+            self.assertTrue(converted_db.exists())
+            self.assertIn("db:video_archive.db", by_id)
+            self.assertEqual(load_comment_data(converted_db, bvid=BVID)["metadata"]["bvid"], BVID)
 
     def test_database_catalog_marks_duplicate_archive(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -54,6 +54,7 @@ export function VideoLibraryPage() {
   const [isLoadingDatabases, setIsLoadingDatabases] = useState(true);
   const [importPath, setImportPath] = useState("");
   const [isImporting, setIsImporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"sqlite" | "json">("sqlite");
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState("all");
@@ -263,16 +264,20 @@ export function VideoLibraryPage() {
       const payload = await exportDatabaseArchive({
         bvids: owner.ownerMid ? undefined : owner.bvids,
         db_id: activeDbId,
+        format: exportFormat,
         label: owner.name,
         owner_mid: owner.ownerMid || undefined,
       });
       setMessage(
-        `导出完成：${payload.relative_path}，已加入热插拔数据库列表，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
+        `导出完成：${payload.relative_path}，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
       );
       setNotice({
         kind: "success",
-        title: "UP 主数据库导出完成",
-        message: `${payload.relative_path} 已加入热插拔目录，同时生成 ${payload.json_relative_path || payload.json_file_name || "JSON 清单"}`,
+        title: exportFormat === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成",
+        message:
+          exportFormat === "json"
+            ? `${payload.relative_path} 已导出为 JSON 数据归档，可再次导入`
+            : `${payload.relative_path} 已加入热插拔目录`,
       });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
@@ -304,13 +309,17 @@ export function VideoLibraryPage() {
       const payload = await exportDatabaseArchive({
         bvid: video.bvid,
         db_id: activeDbId,
+        format: exportFormat,
         label: `${video.bvid}_${video.title}`,
       });
-      setMessage(`导出完成：${payload.relative_path}，已加入热插拔数据库列表，${formatBytes(payload.size_bytes)}`);
+      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
       setNotice({
         kind: "success",
-        title: "视频数据库导出完成",
-        message: `${payload.relative_path} 已加入热插拔目录，同时生成 ${payload.json_relative_path || payload.json_file_name || "JSON 清单"}`,
+        title: exportFormat === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成",
+        message:
+          exportFormat === "json"
+            ? `${payload.relative_path} 已导出为 JSON 数据归档，可再次导入`
+            : `${payload.relative_path} 已加入热插拔目录`,
       });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
@@ -618,6 +627,7 @@ export function VideoLibraryPage() {
         <DatabaseManagerPanel
           activeDbId={activeDbId}
           databases={databases}
+          exportFormat={exportFormat}
           hotplugDir={hotplugDir}
           importPath={importPath}
           isImporting={isImporting}
@@ -628,13 +638,14 @@ export function VideoLibraryPage() {
           onPickFolder={() => folderInputRef.current?.click()}
           onRefresh={() => void refreshDatabaseCatalog()}
           onSelect={setActiveDatabase}
+          onExportFormatChange={setExportFormat}
           onSubmitImport={submitDatabaseImport}
         />
         <input
           ref={fileInputRef}
           className="hidden"
           type="file"
-          accept=".db,.sqlite,.sqlite3"
+          accept=".db,.sqlite,.sqlite3,.json"
           multiple
           onChange={(event) => void importSelectedFiles(event.target.files, "file")}
         />
@@ -642,7 +653,7 @@ export function VideoLibraryPage() {
           ref={folderInputRef}
           className="hidden"
           type="file"
-          accept=".db,.sqlite,.sqlite3"
+          accept=".db,.sqlite,.sqlite3,.json"
           multiple
           // @ts-expect-error Chromium supports folder selection via webkitdirectory.
           webkitdirectory="true"
@@ -937,6 +948,7 @@ function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () =>
 function DatabaseManagerPanel({
   activeDbId,
   databases,
+  exportFormat,
   hotplugDir,
   importPath,
   isImporting,
@@ -947,10 +959,12 @@ function DatabaseManagerPanel({
   onPickFolder,
   onRefresh,
   onSelect,
+  onExportFormatChange,
   onSubmitImport,
 }: {
   activeDbId: string;
   databases: DatabaseInfo[];
+  exportFormat: "sqlite" | "json";
   hotplugDir: string;
   importPath: string;
   isImporting: boolean;
@@ -961,6 +975,7 @@ function DatabaseManagerPanel({
   onPickFolder: () => void;
   onRefresh: () => void;
   onSelect: (dbId: string) => void;
+  onExportFormatChange: (format: "sqlite" | "json") => void;
   onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
   const activeDatabase = databases.find((database) => database.id === activeDbId);
@@ -995,6 +1010,29 @@ function DatabaseManagerPanel({
             <InfoRow label="热插拔目录" value={hotplugDir} />
             <InfoRow label="兼容旧导出" value={legacyExportDir} />
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-line bg-[#fbfcfe] p-2 text-sm">
+            <span className="text-muted">导出格式</span>
+            <button
+              className={cn(
+                "inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium transition",
+                exportFormat === "sqlite" ? "bg-ink text-white" : "bg-white text-muted hover:text-ink",
+              )}
+              type="button"
+              onClick={() => onExportFormatChange("sqlite")}
+            >
+              SQLite 数据库
+            </button>
+            <button
+              className={cn(
+                "inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium transition",
+                exportFormat === "json" ? "bg-ink text-white" : "bg-white text-muted hover:text-ink",
+              )}
+              type="button"
+              onClick={() => onExportFormatChange("json")}
+            >
+              JSON 数据
+            </button>
+          </div>
           <div className="mt-3 grid max-h-[290px] gap-2 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
             {databases.map((database) => (
               <DatabaseCard
@@ -1015,7 +1053,7 @@ function DatabaseManagerPanel({
         <form className="grid content-start gap-3 rounded-md border border-line bg-[#fbfcfe] p-3" onSubmit={onSubmitImport}>
           <div>
             <div className="text-sm font-semibold text-ink">导入已有数据库</div>
-            <div className="mt-1 text-xs text-muted">可选择数据库文件、选择文件夹批量导入，或把文件放进热插拔目录后扫描。</div>
+            <div className="mt-1 text-xs text-muted">可导入 .db/.sqlite/.sqlite3 或导出的 JSON 数据文件。</div>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <button
@@ -1043,7 +1081,7 @@ function DatabaseManagerPanel({
               <FolderOpen size={16} aria-hidden="true" />
               <input
                 className="min-w-0 flex-1 bg-transparent text-ink outline-none"
-                placeholder="D:\\backups\\archive.db"
+                placeholder="D:\\backups\\archive.db 或 archive.json"
                 value={importPath}
                 onChange={(event) => onImportPathChange(event.target.value)}
               />
@@ -1104,7 +1142,6 @@ function DatabaseCard({
       <div className="flex flex-wrap items-center gap-1 text-xs">
         <span className="rounded bg-white px-2 py-0.5 text-muted">{kindLabel}</span>
         {database.owner_name && <span className="rounded bg-white px-2 py-0.5 text-muted">UP {database.owner_name}</span>}
-        {database.archive_kind !== "main" && <span className="rounded bg-white px-2 py-0.5 text-muted">JSON 清单</span>}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span>视频 {formatNumber(database.video_count)}</span>
