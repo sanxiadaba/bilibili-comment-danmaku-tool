@@ -1,6 +1,7 @@
 ﻿import {
   AlertTriangle,
   ChevronRight,
+  CheckCircle2,
   Database,
   Download,
   Eye,
@@ -15,9 +16,12 @@
   Search,
   Settings,
   Sparkles,
+  Upload,
   Users,
+  X,
+  XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
   archiveSpaceVideos,
@@ -25,6 +29,7 @@ import {
   fetchDatabases,
   fetchVideos,
   importDatabase,
+  importDatabaseFiles,
   logClientEvent,
   parseVideo,
 } from "../api/client";
@@ -44,6 +49,7 @@ export function VideoLibraryPage() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState<NoticeState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingDatabases, setIsLoadingDatabases] = useState(true);
   const [importPath, setImportPath] = useState("");
@@ -57,6 +63,8 @@ export function VideoLibraryPage() {
   const [exportingKey, setExportingKey] = useState("");
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const parseProgress = useProgressPolling(isParsing, "parse");
   const spaceProgress = useProgressPolling(true);
   const [parseDelay, setParseDelay] = useState(() => {
@@ -261,6 +269,11 @@ export function VideoLibraryPage() {
       setMessage(
         `导出完成：${payload.relative_path}，已加入热插拔数据库列表，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
       );
+      setNotice({
+        kind: "success",
+        title: "UP 主数据库导出完成",
+        message: `${payload.relative_path} 已加入热插拔目录，同时生成 ${payload.json_relative_path || payload.json_file_name || "JSON 清单"}`,
+      });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
         db_id: activeDbId,
@@ -272,6 +285,7 @@ export function VideoLibraryPage() {
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
+      setNotice({ kind: "error", title: "UP 主数据库导出失败", message: text });
       logClientEvent("client.user.database_export.owner_error", text, {
         owner: owner.name,
         owner_mid: owner.ownerMid,
@@ -293,6 +307,11 @@ export function VideoLibraryPage() {
         label: `${video.bvid}_${video.title}`,
       });
       setMessage(`导出完成：${payload.relative_path}，已加入热插拔数据库列表，${formatBytes(payload.size_bytes)}`);
+      setNotice({
+        kind: "success",
+        title: "视频数据库导出完成",
+        message: `${payload.relative_path} 已加入热插拔目录，同时生成 ${payload.json_relative_path || payload.json_file_name || "JSON 清单"}`,
+      });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
         db_id: activeDbId,
@@ -302,6 +321,7 @@ export function VideoLibraryPage() {
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
+      setNotice({ kind: "error", title: "视频数据库导出失败", message: text });
       logClientEvent("client.user.database_export.video_error", text, {
         bvid: video.bvid,
       });
@@ -436,6 +456,11 @@ export function VideoLibraryPage() {
           payload.database.size_bytes,
         )}`,
       );
+      setNotice({
+        kind: "success",
+        title: "数据库导入完成",
+        message: `${payload.database.relative_path} 已导入并切换，包含 ${payload.database.video_count} 个视频`,
+      });
       logClientEvent("client.user.databases.import_success", "database imported", {
         db_id: payload.database.id,
         file_name: payload.database.file_name,
@@ -445,9 +470,53 @@ export function VideoLibraryPage() {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
       setMessage("");
+      setNotice({ kind: "error", title: "数据库导入失败", message: text });
       logClientEvent("client.user.databases.import_error", text);
     } finally {
       setIsImporting(false);
+    }
+  }
+
+  async function importSelectedFiles(fileList: FileList | null, source: "file" | "folder") {
+    const selectedFiles = Array.from(fileList || []).filter((file) => /\.(db|sqlite|sqlite3)$/i.test(file.name));
+    if (!selectedFiles.length) {
+      setNotice({ kind: "error", title: "未选择数据库文件", message: "请选择 .db / .sqlite / .sqlite3 文件" });
+      return;
+    }
+    setIsImporting(true);
+    setError("");
+    setMessage(`正在导入 ${selectedFiles.length} 个数据库文件`);
+    try {
+      const payload = await importDatabaseFiles(selectedFiles);
+      const database = payload.database;
+      setActiveDatabase(database.id, false);
+      await loadDatabases({ quiet: true, selectId: database.id });
+      setMessage(`导入完成：${payload.imported_count || selectedFiles.length} 个文件，已切换到 ${database.name}`);
+      setNotice({
+        kind: payload.errors?.length ? "warning" : "success",
+        title: payload.errors?.length ? "部分数据库导入完成" : "数据库导入完成",
+        message: [
+          `成功导入 ${payload.imported_count || payload.databases?.length || 1} 个数据库文件`,
+          payload.errors?.length ? `失败 ${payload.errors.length} 个：${payload.errors.slice(0, 3).join("；")}` : "",
+        ]
+          .filter(Boolean)
+          .join("。"),
+      });
+      logClientEvent("client.user.databases.import_file_success", "database files imported", {
+        db_id: database.id,
+        file_count: selectedFiles.length,
+        source,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setMessage("");
+      setNotice({ kind: "error", title: "数据库文件导入失败", message: text });
+      logClientEvent("client.user.databases.import_file_error", text, { file_count: selectedFiles.length, source });
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      if (folderInputRef.current) folderInputRef.current.value = "";
     }
   }
 
@@ -555,9 +624,29 @@ export function VideoLibraryPage() {
           isLoading={isLoadingDatabases}
           legacyExportDir={legacyExportDir}
           onImportPathChange={setImportPath}
+          onPickFiles={() => fileInputRef.current?.click()}
+          onPickFolder={() => folderInputRef.current?.click()}
           onRefresh={() => void refreshDatabaseCatalog()}
           onSelect={setActiveDatabase}
           onSubmitImport={submitDatabaseImport}
+        />
+        <input
+          ref={fileInputRef}
+          className="hidden"
+          type="file"
+          accept=".db,.sqlite,.sqlite3"
+          multiple
+          onChange={(event) => void importSelectedFiles(event.target.files, "file")}
+        />
+        <input
+          ref={folderInputRef}
+          className="hidden"
+          type="file"
+          accept=".db,.sqlite,.sqlite3"
+          multiple
+          // @ts-expect-error Chromium supports folder selection via webkitdirectory.
+          webkitdirectory="true"
+          onChange={(event) => void importSelectedFiles(event.target.files, "folder")}
         />
       </section>
 
@@ -775,6 +864,7 @@ export function VideoLibraryPage() {
           </div>
         </section>
       </section>
+      {notice && <NoticeDialog notice={notice} onClose={() => setNotice(null)} />}
     </main>
   );
 }
@@ -797,6 +887,53 @@ function dbPath(path: string, dbId: string) {
   return `${path}?db_id=${encodeURIComponent(dbId)}`;
 }
 
+type NoticeState = {
+  kind: "success" | "error" | "warning";
+  title: string;
+  message: string;
+};
+
+function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () => void }) {
+  const Icon = notice.kind === "success" ? CheckCircle2 : notice.kind === "warning" ? AlertTriangle : XCircle;
+  const tone =
+    notice.kind === "success"
+      ? "text-emerald-700 bg-emerald-50 border-emerald-100"
+      : notice.kind === "warning"
+        ? "text-amber-700 bg-amber-50 border-amber-100"
+        : "text-red-700 bg-red-50 border-red-100";
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-md rounded-md border border-line bg-white shadow-xl">
+        <div className={cn("flex items-start gap-3 border-b p-4", tone)}>
+          <Icon className="mt-0.5 shrink-0" size={20} aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <div className="text-base font-semibold text-ink">{notice.title}</div>
+            <div className="mt-1 break-words text-sm leading-6">{notice.message}</div>
+          </div>
+          <button
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/80 text-muted transition hover:text-ink"
+            type="button"
+            aria-label="关闭提示"
+            onClick={onClose}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="flex justify-end p-4">
+          <button
+            className="inline-flex h-10 items-center justify-center rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+            type="button"
+            onClick={onClose}
+          >
+            知道了
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DatabaseManagerPanel({
   activeDbId,
   databases,
@@ -806,6 +943,8 @@ function DatabaseManagerPanel({
   isLoading,
   legacyExportDir,
   onImportPathChange,
+  onPickFiles,
+  onPickFolder,
   onRefresh,
   onSelect,
   onSubmitImport,
@@ -818,6 +957,8 @@ function DatabaseManagerPanel({
   isLoading: boolean;
   legacyExportDir: string;
   onImportPathChange: (value: string) => void;
+  onPickFiles: () => void;
+  onPickFolder: () => void;
   onRefresh: () => void;
   onSelect: (dbId: string) => void;
   onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
@@ -874,10 +1015,30 @@ function DatabaseManagerPanel({
         <form className="grid content-start gap-3 rounded-md border border-line bg-[#fbfcfe] p-3" onSubmit={onSubmitImport}>
           <div>
             <div className="text-sm font-semibold text-ink">导入已有数据库</div>
-            <div className="mt-1 text-xs text-muted">把导出的 .db/.sqlite 放进热插拔目录后，也可以直接点击扫描文件夹。</div>
+            <div className="mt-1 text-xs text-muted">可选择数据库文件、选择文件夹批量导入，或把文件放进热插拔目录后扫描。</div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              type="button"
+              disabled={isImporting}
+              onClick={onPickFiles}
+            >
+              <Upload size={16} aria-hidden="true" />
+              选择文件
+            </button>
+            <button
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              type="button"
+              disabled={isImporting}
+              onClick={onPickFolder}
+            >
+              <FolderOpen size={16} aria-hidden="true" />
+              选择文件夹
+            </button>
           </div>
           <label className="grid gap-2 text-sm text-muted">
-            数据库文件路径
+            本机路径导入
             <span className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line bg-white px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
               <FolderOpen size={16} aria-hidden="true" />
               <input
@@ -913,6 +1074,15 @@ function DatabaseCard({
 }) {
   const roleLabel =
     database.role === "main" ? "主库" : database.role === "legacy_export" ? "旧导出" : "热插拔";
+  const kindLabel = databaseKindLabel(database.archive_kind);
+  const coverageTone =
+    database.coverage_status === "has_better"
+      ? "text-amber-700"
+      : database.coverage_status === "duplicate"
+        ? "text-cyan-700"
+        : database.coverage_status === "overlap"
+          ? "text-muted"
+          : "text-emerald-700";
 
   return (
     <button
@@ -931,17 +1101,31 @@ function DatabaseCard({
         </div>
         <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs text-muted">{roleLabel}</span>
       </div>
+      <div className="flex flex-wrap items-center gap-1 text-xs">
+        <span className="rounded bg-white px-2 py-0.5 text-muted">{kindLabel}</span>
+        {database.owner_name && <span className="rounded bg-white px-2 py-0.5 text-muted">UP {database.owner_name}</span>}
+        {database.archive_kind !== "main" && <span className="rounded bg-white px-2 py-0.5 text-muted">JSON 清单</span>}
+      </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span>视频 {formatNumber(database.video_count)}</span>
         <span>评论 {formatNumber(database.comment_count)}</span>
         <span>弹幕 {formatNumber(database.danmaku_count)}</span>
         <span>{formatBytes(database.size_bytes)}</span>
       </div>
+      {database.coverage_message && <div className={cn("line-clamp-2 text-xs", coverageTone)}>{database.coverage_message}</div>}
       <div className={cn("truncate text-xs", database.ok ? "text-muted" : "text-amber-700")}>
         {database.ok ? database.relative_path : database.error || "不可用"}
       </div>
     </button>
   );
+}
+
+function databaseKindLabel(kind: string) {
+  if (kind === "main") return "主数据库";
+  if (kind === "up") return "UP 主库";
+  if (kind === "video") return "单视频库";
+  if (kind === "collection") return "视频集合";
+  return "未标注";
 }
 
 function ProgressQueuePanel({ queue }: { queue?: ProgressQueue }) {

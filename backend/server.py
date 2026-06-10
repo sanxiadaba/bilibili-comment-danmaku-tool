@@ -26,7 +26,7 @@ from bilibili_comment_danmaku import (
 )
 from bilibili_comment_danmaku import scraper
 from bilibili_comment_danmaku.scraper import BilibiliRequestError
-from bilibili_comment_danmaku.storage import connect, ensure_schema
+from bilibili_comment_danmaku.storage import connect, ensure_schema, read_archive_meta
 from task_queue import InMemoryTaskQueue
 
 
@@ -125,6 +125,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             if parsed.path == "/api/databases/import":
                 self.handle_database_import_api()
                 return
+            if parsed.path == "/api/databases/import-file":
+                self.handle_database_import_file_api()
+                return
             if parsed.path == "/api/database/export":
                 self.handle_database_export_api()
                 return
@@ -192,7 +195,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 db=str(db_path),
                 video_count=len(videos),
             )
-            self.send_json({"videos": videos, "database": database_info_for_path(db_path, self.db_path, self.database_dir)})
+            self.send_json(
+                {"videos": videos, "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir))}
+            )
         except Exception as exc:
             log_exception("api.videos.list_error", str(exc), request_id=getattr(self, "request_id", ""))
             self.send_json({"error": str(exc)}, status=500)
@@ -448,6 +453,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 target_path,
                 bvids=selected_bvids or None,
                 owner_mid=owner_mid or None,
+                archive_kind="up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection",
+                label=label,
             )
         except LookupError as exc:
             log_event(
@@ -490,10 +497,14 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 "path": result["path"],
                 "relative_path": str(Path(result["path"]).resolve().relative_to(ROOT)),
                 "file_name": Path(result["path"]).name,
-                "database": database_info_for_path(Path(result["path"]), self.db_path, self.database_dir),
+                "json_path": result["json_path"],
+                "json_relative_path": relative_to_root(result["json_path"]),
+                "json_file_name": Path(result["json_path"]).name,
+                "database": public_database_info(database_info_for_path(Path(result["path"]), self.db_path, self.database_dir)),
                 "video_count": len(result["bvids"]),
                 "bvids": result["bvids"],
                 "counts": result["counts"],
+                "manifest": result.get("manifest") or {},
                 "size_bytes": result["size_bytes"],
             }
         )
@@ -507,7 +518,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         source_path = Path(source_value).expanduser().resolve()
         try:
             target_path = import_database_file(source_path, self.database_dir)
-            info = database_info_for_path(target_path, self.db_path, self.database_dir)
+            info = public_database_info(database_info_for_path(target_path, self.db_path, self.database_dir))
         except (LookupError, ValueError) as exc:
             self.send_json({"error": str(exc)}, status=400)
             return
@@ -529,6 +540,51 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             database_id=info["id"],
         )
         self.send_json({"ok": True, "database": info})
+
+    def handle_database_import_file_api(self):
+        try:
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            files = parse_multipart_files(raw, self.headers.get("Content-Type", ""))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+
+        imported = []
+        errors = []
+        for item in files:
+            filename = item["filename"]
+            suffix = Path(filename).suffix.lower()
+            if suffix == ".json":
+                continue
+            if suffix not in DATABASE_EXTENSIONS:
+                errors.append(f"{filename}: 只支持 .db / .sqlite / .sqlite3")
+                continue
+            try:
+                target_path = import_uploaded_database_file(filename, item["content"], self.database_dir)
+                imported.append(public_database_info(database_info_for_path(target_path, self.db_path, self.database_dir)))
+            except Exception as exc:
+                errors.append(f"{filename}: {exc}")
+
+        if not imported:
+            self.send_json({"error": "没有导入任何数据库文件", "errors": errors}, status=400)
+            return
+
+        log_event(
+            "api.databases.import_file_finish",
+            "imported uploaded databases",
+            request_id=getattr(self, "request_id", ""),
+            imported_count=len(imported),
+            error_count=len(errors),
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "database": imported[0],
+                "databases": imported,
+                "imported_count": len(imported),
+                "errors": errors,
+            }
+        )
 
     def handle_comments_api(self, parsed):
         query = parse_qs(parsed.query)
@@ -922,7 +978,8 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
                     role=role,
                 )
             )
-    return databases
+    annotate_database_coverage(databases)
+    return [public_database_info(database) for database in databases]
 
 
 def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, db_id=None, role=None):
@@ -954,6 +1011,17 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
         "comment_count": 0,
         "danmaku_count": 0,
         "owner_count": 0,
+        "archive_kind": "main" if db_id == "main" else "unknown",
+        "archive_label": "主数据库" if db_id == "main" else "",
+        "owner_mid": "",
+        "owner_name": "",
+        "bvids": [],
+        "bvid_stats": [],
+        "coverage_status": "unique",
+        "coverage_message": "",
+        "overlap_count": 0,
+        "duplicate_database_ids": [],
+        "better_database_ids": [],
         "updated_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat() if path.exists() else "",
         "ok": False,
         "error": "",
@@ -966,6 +1034,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
         try:
             ensure_schema(conn)
             conn.commit()
+            archive_meta = read_archive_meta(conn)
             row = conn.execute(
                 """
                 SELECT
@@ -975,12 +1044,41 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
                     (SELECT COUNT(DISTINCT owner_mid) FROM videos WHERE owner_mid IS NOT NULL AND owner_mid <> '') AS owner_count
                 """
             ).fetchone()
+            bvid_rows = conn.execute(
+                """
+                SELECT bvid, title, owner_mid, owner_name, fetched_at,
+                       (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
+                       (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
+                FROM videos
+                ORDER BY fetched_at DESC, bvid
+                LIMIT 2000
+                """
+            ).fetchall()
+            bvid_stats = [
+                {
+                    "bvid": item["bvid"],
+                    "title": item["title"] or "",
+                    "owner_mid": item["owner_mid"] or "",
+                    "owner_name": item["owner_name"] or "",
+                    "fetched_at": item["fetched_at"] or "",
+                    "comment_count": item["comment_count"] or 0,
+                    "danmaku_count": item["danmaku_count"] or 0,
+                }
+                for item in bvid_rows
+            ]
+            archive_kind = archive_kind_from_meta_or_stats(archive_meta, bvid_stats, info["role"])
             info.update(
                 {
                     "video_count": row["video_count"] or 0,
                     "comment_count": row["comment_count"] or 0,
                     "danmaku_count": row["danmaku_count"] or 0,
                     "owner_count": row["owner_count"] or 0,
+                    "archive_kind": archive_kind,
+                    "archive_label": archive_label_from_meta_or_stats(archive_meta, bvid_stats, path, db_id),
+                    "owner_mid": str(archive_meta.get("owner_mid") or single_database_value("owner_mid", bvid_stats) or ""),
+                    "owner_name": str(archive_meta.get("owner_name") or single_database_value("owner_name", bvid_stats) or ""),
+                    "bvids": [item["bvid"] for item in bvid_stats],
+                    "bvid_stats": bvid_stats,
                     "ok": True,
                 }
             )
@@ -989,6 +1087,105 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     except Exception as exc:
         info["error"] = str(exc)
     return info
+
+
+def public_database_info(info):
+    public = dict(info)
+    public.pop("bvid_stats", None)
+    return public
+
+
+def archive_kind_from_meta_or_stats(meta, bvid_stats, role):
+    manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+    kind = str(manifest.get("archive_kind") or meta.get("archive_kind") or "").strip()
+    if kind in {"main", "up", "video", "collection", "unknown"}:
+        return kind
+    if role == "main":
+        return "main"
+    if len(bvid_stats) == 1:
+        return "video"
+    owner_mids = {item["owner_mid"] for item in bvid_stats if item["owner_mid"]}
+    if len(bvid_stats) > 1 and len(owner_mids) == 1:
+        return "up"
+    if len(bvid_stats) > 1:
+        return "collection"
+    return "unknown"
+
+
+def archive_label_from_meta_or_stats(meta, bvid_stats, path, db_id):
+    manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+    label = str(manifest.get("label") or meta.get("label") or "").strip()
+    if label:
+        return label
+    if db_id == "main":
+        return "主数据库"
+    if len(bvid_stats) == 1:
+        return bvid_stats[0]["title"] or bvid_stats[0]["bvid"]
+    owner_names = {item["owner_name"] for item in bvid_stats if item["owner_name"]}
+    if len(owner_names) == 1:
+        return next(iter(owner_names))
+    return Path(path).stem
+
+
+def single_database_value(key, rows):
+    values = {str(item.get(key) or "") for item in rows if item.get(key)}
+    return next(iter(values)) if len(values) == 1 else ""
+
+
+def annotate_database_coverage(databases):
+    by_bvid = {}
+    for database in databases:
+        for item in database.get("bvid_stats") or []:
+            by_bvid.setdefault(item["bvid"], []).append((database, item))
+
+    for database in databases:
+        if not database.get("ok"):
+            continue
+        bvids = database.get("bvids") or []
+        overlaps = [bvid for bvid in bvids if len(by_bvid.get(bvid, [])) > 1]
+        if not overlaps:
+            database["coverage_status"] = "unique"
+            database["coverage_message"] = "未发现同视频重复库"
+            continue
+
+        duplicate_ids = set()
+        better_ids = set()
+        same_count = 0
+        worse_count = 0
+        for bvid in overlaps:
+            peers = by_bvid.get(bvid, [])
+            current_item = next((item for db, item in peers if db["id"] == database["id"]), None)
+            if not current_item:
+                continue
+            current_score = database_video_score(current_item)
+            best_score = max(database_video_score(item) for _, item in peers)
+            peer_scores = [(db, item, database_video_score(item)) for db, item in peers if db["id"] != database["id"]]
+            for peer_db, peer_item, peer_score in peer_scores:
+                if peer_score == current_score:
+                    duplicate_ids.add(peer_db["id"])
+                    same_count += 1
+                if peer_score > current_score:
+                    better_ids.add(peer_db["id"])
+                    worse_count += 1
+            if current_score < best_score:
+                worse_count += 1
+
+        database["overlap_count"] = len(overlaps)
+        database["duplicate_database_ids"] = sorted(duplicate_ids)
+        database["better_database_ids"] = sorted(better_ids)
+        if better_ids:
+            database["coverage_status"] = "has_better"
+            database["coverage_message"] = f"{len(overlaps)} 个视频与其它库重叠，其中有库的评论/弹幕更多"
+        elif duplicate_ids and same_count >= len(overlaps):
+            database["coverage_status"] = "duplicate"
+            database["coverage_message"] = f"{len(overlaps)} 个视频与其它库内容相同或接近"
+        else:
+            database["coverage_status"] = "overlap"
+            database["coverage_message"] = f"{len(overlaps)} 个视频也存在于其它数据库"
+
+
+def database_video_score(item):
+    return int(item.get("comment_count") or 0) * 10 + int(item.get("danmaku_count") or 0)
 
 
 def import_database_file(source_path, database_dir=DEFAULT_DATABASE_DIR):
@@ -1009,11 +1206,82 @@ def import_database_file(source_path, database_dir=DEFAULT_DATABASE_DIR):
     return target_path
 
 
+def import_uploaded_database_file(filename, content, database_dir=DEFAULT_DATABASE_DIR):
+    if not content:
+        raise ValueError("上传文件为空")
+    database_dir = Path(database_dir).resolve()
+    database_dir.mkdir(parents=True, exist_ok=True)
+    target_path = unique_database_path(database_dir / normalize_database_filename(filename))
+    target_path.write_bytes(content)
+    try:
+        info = database_info_for_path(target_path, database_dir=database_dir)
+        if not info["ok"]:
+            raise ValueError(info["error"] or "不是可用的归档数据库")
+        return target_path
+    except Exception:
+        remove_file_quietly(target_path)
+        raise
+
+
 def normalize_database_filename(name):
     path = Path(name)
     suffix = path.suffix.lower() if path.suffix.lower() in DATABASE_EXTENSIONS else ".db"
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", path.stem).strip("._-") or "archive"
     return f"{stem[:100]}{suffix}"
+
+
+def parse_multipart_files(raw, content_type):
+    match = re.search(r'boundary="?([^";]+)"?', content_type or "")
+    if not match:
+        raise ValueError("请求不是有效的 multipart/form-data")
+    boundary = match.group(1).encode("utf-8")
+    marker = b"--" + boundary
+    close_marker = marker + b"--"
+    files = []
+    cursor = 0
+    while True:
+        start = raw.find(marker, cursor)
+        if start < 0:
+            break
+        start += len(marker)
+        if raw[start : start + 2] == b"--":
+            break
+        if raw[start : start + 2] == b"\r\n":
+            start += 2
+        next_marker = raw.find(marker, start)
+        next_close_marker = raw.find(close_marker, start)
+        candidates = [value for value in (next_marker, next_close_marker) if value >= 0]
+        if not candidates:
+            break
+        end = min(candidates)
+        part = raw[start:end]
+        if part.endswith(b"\r\n"):
+            part = part[:-2]
+        cursor = end
+        if not part:
+            continue
+        if b"\r\n\r\n" not in part:
+            continue
+        header_bytes, content = part.split(b"\r\n\r\n", 1)
+        headers = header_bytes.decode("utf-8", errors="replace")
+        disposition = next((line for line in headers.split("\r\n") if line.lower().startswith("content-disposition:")), "")
+        filename_match = re.search(r'filename="([^"]*)"', disposition)
+        if not filename_match:
+            continue
+        filename = Path(filename_match.group(1).replace("\\", "/")).name
+        if not filename:
+            continue
+        files.append({"filename": filename, "content": content})
+    if not files:
+        raise ValueError("没有收到文件")
+    return files
+
+
+def remove_file_quietly(path):
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
 
 
 def unique_database_path(path):

@@ -31,6 +31,21 @@ export async function importDatabase(path: string) {
   );
 }
 
+export async function importDatabaseFiles(files: File[]) {
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file, file.name));
+  return requestJson<DatabaseImportResponse>(
+    "databases.import_file",
+    `/api/databases/import-file?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      body: form,
+    },
+    { file_count: files.length },
+  );
+}
+
 export async function fetchCommentData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);

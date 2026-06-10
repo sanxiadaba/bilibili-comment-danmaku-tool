@@ -27,6 +27,7 @@ from server import (  # noqa: E402
     is_complete,
     list_database_catalog,
     parse_json_object_body,
+    parse_multipart_files,
     progress_percent,
     progress_stats,
     resolve_database_path,
@@ -298,6 +299,9 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(comments["comment_items"][0]["normalized"]["pictures"][0]["img_src"], "http://i.example/a.jpg")
             self.assertEqual(danmaku["metadata"]["total_count"], 1)
             self.assertTrue(export_path.exists())
+            self.assertTrue(Path(result["json_path"]).exists())
+            self.assertEqual(result["manifest"]["archive_kind"], "video")
+            self.assertEqual(result["manifest"]["bvids"], [BVID])
             self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
 
     def test_export_archive_to_sqlite_filters_by_owner(self):
@@ -310,10 +314,12 @@ class StorageTests(unittest.TestCase):
             other["video_raw"] = {**other["video_raw"], "owner": {"mid": "999", "name": "Other", "face": ""}}
             save_comments_to_sqlite(other, db_path, replace=True)
 
-            result = export_archive_to_sqlite(db_path, export_path, owner_mid="42")
+            result = export_archive_to_sqlite(db_path, export_path, owner_mid="42", archive_kind="up", label="Owner")
             summaries = list_video_summaries(export_path)
 
             self.assertEqual(result["bvids"], [BVID])
+            self.assertEqual(result["manifest"]["archive_kind"], "up")
+            self.assertEqual(result["manifest"]["label"], "Owner")
             self.assertEqual([item["bvid"] for item in summaries], [BVID])
 
     def test_database_catalog_detects_hotplug_database(self):
@@ -333,6 +339,46 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(by_id["db:owner_archive.db"]["video_count"], 1)
             self.assertTrue(by_id["db:owner_archive.db"]["ok"])
             self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
+
+    def test_database_catalog_marks_duplicate_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            first = hotplug_dir / "first.db"
+            second = hotplug_dir / "second.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+            export_archive_to_sqlite(main_db, first, bvids=[BVID])
+            export_archive_to_sqlite(main_db, second, bvids=[BVID])
+
+            catalog = list_database_catalog(main_db, hotplug_dir)
+            by_id = {item["id"]: item for item in catalog}
+
+            self.assertEqual(by_id["db:first.db"]["coverage_status"], "duplicate")
+            self.assertIn("db:second.db", by_id["db:first.db"]["duplicate_database_ids"])
+
+    def test_database_catalog_marks_archive_with_better_peer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            small = hotplug_dir / "small.db"
+            larger = hotplug_dir / "larger.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+            export_archive_to_sqlite(main_db, small, bvids=[BVID])
+
+            reply = make_comment("2", 2, "reply comment", root="1", parent="1", mid="100", like=3)
+            top["replies"] = [reply]
+            save_comments_to_sqlite(make_archive("2024-01-02T00:00:00+00:00", [top]), main_db, replace=True)
+            export_archive_to_sqlite(main_db, larger, bvids=[BVID])
+
+            catalog = list_database_catalog(main_db, hotplug_dir)
+            by_id = {item["id"]: item for item in catalog}
+
+            self.assertEqual(by_id["db:small.db"]["coverage_status"], "has_better")
+            self.assertIn("db:larger.db", by_id["db:small.db"]["better_database_ids"])
 
     def test_database_path_rejects_traversal_and_bad_extensions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -363,6 +409,20 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(imported.name, "Owner_Archive.sqlite")
             self.assertEqual(imported_again, imported)
             self.assertEqual(load_comment_data(imported, bvid=BVID)["metadata"]["bvid"], BVID)
+
+    def test_parse_multipart_files_preserves_binary_content(self):
+        boundary = "----codex-boundary"
+        content = b"\r\nSQLite format 3\x00\npayload\r\n"
+        raw = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="archive.db"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        files = parse_multipart_files(raw, f"multipart/form-data; boundary={boundary}")
+
+        self.assertEqual(files[0]["filename"], "archive.db")
+        self.assertEqual(files[0]["content"], content)
 
 
 class ScraperPerformanceTests(unittest.TestCase):

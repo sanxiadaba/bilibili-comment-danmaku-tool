@@ -238,10 +238,14 @@ export type DatabaseExportResponse = {
   path: string;
   relative_path: string;
   file_name: string;
+  json_path?: string;
+  json_relative_path?: string;
+  json_file_name?: string;
   database?: DatabaseInfo;
   video_count: number;
   bvids: string[];
   counts: Record<string, number>;
+  manifest?: Record<string, unknown>;
   size_bytes: number;
 };
 
@@ -258,6 +262,16 @@ export type DatabaseInfo = {
   comment_count: number;
   danmaku_count: number;
   owner_count: number;
+  archive_kind: "main" | "up" | "video" | "collection" | "unknown" | string;
+  archive_label: string;
+  owner_mid: string;
+  owner_name: string;
+  bvids: string[];
+  coverage_status: "unique" | "duplicate" | "overlap" | "has_better" | string;
+  coverage_message: string;
+  overlap_count: number;
+  duplicate_database_ids: string[];
+  better_database_ids: string[];
   updated_at: string;
   ok: boolean;
   error: string;
@@ -273,6 +287,9 @@ export type DatabaseListResponse = {
 export type DatabaseImportResponse = {
   ok: boolean;
   database: DatabaseInfo;
+  databases?: DatabaseInfo[];
+  imported_count?: number;
+  errors?: string[];
 };
 
 export type ProgressTask = {
