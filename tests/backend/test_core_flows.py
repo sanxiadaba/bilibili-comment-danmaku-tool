@@ -37,6 +37,7 @@ from bilibili_comment_danmaku.danmaku import (  # noqa: E402
 from bilibili_comment_danmaku import scraper  # noqa: E402
 from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
+    export_archive_to_sqlite,
     load_comment_data,
     load_danmaku_data,
     list_video_summaries,
@@ -245,6 +246,72 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(loaded["items"][0]["is_up_owner"])
             self.assertEqual([bucket["bucket_start"] for bucket in loaded["buckets"]], [0, 10])
             self.assertEqual(summaries[0]["danmaku_count"], 2)
+
+    def test_export_archive_to_sqlite_creates_independent_subset_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            export_path = Path(tmp) / "exports" / "one_video.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": "100",
+                            "progress": 1.2,
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000001,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 9,
+                            "like_count": 12,
+                            "content": "danmaku",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+
+            result = export_archive_to_sqlite(db_path, export_path, bvids=[BVID])
+            summaries = list_video_summaries(export_path)
+            comments = load_comment_data(export_path, bvid=BVID)
+            danmaku = load_danmaku_data(export_path, bvid=BVID)
+
+            self.assertEqual(result["counts"]["videos"], 1)
+            self.assertEqual(result["counts"]["comments"], 1)
+            self.assertEqual(result["counts"]["comment_pictures"], 1)
+            self.assertEqual(result["counts"]["comment_emotes"], 1)
+            self.assertEqual(result["counts"]["danmaku"], 1)
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(comments["metadata"]["bvid"], BVID)
+            self.assertEqual(comments["comment_items"][0]["normalized"]["pictures"][0]["img_src"], "http://i.example/a.jpg")
+            self.assertEqual(danmaku["metadata"]["total_count"], 1)
+            self.assertTrue(export_path.exists())
+            self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
+
+    def test_export_archive_to_sqlite_filters_by_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            export_path = Path(tmp) / "exports" / "owner.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+            other = make_archive("2024-01-01T00:00:00+00:00", [])
+            other["metadata"] = {**other["metadata"], "bvid": "BV1other1111", "aid": 456, "source_url": "https://www.bilibili.com/video/BV1other1111"}
+            other["video_raw"] = {**other["video_raw"], "owner": {"mid": "999", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(other, db_path, replace=True)
+
+            result = export_archive_to_sqlite(db_path, export_path, owner_mid="42")
+            summaries = list_video_summaries(export_path)
+
+            self.assertEqual(result["bvids"], [BVID])
+            self.assertEqual([item["bvid"] for item in summaries], [BVID])
 
 
 class ScraperPerformanceTests(unittest.TestCase):

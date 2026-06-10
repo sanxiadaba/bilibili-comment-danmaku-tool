@@ -152,6 +152,136 @@ def prepare_database_path(db_path):
     return db_path
 
 
+def export_archive_to_sqlite(db_path, target_path, *, bvids=None, owner_mid=None):
+    selected_bvids = [str(value).strip() for value in (bvids or []) if str(value).strip()]
+    owner_mid = str(owner_mid or "").strip()
+    if bool(selected_bvids) == bool(owner_mid):
+        raise ValueError("必须指定 owner_mid 或 bvids 之一")
+
+    source_path = Path(db_path).resolve()
+    target_path = Path(target_path).resolve()
+    if target_path == source_path:
+        raise ValueError("导出目标不能覆盖当前主数据库")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    remove_sqlite_file_with_sidecars(target_path)
+
+    source = connect(source_path)
+    target = connect(target_path)
+    try:
+        ensure_schema(source)
+        source.commit()
+        ensure_schema(target)
+
+        if owner_mid:
+            video_rows = source.execute(
+                "SELECT bvid FROM videos WHERE owner_mid = ? ORDER BY fetched_at DESC, bvid",
+                (owner_mid,),
+            ).fetchall()
+            selected_bvids = [row["bvid"] for row in video_rows]
+        else:
+            source.execute("DROP TABLE IF EXISTS requested_export_bvids")
+            source.execute("CREATE TEMP TABLE requested_export_bvids (bvid TEXT PRIMARY KEY)")
+            source.executemany(
+                "INSERT OR IGNORE INTO requested_export_bvids (bvid) VALUES (?)",
+                [(bvid,) for bvid in selected_bvids],
+            )
+            video_rows = source.execute(
+                """
+                SELECT videos.bvid
+                FROM videos
+                JOIN requested_export_bvids ON requested_export_bvids.bvid = videos.bvid
+                ORDER BY videos.fetched_at DESC, videos.bvid
+                """
+            ).fetchall()
+            found_bvids = {row["bvid"] for row in video_rows}
+            missing = [bvid for bvid in selected_bvids if bvid not in found_bvids]
+            if missing:
+                raise LookupError(f"数据库中没有视频：{', '.join(missing)}")
+            selected_bvids = [row["bvid"] for row in video_rows]
+
+        if not selected_bvids:
+            raise LookupError("没有可导出的本地视频档案")
+
+        source.execute("DROP TABLE IF EXISTS export_bvids")
+        source.execute("CREATE TEMP TABLE export_bvids (bvid TEXT PRIMARY KEY)")
+        source.executemany("INSERT OR IGNORE INTO export_bvids (bvid) VALUES (?)", [(bvid,) for bvid in selected_bvids])
+
+        counts = {
+            "videos": copy_table_query(source, target, "videos", "bvid IN (SELECT bvid FROM export_bvids)"),
+            "users": copy_table_query(
+                source,
+                target,
+                "users",
+                """
+                mid IN (
+                    SELECT DISTINCT mid
+                    FROM comments
+                    WHERE bvid IN (SELECT bvid FROM export_bvids)
+                      AND mid IS NOT NULL
+                      AND mid <> ''
+                )
+                """,
+            ),
+            "comments": copy_table_query(source, target, "comments", "bvid IN (SELECT bvid FROM export_bvids)"),
+            "comment_pictures": copy_table_query(
+                source,
+                target,
+                "comment_pictures",
+                "rpid IN (SELECT rpid FROM comments WHERE bvid IN (SELECT bvid FROM export_bvids))",
+            ),
+            "comment_emotes": copy_table_query(
+                source,
+                target,
+                "comment_emotes",
+                "rpid IN (SELECT rpid FROM comments WHERE bvid IN (SELECT bvid FROM export_bvids))",
+            ),
+            "danmaku": copy_table_query(source, target, "danmaku", "bvid IN (SELECT bvid FROM export_bvids)"),
+        }
+        target.commit()
+        target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        target.execute("PRAGMA journal_mode = DELETE")
+        target.commit()
+        return {
+            "path": str(target_path),
+            "bvids": selected_bvids,
+            "counts": counts,
+            "size_bytes": target_path.stat().st_size if target_path.exists() else 0,
+        }
+    finally:
+        source.close()
+        target.close()
+
+
+def remove_sqlite_file_with_sidecars(path):
+    path = Path(path)
+    for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+        if candidate.exists():
+            candidate.unlink()
+
+
+def copy_table_query(source, target, table, where_sql, values=()):
+    source_columns = {row["name"] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
+    target_columns = [row["name"] for row in target.execute(f"PRAGMA table_info({table})").fetchall()]
+    columns = [column for column in target_columns if column in source_columns]
+    if not columns:
+        return 0
+
+    column_sql = ", ".join(columns)
+    insert_placeholders = ", ".join("?" for _ in columns)
+    cursor = source.execute(f"SELECT {column_sql} FROM {table} WHERE {where_sql}", values)
+    count = 0
+    while True:
+        rows = cursor.fetchmany(1000)
+        if not rows:
+            break
+        target.executemany(
+            f"INSERT OR REPLACE INTO {table} ({column_sql}) VALUES ({insert_placeholders})",
+            [tuple(row[column] for column in columns) for row in rows],
+        )
+        count += len(rows)
+    return count
+
+
 def ensure_schema(conn):
     conn.executescript(SCHEMA_SQL)
     rename_video_column(conn, "api_all_count", "api_comment_count", "INTEGER")

@@ -1,5 +1,6 @@
 import type {
   CommentData,
+  DatabaseExportResponse,
   DanmakuData,
   ParseVideoResponse,
   ProgressState,
@@ -67,6 +68,24 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
       }),
     },
     { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay },
+  );
+}
+
+export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string }) {
+  return requestJson<DatabaseExportResponse>(
+    "database.export",
+    `/api/database/export?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    {
+      bvid: payload.bvid,
+      owner_mid: payload.owner_mid,
+      video_count: payload.bvids?.length,
+    },
   );
 }
 

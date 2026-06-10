@@ -232,6 +232,17 @@ export type SpaceArchiveResponse = {
   no_cache: boolean;
 };
 
+export type DatabaseExportResponse = {
+  ok: boolean;
+  path: string;
+  relative_path: string;
+  file_name: string;
+  video_count: number;
+  bvids: string[];
+  counts: Record<string, number>;
+  size_bytes: number;
+};
+
 export type ProgressTask = {
   id: string;
   kind: string;

@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, new_request_id, shutdown_logging
 from bilibili_comment_danmaku import (
+    export_archive_to_sqlite,
     extract_bvid,
     list_video_summaries,
     load_comment_data,
@@ -34,6 +35,7 @@ DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
+DEFAULT_EXPORT_DIR = ROOT / "data" / "exports"
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
 progress_state = {
@@ -108,6 +110,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/logs/client":
                 self.handle_client_log_api()
+                return
+            if parsed.path == "/api/database/export":
+                self.handle_database_export_api()
                 return
             self.send_error(404)
         except BadRequestError as exc:
@@ -378,6 +383,77 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 **options,
             },
             status=202,
+        )
+
+    def handle_database_export_api(self):
+        body = self.read_json_body()
+        bvids = body.get("bvids")
+        bvid = (body.get("bvid") or "").strip()
+        owner_mid = (body.get("owner_mid") or "").strip()
+        label = (body.get("label") or body.get("owner_name") or bvid or owner_mid or "archive").strip()
+        if isinstance(bvids, list):
+            selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
+        else:
+            selected_bvids = []
+        if bvid:
+            selected_bvids = [bvid]
+        if not selected_bvids and not owner_mid:
+            self.send_json({"error": "请选择要导出的 UP 或视频"}, status=400)
+            return
+
+        target_path = export_database_path(label)
+        try:
+            result = export_archive_to_sqlite(
+                self.db_path,
+                target_path,
+                bvids=selected_bvids or None,
+                owner_mid=owner_mid or None,
+            )
+        except LookupError as exc:
+            log_event(
+                "api.database_export.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                owner_mid=owner_mid,
+                bvid=bvid,
+                level="warning",
+            )
+            self.send_json({"error": str(exc)}, status=404)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.database_export.error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                owner_mid=owner_mid,
+                bvid=bvid,
+            )
+            self.send_json({"error": str(exc)}, status=500)
+            return
+
+        log_event(
+            "api.database_export.finish",
+            "exported archive database",
+            request_id=getattr(self, "request_id", ""),
+            path=result["path"],
+            video_count=len(result["bvids"]),
+            size_bytes=result["size_bytes"],
+            counts=result["counts"],
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "path": result["path"],
+                "relative_path": str(Path(result["path"]).resolve().relative_to(ROOT)),
+                "file_name": Path(result["path"]).name,
+                "video_count": len(result["bvids"]),
+                "bvids": result["bvids"],
+                "counts": result["counts"],
+                "size_bytes": result["size_bytes"],
+            }
         )
 
     def handle_comments_api(self, parsed):
@@ -1604,6 +1680,20 @@ def clamp_float(value, minimum, maximum):
 
 def clamp_int(value, minimum, maximum):
     return max(minimum, min(maximum, value))
+
+
+def export_database_path(label):
+    safe_label = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(label or "archive")).strip("._-")
+    safe_label = safe_label[:80] or "archive"
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
+    base_path = DEFAULT_EXPORT_DIR / f"{timestamp}_{safe_label}.db"
+    if not base_path.exists():
+        return base_path
+    for index in range(2, 1000):
+        candidate = DEFAULT_EXPORT_DIR / f"{timestamp}_{safe_label}_{index}.db"
+        if not candidate.exists():
+            return candidate
+    return DEFAULT_EXPORT_DIR / f"{timestamp}_{safe_label}_{int(time.time() * 1000)}.db"
 
 
 def extract_space_mid(value):

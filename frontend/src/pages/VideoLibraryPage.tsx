@@ -2,6 +2,7 @@
   AlertTriangle,
   ChevronRight,
   Database,
+  Download,
   Eye,
   Heart,
   LinkIcon,
@@ -18,7 +19,7 @@
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
-import { archiveSpaceVideos, fetchVideos, logClientEvent, parseVideo } from "../api/client";
+import { archiveSpaceVideos, exportDatabaseArchive, fetchVideos, logClientEvent, parseVideo } from "../api/client";
 import { ProgressBanner } from "../components/common";
 import { InfoRow } from "../components/common";
 import { StatTile } from "../components/ui/StatTile";
@@ -38,6 +39,7 @@ export function VideoLibraryPage() {
   const [ownerRef, setOwnerRef] = useState("");
   const [isArchivingSpace, setIsArchivingSpace] = useState(false);
   const [isSubmittingSpace, setIsSubmittingSpace] = useState(false);
+  const [exportingKey, setExportingKey] = useState("");
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const parseProgress = useProgressPolling(isParsing, "parse");
@@ -127,7 +129,13 @@ export function VideoLibraryPage() {
     }
   }, [ownerFilter, ownerGroups]);
 
-  const selectedOwnerName = ownerGroups.find((group) => group.key === ownerFilter)?.name;
+  const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
+  const selectedOwnerName = selectedOwner?.name;
+
+  const selectedOwnerVideos = useMemo(() => {
+    if (ownerFilter === "all") return [];
+    return videos.filter((video) => ownerKey(video) === ownerFilter);
+  }, [ownerFilter, videos]);
 
   const filteredVideos = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -182,6 +190,62 @@ export function VideoLibraryPage() {
     }
 
     await runParse(target);
+  }
+
+  async function exportOwnerDatabase() {
+    if (!selectedOwner || !selectedOwnerVideos.length) return;
+    const bvids = selectedOwnerVideos.map((video) => video.bvid);
+    setExportingKey(`owner:${selectedOwner.key}`);
+    setError("");
+    setMessage(`正在导出 ${selectedOwner.name} 的独立数据库`);
+    try {
+      const payload = await exportDatabaseArchive({
+        bvids,
+        label: selectedOwner.name,
+      });
+      setMessage(
+        `导出完成：${payload.relative_path}，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
+      );
+      logClientEvent("client.user.database_export.owner_success", "owner database exported", {
+        owner: selectedOwner.name,
+        video_count: payload.video_count,
+        size_bytes: payload.size_bytes,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      logClientEvent("client.user.database_export.owner_error", text, {
+        owner: selectedOwner.name,
+        video_count: selectedOwnerVideos.length,
+      });
+    } finally {
+      setExportingKey("");
+    }
+  }
+
+  async function exportVideoDatabase(video: VideoSummary) {
+    setExportingKey(`video:${video.bvid}`);
+    setError("");
+    setMessage(`正在导出 ${video.bvid} 的独立数据库`);
+    try {
+      const payload = await exportDatabaseArchive({
+        bvid: video.bvid,
+        label: `${video.bvid}_${video.title}`,
+      });
+      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      logClientEvent("client.user.database_export.video_success", "video database exported", {
+        bvid: video.bvid,
+        size_bytes: payload.size_bytes,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      logClientEvent("client.user.database_export.video_error", text, {
+        bvid: video.bvid,
+      });
+    } finally {
+      setExportingKey("");
+    }
   }
 
   async function runParse(target: string) {
@@ -473,6 +537,7 @@ export function VideoLibraryPage() {
               <div className="grid gap-2 text-sm">
                 <InfoRow label="Cookie" value="data/cookie.txt" />
                 <InfoRow label="数据库" value="data/comment_danmaku.db" />
+                <InfoRow label="导出目录" value="data/exports" />
               </div>
             </div>
           )}
@@ -519,6 +584,21 @@ export function VideoLibraryPage() {
                   ))}
                 </div>
               </div>
+              {selectedOwner && (
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+                  type="button"
+                  disabled={Boolean(exportingKey)}
+                  onClick={() => void exportOwnerDatabase()}
+                >
+                  <Download
+                    className={cn(exportingKey === `owner:${selectedOwner.key}` && "animate-bounce")}
+                    size={16}
+                    aria-hidden="true"
+                  />
+                  {exportingKey === `owner:${selectedOwner.key}` ? "导出中" : `导出 ${selectedOwner.name}`}
+                </button>
+              )}
             </div>
           </div>
         </aside>
@@ -549,7 +629,13 @@ export function VideoLibraryPage() {
             {isLoading && <div className="p-6 text-center text-sm text-muted">正在载入视频库</div>}
             {!isLoading &&
               filteredVideos.map((video) => (
-                <VideoCard key={video.bvid} video={video} />
+                <VideoCard
+                  disabled={Boolean(exportingKey)}
+                  exporting={exportingKey === `video:${video.bvid}`}
+                  key={video.bvid}
+                  video={video}
+                  onExport={() => void exportVideoDatabase(video)}
+                />
               ))}
             {!isLoading && filteredVideos.length === 0 && (
               <div className="p-6 text-center text-sm text-muted">暂无匹配的视频</div>
@@ -665,6 +751,18 @@ function taskStatusLabel(task: ProgressTask) {
   return task.status || "未知";
 }
 
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 function summarizeOwnerRef(value: string) {
   return value.match(/space\.bilibili\.com\/(\d+)/)?.[1] || value.match(/^\d+$/)?.[0] || value.slice(0, 120);
 }
@@ -718,7 +816,17 @@ function OwnerFilterButton({
   );
 }
 
-function VideoCard({ video }: { video: VideoSummary }) {
+function VideoCard({
+  disabled,
+  exporting,
+  video,
+  onExport,
+}: {
+  disabled: boolean;
+  exporting: boolean;
+  video: VideoSummary;
+  onExport: () => void;
+}) {
   return (
     <article className="grid gap-3 rounded-md border border-line bg-[#fbfcfe] p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
       <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100">
@@ -779,6 +887,15 @@ function VideoCard({ video }: { video: VideoSummary }) {
           弹幕
           <Sparkles size={15} aria-hidden="true" />
         </a>
+        <button
+          className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+          type="button"
+          disabled={disabled}
+          onClick={onExport}
+        >
+          <Download className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
+          {exporting ? "导出中" : "导出"}
+        </button>
       </div>
     </article>
   );
