@@ -2,6 +2,7 @@
   AlertTriangle,
   ChevronRight,
   Database,
+  Eye,
   Heart,
   LinkIcon,
   ListTree,
@@ -145,6 +146,7 @@ export function VideoLibraryPage() {
   const totals = useMemo(() => {
     return videos.reduce(
       (acc, video) => {
+        acc.views += video.stat_view || 0;
         acc.comments += video.comment_total_count || 0;
         acc.active += video.active_comment_count || 0;
         acc.deleted += video.deleted_comment_count || 0;
@@ -152,7 +154,7 @@ export function VideoLibraryPage() {
         acc.danmaku += video.danmaku_count || 0;
         return acc;
       },
-      { comments: 0, active: 0, deleted: 0, likes: 0, danmaku: 0 },
+      { views: 0, comments: 0, active: 0, deleted: 0, likes: 0, danmaku: 0 },
     );
   }, [videos]);
 
@@ -339,8 +341,9 @@ export function VideoLibraryPage() {
       {isParsing && <ProgressBanner progress={parseProgress} fallback="正在抓取评论和弹幕" />}
       {hasSpaceQueueWork && <ProgressBanner progress={spaceProgress} fallback="正在归档 UP 主全部视频" />}
 
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-5 lg:px-6">
+      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-6 lg:px-6">
         <StatTile icon={PlayCircle} label="视频数量" value={videos.length} tone="pink" />
+        <StatTile icon={Eye} label="播放量" value={totals.views} tone="mint" />
         <StatTile icon={MessageCircle} label="评论档案" value={totals.comments} tone="cyan" />
         <StatTile icon={AlertTriangle} label="仍可见 / 未返回" value={`${totals.active} / ${totals.deleted}`} tone="mint" />
         <StatTile icon={Sparkles} label="弹幕档案" value={totals.danmaku} tone="amber" />
@@ -738,6 +741,10 @@ function VideoCard({ video }: { video: VideoSummary }) {
         </div>
         <h3 className="mt-2 line-clamp-2 text-base font-semibold leading-6 text-ink">{video.title}</h3>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
+          <span className="inline-flex items-center gap-1">
+            <Eye size={13} aria-hidden="true" />
+            播放 {formatNumber(video.stat_view)}
+          </span>
           <span>档案 {formatNumber(video.comment_total_count)}</span>
           <span>弹幕 {formatNumber(video.danmaku_count)}</span>
           <span>可见 {formatNumber(video.active_comment_count)}</span>
