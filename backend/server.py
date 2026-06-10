@@ -400,6 +400,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         if not selected_bvids and not owner_mid:
             self.send_json({"error": "请选择要导出的 UP 或视频"}, status=400)
             return
+        if owner_mid and not bvid:
+            selected_bvids = []
 
         target_path = export_database_path(label)
         try:

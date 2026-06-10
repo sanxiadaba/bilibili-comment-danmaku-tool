@@ -89,8 +89,10 @@ export function VideoLibraryPage() {
     const groups = new Map<
       string,
       {
+        bvids: string[];
         key: string;
         name: string;
+        ownerMid: string;
         videoCount: number;
         commentCount: number;
         danmakuCount: number;
@@ -101,13 +103,16 @@ export function VideoLibraryPage() {
       const key = ownerKey(video);
       const existing = groups.get(key);
       if (existing) {
+        existing.bvids.push(video.bvid);
         existing.videoCount += 1;
         existing.commentCount += video.comment_total_count || 0;
         existing.danmakuCount += video.danmaku_count || 0;
       } else {
         groups.set(key, {
+          bvids: [video.bvid],
           key,
           name: ownerName(video),
+          ownerMid: (video.owner_mid || "").trim(),
           videoCount: 1,
           commentCount: video.comment_total_count || 0,
           danmakuCount: video.danmaku_count || 0,
@@ -131,11 +136,6 @@ export function VideoLibraryPage() {
 
   const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
   const selectedOwnerName = selectedOwner?.name;
-
-  const selectedOwnerVideos = useMemo(() => {
-    if (ownerFilter === "all") return [];
-    return videos.filter((video) => ownerKey(video) === ownerFilter);
-  }, [ownerFilter, videos]);
 
   const filteredVideos = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -192,22 +192,23 @@ export function VideoLibraryPage() {
     await runParse(target);
   }
 
-  async function exportOwnerDatabase() {
-    if (!selectedOwner || !selectedOwnerVideos.length) return;
-    const bvids = selectedOwnerVideos.map((video) => video.bvid);
-    setExportingKey(`owner:${selectedOwner.key}`);
+  async function exportOwnerDatabase(owner = selectedOwner) {
+    if (!owner || !owner.bvids.length) return;
+    setExportingKey(`owner:${owner.key}`);
     setError("");
-    setMessage(`正在导出 ${selectedOwner.name} 的独立数据库`);
+    setMessage(`正在导出 ${owner.name} 的 UP 主独立数据库`);
     try {
       const payload = await exportDatabaseArchive({
-        bvids,
-        label: selectedOwner.name,
+        bvids: owner.ownerMid ? undefined : owner.bvids,
+        label: owner.name,
+        owner_mid: owner.ownerMid || undefined,
       });
       setMessage(
         `导出完成：${payload.relative_path}，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
       );
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
-        owner: selectedOwner.name,
+        owner: owner.name,
+        owner_mid: owner.ownerMid,
         video_count: payload.video_count,
         size_bytes: payload.size_bytes,
       });
@@ -215,8 +216,9 @@ export function VideoLibraryPage() {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
       logClientEvent("client.user.database_export.owner_error", text, {
-        owner: selectedOwner.name,
-        video_count: selectedOwnerVideos.length,
+        owner: owner.name,
+        owner_mid: owner.ownerMid,
+        video_count: owner.bvids.length,
       });
     } finally {
       setExportingKey("");
@@ -570,9 +572,12 @@ export function VideoLibraryPage() {
                       active={ownerFilter === owner.key}
                       commentCount={owner.commentCount}
                       danmakuCount={owner.danmakuCount}
+                      exportDisabled={Boolean(exportingKey)}
+                      exporting={exportingKey === `owner:${owner.key}`}
                       key={owner.key}
                       name={owner.name}
                       videoCount={owner.videoCount}
+                      onExport={() => void exportOwnerDatabase(owner)}
                       onClick={() => {
                         logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
                           owner: owner.name,
@@ -584,21 +589,6 @@ export function VideoLibraryPage() {
                   ))}
                 </div>
               </div>
-              {selectedOwner && (
-                <button
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
-                  type="button"
-                  disabled={Boolean(exportingKey)}
-                  onClick={() => void exportOwnerDatabase()}
-                >
-                  <Download
-                    className={cn(exportingKey === `owner:${selectedOwner.key}` && "animate-bounce")}
-                    size={16}
-                    aria-hidden="true"
-                  />
-                  {exportingKey === `owner:${selectedOwner.key}` ? "导出中" : `导出 ${selectedOwner.name}`}
-                </button>
-              )}
             </div>
           </div>
         </aside>
@@ -781,8 +771,11 @@ type OwnerFilterButtonProps = {
   active: boolean;
   commentCount: number;
   danmakuCount: number;
+  exportDisabled?: boolean;
+  exporting?: boolean;
   name: string;
   videoCount: number;
+  onExport?: () => void;
   onClick: () => void;
 };
 
@@ -790,29 +783,45 @@ function OwnerFilterButton({
   active,
   commentCount,
   danmakuCount,
+  exportDisabled = false,
+  exporting = false,
   name,
   videoCount,
+  onExport,
   onClick,
 }: OwnerFilterButtonProps) {
   return (
-    <button
+    <div
       className={cn(
-        "grid w-full min-w-0 gap-1 rounded-md border px-3 py-2 text-left transition",
+        "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-md border transition",
         active
           ? "border-bilibili bg-pink-50 text-bilibili"
           : "border-line bg-[#fbfcfe] text-ink hover:border-bilibili hover:bg-white",
       )}
-      type="button"
-      onClick={onClick}
     >
-      <span className="flex min-w-0 items-center justify-between gap-3">
-        <span className="truncate text-sm font-medium">{name}</span>
-        <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs text-muted">{videoCount}</span>
-      </span>
-      <span className="text-xs text-muted">
-        评论 {formatNumber(commentCount)} · 弹幕 {formatNumber(danmakuCount)}
-      </span>
-    </button>
+      <button className="grid min-w-0 gap-1 px-3 py-2 text-left" type="button" onClick={onClick}>
+        <span className="flex min-w-0 items-center justify-between gap-3">
+          <span className="truncate text-sm font-medium">{name}</span>
+          <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs text-muted">{videoCount}</span>
+        </span>
+        <span className="text-xs text-muted">
+          评论 {formatNumber(commentCount)} · 弹幕 {formatNumber(danmakuCount)}
+        </span>
+      </button>
+      {onExport && (
+        <button
+          className="inline-flex w-20 items-center justify-center gap-1 border-l border-line bg-white/80 text-xs font-medium text-muted transition hover:bg-white hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+          type="button"
+          aria-label={`导出 ${name} 的UP主数据库`}
+          title={`导出 ${name} 的UP主数据库`}
+          disabled={exportDisabled}
+          onClick={onExport}
+        >
+          <Download className={cn(exporting && "animate-bounce")} size={16} aria-hidden="true" />
+          导出
+        </button>
+      )}
+    </div>
   );
 }
 
