@@ -45,6 +45,7 @@ import { cn, formatFullDateTime, formatNumber } from "../lib/utils";
 import type { DanmakuData } from "../types";
 
 export function DanmakuPage({ bvid }: { bvid?: string }) {
+  const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
   const [danmaku, setDanmaku] = useState<DanmakuData | null>(null);
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<DanmakuSortMode>("like_desc");
@@ -70,7 +71,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
     setIsLoading(true);
     setError("");
     try {
-      const payload = await fetchDanmakuData(bvid);
+      const payload = await fetchDanmakuData(bvid, dbId);
       applyDanmakuPayload(payload);
       setMessage("");
     } catch (reason: unknown) {
@@ -78,7 +79,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
     } finally {
       setIsLoading(false);
     }
-  }, [applyDanmakuPayload, bvid]);
+  }, [applyDanmakuPayload, bvid, dbId]);
 
   useEffect(() => {
     void loadDanmaku();
@@ -125,15 +126,17 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
 
   async function refreshCurrentDanmaku() {
     logClientEvent("client.user.danmaku.refresh_start", "user started danmaku refresh", {
+      db_id: dbId,
       bvid: danmaku?.metadata.bvid || bvid,
     });
     setIsRefreshing(true);
     setError("");
     setMessage("正在重新抓取弹幕");
     try {
-      const payload = await refreshDanmakuData(danmaku?.metadata.bvid || bvid);
+      const payload = await refreshDanmakuData(danmaku?.metadata.bvid || bvid, dbId);
       applyDanmakuPayload(payload);
       logClientEvent("client.user.danmaku.refresh_success", "danmaku refresh completed", {
+        db_id: dbId,
         bvid: payload.metadata.bvid,
         after_count: payload.metadata.total_count,
         scraped_count: payload.refresh?.scraped_count,
@@ -147,6 +150,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
       );
     } catch (reason: unknown) {
       logClientEvent("client.user.danmaku.refresh_error", reason instanceof Error ? reason.message : String(reason), {
+        db_id: dbId,
         bvid: danmaku?.metadata.bvid || bvid,
       });
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -236,9 +240,10 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
           <div className="flex flex-wrap items-center gap-2 self-center lg:flex-col lg:items-stretch">
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
-              href="/"
+              href={dbPath("/", dbId)}
               onClick={() =>
                 logClientEvent("client.user.danmaku.nav_library", "user opened video library from danmaku", {
+                  db_id: dbId,
                   bvid: danmaku?.metadata.bvid || bvid,
                 })
               }
@@ -248,9 +253,10 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             </a>
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
-              href={`/video/${danmaku?.metadata.bvid || bvid || ""}`}
+              href={dbPath(`/video/${danmaku?.metadata.bvid || bvid || ""}`, dbId)}
               onClick={() =>
                 logClientEvent("client.user.danmaku.nav_comments", "user opened comments from danmaku", {
+                  db_id: dbId,
                   bvid: danmaku?.metadata.bvid || bvid,
                 })
               }
@@ -463,4 +469,9 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
       </section>
     </main>
   );
+}
+
+function dbPath(path: string, dbId: string) {
+  if (!dbId || dbId === "main") return path;
+  return `${path}?db_id=${encodeURIComponent(dbId)}`;
 }

@@ -3,6 +3,7 @@ import json
 import mimetypes
 import random
 import re
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -35,7 +36,10 @@ DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
-DEFAULT_EXPORT_DIR = ROOT / "data" / "exports"
+DEFAULT_DATABASE_DIR = ROOT / "data" / "databases"
+LEGACY_EXPORT_DIR = ROOT / "data" / "exports"
+DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
+DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 refresh_lock = threading.Lock()
 progress_lock = threading.Lock()
 progress_state = {
@@ -62,11 +66,15 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
     db_path = DEFAULT_DB
     static_dir = DEFAULT_STATIC
     log_dir = DEFAULT_LOG_DIR
+    database_dir = DEFAULT_DATABASE_DIR
 
     def do_GET(self):
         self.start_request_log("GET")
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/databases":
+                self.handle_databases_api()
+                return
             if parsed.path == "/api/videos":
                 self.handle_videos_api()
                 return
@@ -110,6 +118,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/logs/client":
                 self.handle_client_log_api()
+                return
+            if parsed.path == "/api/databases/import":
+                self.handle_database_import_api()
                 return
             if parsed.path == "/api/database/export":
                 self.handle_database_export_api()
@@ -168,18 +179,37 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         )
 
     def handle_videos_api(self):
+        db_path = self.resolve_db_path_from_query()
         try:
-            videos = list_video_summaries(self.db_path)
+            videos = list_video_summaries(db_path)
             log_event(
                 "api.videos.list",
                 "listed local videos",
                 request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
                 video_count=len(videos),
             )
-            self.send_json({"videos": videos})
+            self.send_json({"videos": videos, "database": database_info_for_path(db_path, self.db_path, self.database_dir)})
         except Exception as exc:
             log_exception("api.videos.list_error", str(exc), request_id=getattr(self, "request_id", ""))
             self.send_json({"error": str(exc)}, status=500)
+
+    def handle_databases_api(self):
+        databases = list_database_catalog(self.db_path, self.database_dir)
+        log_event(
+            "api.databases.list",
+            "listed local databases",
+            request_id=getattr(self, "request_id", ""),
+            database_count=len(databases),
+        )
+        self.send_json(
+            {
+                "databases": databases,
+                "active_id": parse_qs(urlparse(self.path).query).get("db_id", ["main"])[0] or "main",
+                "hotplug_dir": str(self.database_dir),
+                "legacy_export_dir": str(LEGACY_EXPORT_DIR),
+            }
+        )
 
     def handle_progress_api(self):
         self.send_json(get_progress_snapshot())
@@ -192,9 +222,10 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             request_id=getattr(self, "request_id", ""),
             db=str(self.db_path),
             static_dir=str(self.static_dir),
+            database_dir=str(self.database_dir),
             logging=logging,
         )
-        self.send_json({"ok": True, "db": str(self.db_path), "logging": logging})
+        self.send_json({"ok": True, "db": str(self.db_path), "database_dir": str(self.database_dir), "logging": logging})
 
     def handle_client_log_api(self):
         body = self.read_json_body()
@@ -224,6 +255,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
         try:
             body = self.read_json_body()
+            db_path = self.resolve_db_path_from_body(body)
             video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
             if not video_ref:
                 log_event(
@@ -237,7 +269,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             bvid = extract_bvid(video_ref)
             delay = parse_float(body.get("delay"), 0.35)
             try:
-                before = load_comment_data(self.db_path, bvid=bvid)["metadata"]["comment_total_count"]
+                before = load_comment_data(db_path, bvid=bvid)["metadata"]["comment_total_count"]
             except LookupError:
                 before = 0
 
@@ -245,6 +277,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 "task.parse.start",
                 "parse video started",
                 request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
                 bvid=bvid,
                 delay=delay,
                 existing_comment_count=before,
@@ -260,7 +293,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 logger=log,
             )
             update_progress("parse", bvid, "评论抓取完成，正在保存评论档案")
-            save_comments_to_sqlite(output_data, self.db_path, replace=True)
+            save_comments_to_sqlite(output_data, db_path, replace=True)
             update_progress("parse", bvid, "正在抓取弹幕")
             danmaku_result = scrape_danmaku(
                 output_data["metadata"]["bvid"],
@@ -269,7 +302,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             )
             if len(danmaku_result.get("items") or []) > 0:
                 update_progress("parse", bvid, "弹幕抓取完成，正在保存弹幕档案")
-                save_danmaku_to_sqlite(danmaku_result, self.db_path, replace=True)
+                save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
             else:
                 log("danmaku: got=0, skipped saving empty danmaku archive")
                 log_event(
@@ -278,7 +311,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                     request_id=getattr(self, "request_id", ""),
                     bvid=bvid,
                 )
-            payload = load_comment_data(self.db_path, bvid=output_data["metadata"]["bvid"])
+            payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
             finish_progress("parse", bvid, "解析与抓取完成")
             log_event(
                 "task.parse.finish",
@@ -302,7 +335,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                     "video": next(
                         (
                             item
-                            for item in list_video_summaries(self.db_path)
+                            for item in list_video_summaries(db_path)
                             if item["bvid"] == output_data["metadata"]["bvid"]
                         ),
                         None,
@@ -336,6 +369,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
     def handle_space_archive_api(self):
         body = self.read_json_body()
+        db_path = self.resolve_db_path_from_body(body)
         owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
         mid = extract_space_mid(owner_ref)
         if not mid:
@@ -358,7 +392,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             options["between_videos_max"] = options["between_videos_min"]
 
         task = enqueue_space_task(
-            db_path=self.db_path,
+            db_path=db_path,
             mid=mid,
             owner_ref=owner_ref,
             options=options,
@@ -387,6 +421,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
     def handle_database_export_api(self):
         body = self.read_json_body()
+        db_path = self.resolve_db_path_from_body(body)
         bvids = body.get("bvids")
         bvid = (body.get("bvid") or "").strip()
         owner_mid = (body.get("owner_mid") or "").strip()
@@ -403,10 +438,10 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         if owner_mid and not bvid:
             selected_bvids = []
 
-        target_path = export_database_path(label)
+        target_path = export_database_path(label, self.database_dir)
         try:
             result = export_archive_to_sqlite(
-                self.db_path,
+                db_path,
                 target_path,
                 bvids=selected_bvids or None,
                 owner_mid=owner_mid or None,
@@ -441,6 +476,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             "exported archive database",
             request_id=getattr(self, "request_id", ""),
             path=result["path"],
+            source_db=str(db_path),
             video_count=len(result["bvids"]),
             size_bytes=result["size_bytes"],
             counts=result["counts"],
@@ -451,6 +487,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 "path": result["path"],
                 "relative_path": str(Path(result["path"]).resolve().relative_to(ROOT)),
                 "file_name": Path(result["path"]).name,
+                "database": database_info_for_path(Path(result["path"]), self.db_path, self.database_dir),
                 "video_count": len(result["bvids"]),
                 "bvids": result["bvids"],
                 "counts": result["counts"],
@@ -458,15 +495,49 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             }
         )
 
+    def handle_database_import_api(self):
+        body = self.read_json_body()
+        source_value = (body.get("path") or body.get("source_path") or "").strip()
+        if not source_value:
+            self.send_json({"error": "请输入要导入的 SQLite 数据库路径"}, status=400)
+            return
+        source_path = Path(source_value).expanduser().resolve()
+        try:
+            target_path = import_database_file(source_path, self.database_dir)
+            info = database_info_for_path(target_path, self.db_path, self.database_dir)
+        except (LookupError, ValueError) as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.databases.import_error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                source_path=str(source_path),
+            )
+            self.send_json({"error": str(exc)}, status=500)
+            return
+        log_event(
+            "api.databases.import_finish",
+            "imported database",
+            request_id=getattr(self, "request_id", ""),
+            source_path=str(source_path),
+            target_path=str(target_path),
+            database_id=info["id"],
+        )
+        self.send_json({"ok": True, "database": info})
+
     def handle_comments_api(self, parsed):
         query = parse_qs(parsed.query)
         bvid = query.get("bvid", [None])[0]
+        db_path = self.resolve_db_path_from_query(parsed)
         try:
-            payload = load_comment_data(self.db_path, bvid=bvid)
+            payload = load_comment_data(db_path, bvid=bvid)
             log_event(
                 "api.comments.load",
                 "loaded comment data",
                 request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
                 bvid=payload["metadata"]["bvid"],
                 comment_count=payload["metadata"]["comment_total_count"],
                 active_count=payload["metadata"].get("active_comment_count"),
@@ -492,12 +563,14 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         bvid = query.get("bvid", [None])[0]
         limit = parse_optional_int(query.get("limit", [None])[0])
+        db_path = self.resolve_db_path_from_query(parsed)
         try:
-            payload = load_danmaku_data(self.db_path, bvid=bvid, limit=limit)
+            payload = load_danmaku_data(db_path, bvid=bvid, limit=limit)
             log_event(
                 "api.danmaku.load",
                 "loaded danmaku data",
                 request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
                 bvid=payload["metadata"]["bvid"],
                 total_count=payload["metadata"]["total_count"],
                 limit=limit,
@@ -533,14 +606,16 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         requested_bvid = query.get("bvid", [None])[0]
         delay = parse_float(query.get("delay", [None])[0], 0.35)
+        db_path = self.resolve_db_path_from_query(parsed)
         try:
-            current = load_comment_data(self.db_path, bvid=requested_bvid)
+            current = load_comment_data(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
             log_event(
                 "task.comments_refresh.start",
                 "comment refresh started",
                 request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
                 bvid=current["metadata"]["bvid"],
                 before_count=before_count,
                 delay=delay,
@@ -557,8 +632,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             )
             scraped_count = output_data["metadata"]["comment_total_count"]
             update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
-            save_comments_to_sqlite(output_data, self.db_path, replace=True)
-            payload = load_comment_data(self.db_path, bvid=output_data["metadata"]["bvid"])
+            save_comments_to_sqlite(output_data, db_path, replace=True)
+            payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
             payload["refresh"] = {
                 "before_count": before_count,
                 "scraped_count": scraped_count,
@@ -622,12 +697,14 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
 
         query = parse_qs(parsed.query)
         requested_bvid = query.get("bvid", [None])[0]
+        db_path = self.resolve_db_path_from_query(parsed)
         try:
-            current = load_comment_data(self.db_path, bvid=requested_bvid)
+            current = load_comment_data(db_path, bvid=requested_bvid)
             log_event(
                 "task.danmaku_refresh.start",
                 "danmaku refresh started",
                 request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
                 bvid=current["metadata"]["bvid"],
             )
             start_progress("danmaku", current["metadata"]["bvid"], "正在重新抓取弹幕")
@@ -635,7 +712,7 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             log = make_progress_logger("danmaku", current["metadata"]["bvid"], logs)
 
             before_count = load_danmaku_data(
-                self.db_path,
+                db_path,
                 bvid=current["metadata"]["bvid"],
                 limit=0,
             )["metadata"]["total_count"]
@@ -660,8 +737,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 )
             else:
                 update_progress("danmaku", current["metadata"]["bvid"], "弹幕抓取完成，正在保存档案")
-                save_danmaku_to_sqlite(danmaku_result, self.db_path, replace=True)
-            payload = load_danmaku_data(self.db_path, bvid=current["metadata"]["bvid"], limit=None)
+                save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
+            payload = load_danmaku_data(db_path, bvid=current["metadata"]["bvid"], limit=None)
             payload["refresh"] = {
                 "before_count": before_count,
                 "after_count": payload["metadata"]["total_count"],
@@ -763,6 +840,14 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return parse_json_object_body(raw)
 
+    def resolve_db_path_from_query(self, parsed=None):
+        parsed = parsed or urlparse(self.path)
+        query = parse_qs(parsed.query)
+        return resolve_database_path(query.get("db_id", [None])[0], self.db_path, self.database_dir)
+
+    def resolve_db_path_from_body(self, body):
+        return resolve_database_path(body.get("db_id"), self.db_path, self.database_dir)
+
     def log_message(self, fmt, *args):
         safe_print(f"{self.address_string()} - {fmt % args}")
 
@@ -785,6 +870,173 @@ def parse_json_object_body(raw):
     if not isinstance(payload, dict):
         raise BadRequestError("请求体 JSON 必须是对象")
     return payload
+
+
+def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
+    db_id = (str(db_id or "main")).strip() or "main"
+    main_db_path = Path(main_db_path).resolve()
+    database_dir = Path(database_dir).resolve()
+    if db_id == "main":
+        return main_db_path
+    prefix, _, name = db_id.partition(":")
+    if prefix not in {"db", "legacy"} or not name:
+        raise BadRequestError("数据库标识无效")
+    base_dir = database_dir if prefix == "db" else LEGACY_EXPORT_DIR
+    candidate = (base_dir / name).resolve()
+    if not is_path_inside(candidate, base_dir.resolve()):
+        raise BadRequestError("数据库路径无效")
+    if candidate.suffix.lower() not in DATABASE_EXTENSIONS:
+        raise BadRequestError("只支持 .db / .sqlite / .sqlite3 数据库")
+    if not candidate.exists():
+        raise BadRequestError("数据库不存在，请刷新数据库列表")
+    return candidate
+
+
+def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
+    main_db_path = Path(main_db_path).resolve()
+    database_dir = Path(database_dir).resolve()
+    database_dir.mkdir(parents=True, exist_ok=True)
+    databases = [database_info_for_path(main_db_path, main_db_path, database_dir, db_id="main", role="main")]
+    seen = {main_db_path}
+
+    for base_dir, prefix, role in ((database_dir, "db", "hotplug"), (LEGACY_EXPORT_DIR, "legacy", "legacy_export")):
+        base_dir = Path(base_dir).resolve()
+        if not base_dir.exists():
+            continue
+        for path in sorted(base_dir.iterdir(), key=lambda item: item.name.lower()):
+            if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            databases.append(
+                database_info_for_path(
+                    resolved,
+                    main_db_path,
+                    database_dir,
+                    db_id=f"{prefix}:{path.name}",
+                    role=role,
+                )
+            )
+    return databases
+
+
+def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, db_id=None, role=None):
+    path = Path(path).resolve()
+    main_db_path = Path(main_db_path).resolve()
+    database_dir = Path(database_dir).resolve()
+    if db_id is None:
+        if path == main_db_path:
+            db_id = "main"
+        elif is_path_inside(path, database_dir):
+            db_id = f"db:{path.name}"
+        elif is_path_inside(path, LEGACY_EXPORT_DIR):
+            db_id = f"legacy:{path.name}"
+        else:
+            db_id = f"file:{path.name}"
+    if role is None:
+        role = "main" if db_id == "main" else "hotplug"
+
+    info = {
+        "id": db_id,
+        "role": role,
+        "name": "主数据库" if db_id == "main" else path.stem,
+        "file_name": path.name,
+        "path": str(path),
+        "relative_path": relative_to_root(path),
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+        "video_count": 0,
+        "comment_count": 0,
+        "danmaku_count": 0,
+        "owner_count": 0,
+        "updated_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat() if path.exists() else "",
+        "ok": False,
+        "error": "",
+    }
+    if not path.exists():
+        info["error"] = "文件不存在"
+        return info
+    try:
+        conn = connect(path)
+        try:
+            ensure_schema(conn)
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM videos) AS video_count,
+                    (SELECT COUNT(*) FROM comments) AS comment_count,
+                    (SELECT COUNT(*) FROM danmaku) AS danmaku_count,
+                    (SELECT COUNT(DISTINCT owner_mid) FROM videos WHERE owner_mid IS NOT NULL AND owner_mid <> '') AS owner_count
+                """
+            ).fetchone()
+            info.update(
+                {
+                    "video_count": row["video_count"] or 0,
+                    "comment_count": row["comment_count"] or 0,
+                    "danmaku_count": row["danmaku_count"] or 0,
+                    "owner_count": row["owner_count"] or 0,
+                    "ok": True,
+                }
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        info["error"] = str(exc)
+    return info
+
+
+def import_database_file(source_path, database_dir=DEFAULT_DATABASE_DIR):
+    source_path = Path(source_path).expanduser().resolve()
+    database_dir = Path(database_dir).resolve()
+    if not source_path.exists() or not source_path.is_file():
+        raise LookupError("导入文件不存在")
+    if source_path.suffix.lower() not in DATABASE_EXTENSIONS:
+        raise ValueError("只支持 .db / .sqlite / .sqlite3 数据库")
+    info = database_info_for_path(source_path)
+    if not info["ok"]:
+        raise ValueError(f"不是可用的归档数据库：{info['error']}")
+    database_dir.mkdir(parents=True, exist_ok=True)
+    if is_path_inside(source_path, database_dir):
+        return source_path
+    target_path = unique_database_path(database_dir / normalize_database_filename(source_path.name))
+    shutil.copy2(source_path, target_path)
+    return target_path
+
+
+def normalize_database_filename(name):
+    path = Path(name)
+    suffix = path.suffix.lower() if path.suffix.lower() in DATABASE_EXTENSIONS else ".db"
+    stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", path.stem).strip("._-") or "archive"
+    return f"{stem[:100]}{suffix}"
+
+
+def unique_database_path(path):
+    path = Path(path)
+    if not path.exists():
+        return path
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    return path.with_name(f"{path.stem}_{int(time.time() * 1000)}{path.suffix}")
+
+
+def is_path_inside(path, directory):
+    try:
+        Path(path).resolve().relative_to(Path(directory).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def relative_to_root(path):
+    try:
+        return str(Path(path).resolve().relative_to(ROOT))
+    except ValueError:
+        return str(Path(path).resolve())
 
 
 def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
@@ -1684,18 +1936,20 @@ def clamp_int(value, minimum, maximum):
     return max(minimum, min(maximum, value))
 
 
-def export_database_path(label):
+def export_database_path(label, export_dir=DEFAULT_EXPORT_DIR):
+    export_dir = Path(export_dir).resolve()
+    export_dir.mkdir(parents=True, exist_ok=True)
     safe_label = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(label or "archive")).strip("._-")
     safe_label = safe_label[:80] or "archive"
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
-    base_path = DEFAULT_EXPORT_DIR / f"{timestamp}_{safe_label}.db"
+    base_path = export_dir / f"{timestamp}_{safe_label}.db"
     if not base_path.exists():
         return base_path
     for index in range(2, 1000):
-        candidate = DEFAULT_EXPORT_DIR / f"{timestamp}_{safe_label}_{index}.db"
+        candidate = export_dir / f"{timestamp}_{safe_label}_{index}.db"
         if not candidate.exists():
             return candidate
-    return DEFAULT_EXPORT_DIR / f"{timestamp}_{safe_label}_{int(time.time() * 1000)}.db"
+    return export_dir / f"{timestamp}_{safe_label}_{int(time.time() * 1000)}.db"
 
 
 def extract_space_mid(value):
@@ -1728,6 +1982,7 @@ def main():
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
+    parser.add_argument("--database-dir", default=str(DEFAULT_DATABASE_DIR))
     parser.add_argument("--log-max-bytes", type=int, default=10 * 1024 * 1024)
     parser.add_argument("--log-backup-count", type=int, default=10)
     parser.add_argument("--log-queue-size", type=int, default=10000)
@@ -1748,9 +2003,11 @@ def main():
             "db_path": Path(args.db).resolve(),
             "static_dir": Path(args.static).resolve(),
             "log_dir": Path(args.log_dir).resolve(),
+            "database_dir": Path(args.database_dir).resolve(),
         },
     )
     handler.db_path = prepare_database_path(handler.db_path)
+    handler.database_dir.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     log_event(
         "service.start",
@@ -1760,10 +2017,12 @@ def main():
         db=str(handler.db_path),
         static_dir=str(handler.static_dir),
         log_dir=str(handler.log_dir),
+        database_dir=str(handler.database_dir),
         logging=logging_status(),
     )
     safe_print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
     safe_print(f"SQLite database: {Path(args.db).resolve()}")
+    safe_print(f"Hotplug database directory: {handler.database_dir}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

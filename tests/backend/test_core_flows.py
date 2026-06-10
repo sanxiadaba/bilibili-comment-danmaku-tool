@@ -23,10 +23,13 @@ from server import (  # noqa: E402
     BadRequestError,
     api_error_response,
     extract_space_mid,
+    import_database_file,
     is_complete,
+    list_database_catalog,
     parse_json_object_body,
     progress_percent,
     progress_stats,
+    resolve_database_path,
     should_abort_space_archive,
 )
 from task_queue import InMemoryTaskQueue  # noqa: E402
@@ -312,6 +315,54 @@ class StorageTests(unittest.TestCase):
 
             self.assertEqual(result["bvids"], [BVID])
             self.assertEqual([item["bvid"] for item in summaries], [BVID])
+
+    def test_database_catalog_detects_hotplug_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            hotplug_db = hotplug_dir / "owner_archive.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), main_db, replace=True)
+            export_archive_to_sqlite(main_db, hotplug_db, bvids=[BVID])
+
+            catalog = list_database_catalog(main_db, hotplug_dir)
+            by_id = {item["id"]: item for item in catalog}
+
+            self.assertIn("main", by_id)
+            self.assertIn("db:owner_archive.db", by_id)
+            self.assertEqual(by_id["db:owner_archive.db"]["video_count"], 1)
+            self.assertTrue(by_id["db:owner_archive.db"]["ok"])
+            self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
+
+    def test_database_path_rejects_traversal_and_bad_extensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            hotplug_dir.mkdir()
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), main_db, replace=True)
+            (hotplug_dir / "notes.txt").write_text("not sqlite", encoding="utf-8")
+
+            with self.assertRaises(BadRequestError):
+                resolve_database_path("db:../comment_danmaku.db", main_db, hotplug_dir)
+            with self.assertRaises(BadRequestError):
+                resolve_database_path("db:notes.txt", main_db, hotplug_dir)
+
+    def test_import_database_file_normalizes_name_and_uses_hotplug_files_in_place(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_db = root / "exports" / "Owner Archive !.sqlite"
+            hotplug_dir = root / "databases"
+            main_db = root / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), main_db, replace=True)
+            export_archive_to_sqlite(main_db, source_db, bvids=[BVID])
+
+            imported = import_database_file(source_db, hotplug_dir)
+            imported_again = import_database_file(imported, hotplug_dir)
+
+            self.assertEqual(imported.name, "Owner_Archive.sqlite")
+            self.assertEqual(imported_again, imported)
+            self.assertEqual(load_comment_data(imported, bvid=BVID)["metadata"]["bvid"], BVID)
 
 
 class ScraperPerformanceTests(unittest.TestCase):

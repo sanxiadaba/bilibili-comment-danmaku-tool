@@ -1,5 +1,7 @@
 import type {
   CommentData,
+  DatabaseImportResponse,
+  DatabaseListResponse,
   DatabaseExportResponse,
   DanmakuData,
   ParseVideoResponse,
@@ -10,25 +12,49 @@ import type {
 
 type LogFields = Record<string, string | number | boolean | null | undefined>;
 
-export async function fetchCommentData(bvid?: string) {
-  const query = new URLSearchParams({ ts: String(Date.now()) });
-  if (bvid) query.set("bvid", bvid);
-  return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store" }, { bvid });
+export async function fetchDatabases(activeId = "main") {
+  const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
+  return requestJson<DatabaseListResponse>("databases.list", `/api/databases?${query.toString()}`, { cache: "no-store" });
 }
 
-export async function fetchVideos() {
-  return requestJson<VideoListResponse>("videos.list", `/api/videos?ts=${Date.now()}`, { cache: "no-store" });
+export async function importDatabase(path: string) {
+  return requestJson<DatabaseImportResponse>(
+    "databases.import",
+    `/api/databases/import?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+    { path: path.slice(0, 120) },
+  );
 }
 
-export async function fetchDanmakuData(bvid?: string) {
+export async function fetchCommentData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
-  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store" }, { bvid });
+  appendDbId(query, dbId);
+  return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId });
 }
 
-export async function refreshDanmakuData(bvid?: string) {
+export async function fetchVideos(dbId = "main") {
+  const query = new URLSearchParams({ ts: String(Date.now()) });
+  appendDbId(query, dbId);
+  return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store" }, { db_id: dbId });
+}
+
+export async function fetchDanmakuData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
+  appendDbId(query, dbId);
+  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId });
+}
+
+export async function refreshDanmakuData(bvid?: string, dbId = "main") {
+  const query = new URLSearchParams({ ts: String(Date.now()) });
+  if (bvid) query.set("bvid", bvid);
+  appendDbId(query, dbId);
   return requestJson<DanmakuData>(
     "danmaku.refresh",
     `/api/danmaku/refresh?${query.toString()}`,
@@ -36,11 +62,11 @@ export async function refreshDanmakuData(bvid?: string) {
       cache: "no-store",
       method: "POST",
     },
-    { bvid },
+    { bvid, db_id: dbId },
   );
 }
 
-export async function parseVideo(url: string, delay: number) {
+export async function parseVideo(url: string, delay: number, dbId = "main") {
   return requestJson<ParseVideoResponse>(
     "videos.parse",
     `/api/videos/parse?ts=${Date.now()}`,
@@ -48,13 +74,13 @@ export async function parseVideo(url: string, delay: number) {
       cache: "no-store",
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, delay }),
+      body: JSON.stringify({ url, delay, db_id: dbId }),
     },
-    { delay, video_ref: summarizeVideoRef(url) },
+    { delay, video_ref: summarizeVideoRef(url), db_id: dbId },
   );
 }
 
-export async function archiveSpaceVideos(ownerRef: string, options: { delay: number }) {
+export async function archiveSpaceVideos(ownerRef: string, options: { delay: number; dbId?: string }) {
   return requestJson<SpaceArchiveResponse>(
     "space.archive",
     `/api/space/archive?ts=${Date.now()}`,
@@ -65,13 +91,14 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
       body: JSON.stringify({
         owner_ref: ownerRef,
         delay: options.delay,
+        db_id: options.dbId || "main",
       }),
     },
-    { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay },
+    { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay, db_id: options.dbId || "main" },
   );
 }
 
-export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string }) {
+export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string; db_id?: string }) {
   return requestJson<DatabaseExportResponse>(
     "database.export",
     `/api/database/export?ts=${Date.now()}`,
@@ -83,15 +110,17 @@ export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: st
     },
     {
       bvid: payload.bvid,
+      db_id: payload.db_id,
       owner_mid: payload.owner_mid,
       video_count: payload.bvids?.length,
     },
   );
 }
 
-export async function refreshCommentData(bvid?: string) {
+export async function refreshCommentData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
+  appendDbId(query, dbId);
   return requestJson<CommentData>(
     "comments.refresh",
     `/api/refresh?${query.toString()}`,
@@ -99,7 +128,7 @@ export async function refreshCommentData(bvid?: string) {
       cache: "no-store",
       method: "POST",
     },
-    { bvid },
+    { bvid, db_id: dbId },
   );
 }
 
@@ -187,6 +216,12 @@ async function parseJsonResponse<T>(response: Response) {
 
 function summarizeApiPath(url: string) {
   return url.split("?")[0];
+}
+
+function appendDbId(query: URLSearchParams, dbId?: string) {
+  if (dbId && dbId !== "main") {
+    query.set("db_id", dbId);
+  }
 }
 
 function summarizeVideoRef(value: string) {

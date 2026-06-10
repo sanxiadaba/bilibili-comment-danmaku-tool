@@ -52,6 +52,7 @@ import {
 import type { CommentData, CommentNode, LevelFilter, SortMode } from "../types";
 
 export function VideoDetailPage({ bvid }: { bvid?: string }) {
+  const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
   const [data, setData] = useState<CommentData | null>(null);
   const [error, setError] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -77,13 +78,14 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   const refreshComments = useCallback(async () => {
     logClientEvent("client.user.comments.refresh_start", "user started comment refresh", {
+      db_id: dbId,
       bvid: data?.metadata.bvid || bvid,
     });
     setIsRefreshing(true);
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
     try {
-      const payload = await refreshCommentData(data?.metadata.bvid || bvid);
+      const payload = await refreshCommentData(data?.metadata.bvid || bvid, dbId);
       applyPayload(payload);
       const added = payload.refresh?.added_count ?? 0;
       const after = payload.refresh?.after_count ?? payload.metadata.comment_total_count;
@@ -99,6 +101,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
         );
       }
       logClientEvent("client.user.comments.refresh_success", "comment refresh completed", {
+        db_id: dbId,
         bvid: payload.metadata.bvid,
         after_count: after,
         active_count: active,
@@ -107,6 +110,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       });
     } catch (reason: unknown) {
       logClientEvent("client.user.comments.refresh_error", reason instanceof Error ? reason.message : String(reason), {
+        db_id: dbId,
         bvid: data?.metadata.bvid || bvid,
       });
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -114,11 +118,11 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     } finally {
       setIsRefreshing(false);
     }
-  }, [applyPayload, bvid, data?.metadata.bvid]);
+  }, [applyPayload, bvid, data?.metadata.bvid, dbId]);
 
   useEffect(() => {
     let mounted = true;
-    fetchCommentData(bvid)
+    fetchCommentData(bvid, dbId)
       .then((payload) => {
         if (!mounted) return;
         applyPayload(payload);
@@ -132,7 +136,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     return () => {
       mounted = false;
     };
-  }, [applyPayload, bvid]);
+  }, [applyPayload, bvid, dbId]);
 
   const allComments = data?.comment_items || [];
   const topLevelComments = data?.comments || [];
@@ -310,9 +314,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
           <div className="flex flex-wrap items-center gap-2 self-center lg:flex-col lg:items-stretch">
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
-              href="/"
+              href={dbPath("/", dbId)}
               onClick={() =>
                 logClientEvent("client.user.comments.nav_library", "user opened video library from comments", {
+                  db_id: dbId,
                   bvid: data.metadata.bvid,
                 })
               }
@@ -322,9 +327,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             </a>
             <a
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
-              href={`/danmaku/${data.metadata.bvid}`}
+              href={dbPath(`/danmaku/${data.metadata.bvid}`, dbId)}
               onClick={() =>
                 logClientEvent("client.user.comments.nav_danmaku", "user opened danmaku page from comments", {
+                  db_id: dbId,
                   bvid: data.metadata.bvid,
                 })
               }
@@ -578,5 +584,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       </section>
     </main>
   );
+}
+
+function dbPath(path: string, dbId: string) {
+  if (!dbId || dbId === "main") return path;
+  return `${path}?db_id=${encodeURIComponent(dbId)}`;
 }
 

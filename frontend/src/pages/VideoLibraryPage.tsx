@@ -19,20 +19,35 @@
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
-import { archiveSpaceVideos, exportDatabaseArchive, fetchVideos, logClientEvent, parseVideo } from "../api/client";
+import {
+  archiveSpaceVideos,
+  exportDatabaseArchive,
+  fetchDatabases,
+  fetchVideos,
+  importDatabase,
+  logClientEvent,
+  parseVideo,
+} from "../api/client";
 import { ProgressBanner } from "../components/common";
 import { InfoRow } from "../components/common";
 import { StatTile } from "../components/ui/StatTile";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { cn, formatFullDateTime, formatNumber, normalizeImageUrl } from "../lib/utils";
-import type { ProgressQueue, ProgressTask, VideoSummary } from "../types";
+import type { DatabaseInfo, ProgressQueue, ProgressTask, VideoSummary } from "../types";
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
+  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [activeDbId, setActiveDbId] = useState(() => initialDatabaseId());
+  const [hotplugDir, setHotplugDir] = useState("data/databases");
+  const [legacyExportDir, setLegacyExportDir] = useState("data/exports");
   const [url, setUrl] = useState("");
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingDatabases, setIsLoadingDatabases] = useState(true);
+  const [importPath, setImportPath] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState("all");
@@ -51,6 +66,36 @@ export function VideoLibraryPage() {
   const spaceQueue = spaceProgress?.queue;
   const hasSpaceQueueWork = Boolean(spaceQueue?.active || spaceQueue?.queued?.length);
   const isTaskBusy = isParsing || hasSpaceQueueWork;
+  const activeDatabase = useMemo(
+    () => databases.find((database) => database.id === activeDbId) || databases.find((database) => database.id === "main"),
+    [activeDbId, databases],
+  );
+
+  const loadDatabases = useCallback(
+    async (options?: { quiet?: boolean; selectId?: string }) => {
+      const selectedId = options?.selectId || activeDbId;
+      if (!options?.quiet) {
+        setIsLoadingDatabases(true);
+      }
+      try {
+        const payload = await fetchDatabases(selectedId);
+        setDatabases(payload.databases);
+        setHotplugDir(payload.hotplug_dir);
+        setLegacyExportDir(payload.legacy_export_dir);
+        if (!payload.databases.some((database) => database.id === selectedId)) {
+          setActiveDbId("main");
+          window.localStorage.setItem("bilibili-active-db-id", "main");
+          window.history.replaceState({}, "", "/");
+          setMessage("所选数据库已不存在，已切回主数据库");
+        }
+      } catch (reason: unknown) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        setIsLoadingDatabases(false);
+      }
+    },
+    [activeDbId],
+  );
 
   const loadVideos = useCallback(async (options?: { quiet?: boolean }) => {
     if (!options?.quiet) {
@@ -58,32 +103,41 @@ export function VideoLibraryPage() {
     }
     setError("");
     try {
-      const payload = await fetchVideos();
+      const payload = await fetchVideos(activeDbId);
       setVideos(payload.videos);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [activeDbId]);
 
   useEffect(() => {
+    void loadDatabases();
+  }, [loadDatabases]);
+
+  useEffect(() => {
+    setOwnerFilter("all");
+    setDuplicateVideo(null);
+    setPendingParseTarget("");
     void loadVideos();
-  }, [loadVideos]);
+  }, [activeDbId, loadVideos]);
 
   useEffect(() => {
     if (!isArchivingSpace || hasSpaceQueueWork) return;
     setIsArchivingSpace(false);
     void loadVideos();
-  }, [hasSpaceQueueWork, isArchivingSpace, loadVideos]);
+    void loadDatabases({ quiet: true });
+  }, [hasSpaceQueueWork, isArchivingSpace, loadDatabases, loadVideos]);
 
   useEffect(() => {
     if (!hasSpaceQueueWork) return;
     const timer = window.setInterval(() => {
       void loadVideos({ quiet: true });
+      void loadDatabases({ quiet: true });
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [hasSpaceQueueWork, loadVideos]);
+  }, [hasSpaceQueueWork, loadDatabases, loadVideos]);
 
   const ownerGroups = useMemo(() => {
     const groups = new Map<
@@ -200,13 +254,16 @@ export function VideoLibraryPage() {
     try {
       const payload = await exportDatabaseArchive({
         bvids: owner.ownerMid ? undefined : owner.bvids,
+        db_id: activeDbId,
         label: owner.name,
         owner_mid: owner.ownerMid || undefined,
       });
       setMessage(
-        `导出完成：${payload.relative_path}，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
+        `导出完成：${payload.relative_path}，已加入热插拔数据库列表，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
       );
+      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
+        db_id: activeDbId,
         owner: owner.name,
         owner_mid: owner.ownerMid,
         video_count: payload.video_count,
@@ -232,10 +289,13 @@ export function VideoLibraryPage() {
     try {
       const payload = await exportDatabaseArchive({
         bvid: video.bvid,
+        db_id: activeDbId,
         label: `${video.bvid}_${video.title}`,
       });
-      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      setMessage(`导出完成：${payload.relative_path}，已加入热插拔数据库列表，${formatBytes(payload.size_bytes)}`);
+      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
+        db_id: activeDbId,
         bvid: video.bvid,
         size_bytes: payload.size_bytes,
       });
@@ -254,6 +314,7 @@ export function VideoLibraryPage() {
     const targetBvid = extractBvid(target);
     logClientEvent("client.user.parse.start", "user started video parse", {
       bvid: targetBvid,
+      db_id: activeDbId,
       delay: parseDelay,
       source: duplicateVideo ? "duplicate_confirm" : "form",
     });
@@ -264,8 +325,9 @@ export function VideoLibraryPage() {
     setMessage("正在解析并抓取评论，评论较多时可能需要几十秒");
     try {
       window.localStorage.setItem("bilibili-comment-delay", String(parseDelay));
-      const payload = await parseVideo(target, parseDelay);
+      const payload = await parseVideo(target, parseDelay, activeDbId);
       logClientEvent("client.user.parse.success", "video parse completed", {
+        db_id: activeDbId,
         bvid: payload.bvid,
         scraped_count: payload.scraped_count,
         after_count: payload.after_count,
@@ -278,10 +340,11 @@ export function VideoLibraryPage() {
           payload.deleted_count ?? 0
         } 条`,
       );
-      window.history.pushState({}, "", `/video/${payload.bvid}`);
+      window.history.pushState({}, "", dbPath(`/video/${payload.bvid}`, activeDbId));
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (reason: unknown) {
       logClientEvent("client.user.parse.error", reason instanceof Error ? reason.message : String(reason), {
+        db_id: activeDbId,
         bvid: targetBvid,
       });
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -301,6 +364,7 @@ export function VideoLibraryPage() {
     }
 
     logClientEvent("client.user.space_archive.start", "user started space archive", {
+      db_id: activeDbId,
       owner_ref: summarizeOwnerRef(target),
       delay: parseDelay,
     });
@@ -311,10 +375,12 @@ export function VideoLibraryPage() {
     try {
       const payload = await archiveSpaceVideos(target, {
         delay: parseDelay,
+        dbId: activeDbId,
       });
       setOwnerRef(payload.mid);
       setMessage(`已加入抓取队列：${payload.mid}，排队第 ${payload.queue_position} 个`);
       logClientEvent("client.user.space_archive.accepted", "space archive task accepted", {
+        db_id: activeDbId,
         mid: payload.mid,
         task_id: payload.task_id,
         queue_position: payload.queue_position,
@@ -333,11 +399,68 @@ export function VideoLibraryPage() {
 
   function openVideo(video: VideoSummary) {
     logClientEvent("client.user.video.open_existing", "opened existing local archive", {
+      db_id: activeDbId,
       bvid: video.bvid,
       title: video.title,
     });
-    window.history.pushState({}, "", `/video/${video.bvid}`);
+    window.history.pushState({}, "", dbPath(`/video/${video.bvid}`, activeDbId));
     window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  async function refreshDatabaseCatalog() {
+    logClientEvent("client.user.databases.refresh", "user refreshed database catalog", {
+      db_id: activeDbId,
+    });
+    setError("");
+    await loadDatabases({ selectId: activeDbId });
+    await loadVideos({ quiet: true });
+  }
+
+  async function submitDatabaseImport(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const target = importPath.trim();
+    if (!target) {
+      setError("请输入要导入的 SQLite 数据库路径");
+      return;
+    }
+    setIsImporting(true);
+    setError("");
+    setMessage("正在导入数据库");
+    try {
+      const payload = await importDatabase(target);
+      setImportPath("");
+      setActiveDatabase(payload.database.id, false);
+      await loadDatabases({ quiet: true, selectId: payload.database.id });
+      setMessage(
+        `导入完成：${payload.database.relative_path}，已切换到该数据库，${payload.database.video_count} 个视频，${formatBytes(
+          payload.database.size_bytes,
+        )}`,
+      );
+      logClientEvent("client.user.databases.import_success", "database imported", {
+        db_id: payload.database.id,
+        file_name: payload.database.file_name,
+        video_count: payload.database.video_count,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setMessage("");
+      logClientEvent("client.user.databases.import_error", text);
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  function setActiveDatabase(dbId: string, reload = true) {
+    setActiveDbId(dbId);
+    window.localStorage.setItem("bilibili-active-db-id", dbId);
+    const path = dbId === "main" ? "/" : `/?db_id=${encodeURIComponent(dbId)}`;
+    window.history.replaceState({}, "", path);
+    if (reload) {
+      logClientEvent("client.user.databases.select", "user selected database", { db_id: dbId });
+      setMessage("");
+      setError("");
+    }
   }
 
   return (
@@ -352,6 +475,7 @@ export function VideoLibraryPage() {
               </span>
               <span>{videos.length} 个视频</span>
               <span>{formatNumber(totals.comments)} 条评论档案</span>
+              {activeDatabase && <span>当前库：{activeDatabase.name}</span>}
             </div>
             <h1 className="mt-2 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
               Bilibili 评论弹幕管理
@@ -363,13 +487,14 @@ export function VideoLibraryPage() {
               type="button"
               onClick={() => {
                 logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
+                  db_id: activeDbId,
                   video_count: videos.length,
                 });
-                void loadVideos();
+                void refreshDatabaseCatalog();
               }}
-              disabled={isLoading}
+              disabled={isLoading || isLoadingDatabases}
             >
-              <RefreshCcw className={cn(isLoading && "animate-spin")} size={16} aria-hidden="true" />
+              <RefreshCcw className={cn((isLoading || isLoadingDatabases) && "animate-spin")} size={16} aria-hidden="true" />
               刷新列表
             </button>
             <button
@@ -418,6 +543,22 @@ export function VideoLibraryPage() {
 
       <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
         <ProgressQueuePanel queue={spaceQueue} />
+      </section>
+
+      <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
+        <DatabaseManagerPanel
+          activeDbId={activeDbId}
+          databases={databases}
+          hotplugDir={hotplugDir}
+          importPath={importPath}
+          isImporting={isImporting}
+          isLoading={isLoadingDatabases}
+          legacyExportDir={legacyExportDir}
+          onImportPathChange={setImportPath}
+          onRefresh={() => void refreshDatabaseCatalog()}
+          onSelect={setActiveDatabase}
+          onSubmitImport={submitDatabaseImport}
+        />
       </section>
 
       <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
@@ -538,8 +679,8 @@ export function VideoLibraryPage() {
               </label>
               <div className="grid gap-2 text-sm">
                 <InfoRow label="Cookie" value="data/cookie.txt" />
-                <InfoRow label="数据库" value="data/comment_danmaku.db" />
-                <InfoRow label="导出目录" value="data/exports" />
+                <InfoRow label="当前数据库" value={activeDatabase?.relative_path || "data/comment_danmaku.db"} />
+                <InfoRow label="热插拔目录" value={hotplugDir} />
               </div>
             </div>
           )}
@@ -621,6 +762,7 @@ export function VideoLibraryPage() {
               filteredVideos.map((video) => (
                 <VideoCard
                   disabled={Boolean(exportingKey)}
+                  dbId={activeDbId}
                   exporting={exportingKey === `video:${video.bvid}`}
                   key={video.bvid}
                   video={video}
@@ -639,6 +781,167 @@ export function VideoLibraryPage() {
 
 function extractBvid(value: string) {
   return value.trim().match(/BV[0-9A-Za-z]{10}/)?.[0] || "";
+}
+
+function initialDatabaseId() {
+  const fromUrl = new URLSearchParams(window.location.search).get("db_id");
+  if (fromUrl) {
+    window.localStorage.setItem("bilibili-active-db-id", fromUrl);
+    return fromUrl;
+  }
+  return window.localStorage.getItem("bilibili-active-db-id") || "main";
+}
+
+function dbPath(path: string, dbId: string) {
+  if (!dbId || dbId === "main") return path;
+  return `${path}?db_id=${encodeURIComponent(dbId)}`;
+}
+
+function DatabaseManagerPanel({
+  activeDbId,
+  databases,
+  hotplugDir,
+  importPath,
+  isImporting,
+  isLoading,
+  legacyExportDir,
+  onImportPathChange,
+  onRefresh,
+  onSelect,
+  onSubmitImport,
+}: {
+  activeDbId: string;
+  databases: DatabaseInfo[];
+  hotplugDir: string;
+  importPath: string;
+  isImporting: boolean;
+  isLoading: boolean;
+  legacyExportDir: string;
+  onImportPathChange: (value: string) => void;
+  onRefresh: () => void;
+  onSelect: (dbId: string) => void;
+  onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const activeDatabase = databases.find((database) => database.id === activeDbId);
+  const healthyCount = databases.filter((database) => database.ok).length;
+
+  return (
+    <section className="rounded-md border border-line bg-white shadow-soft">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+            <Database size={18} aria-hidden="true" />
+            数据库
+          </h2>
+          <div className="mt-1 text-sm text-muted">
+            {databases.length} 个已发现 · {healthyCount} 个可用 · 当前 {activeDatabase?.name || activeDbId}
+          </div>
+        </div>
+        <button
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+          type="button"
+          disabled={isLoading}
+          onClick={onRefresh}
+        >
+          <RefreshCcw className={cn(isLoading && "animate-spin")} size={16} aria-hidden="true" />
+          扫描文件夹
+        </button>
+      </div>
+
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0">
+          <div className="grid gap-2 text-sm">
+            <InfoRow label="热插拔目录" value={hotplugDir} />
+            <InfoRow label="兼容旧导出" value={legacyExportDir} />
+          </div>
+          <div className="mt-3 grid max-h-[290px] gap-2 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
+            {databases.map((database) => (
+              <DatabaseCard
+                active={database.id === activeDbId}
+                database={database}
+                key={database.id}
+                onSelect={() => onSelect(database.id)}
+              />
+            ))}
+            {!isLoading && databases.length === 0 && (
+              <div className="rounded-md border border-dashed border-line bg-[#fbfcfe] p-4 text-sm text-muted">
+                没有发现数据库
+              </div>
+            )}
+          </div>
+        </div>
+
+        <form className="grid content-start gap-3 rounded-md border border-line bg-[#fbfcfe] p-3" onSubmit={onSubmitImport}>
+          <div>
+            <div className="text-sm font-semibold text-ink">导入已有数据库</div>
+            <div className="mt-1 text-xs text-muted">把导出的 .db/.sqlite 放进热插拔目录后，也可以直接点击扫描文件夹。</div>
+          </div>
+          <label className="grid gap-2 text-sm text-muted">
+            数据库文件路径
+            <span className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line bg-white px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
+              <FolderOpen size={16} aria-hidden="true" />
+              <input
+                className="min-w-0 flex-1 bg-transparent text-ink outline-none"
+                placeholder="D:\\backups\\archive.db"
+                value={importPath}
+                onChange={(event) => onImportPathChange(event.target.value)}
+              />
+            </span>
+          </label>
+          <button
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
+            type="submit"
+            disabled={isImporting}
+          >
+            <Download className={cn(isImporting && "animate-bounce")} size={16} aria-hidden="true" />
+            {isImporting ? "导入中" : "导入并切换"}
+          </button>
+        </form>
+      </div>
+    </section>
+  );
+}
+
+function DatabaseCard({
+  active,
+  database,
+  onSelect,
+}: {
+  active: boolean;
+  database: DatabaseInfo;
+  onSelect: () => void;
+}) {
+  const roleLabel =
+    database.role === "main" ? "主库" : database.role === "legacy_export" ? "旧导出" : "热插拔";
+
+  return (
+    <button
+      className={cn(
+        "grid min-w-0 gap-2 rounded-md border p-3 text-left transition",
+        active ? "border-bilibili bg-pink-50" : "border-line bg-white hover:border-bilibili",
+        !database.ok && "border-amber-200 bg-amber-50",
+      )}
+      type="button"
+      onClick={onSelect}
+    >
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-ink">{database.name}</div>
+          <div className="mt-0.5 truncate text-xs text-muted">{database.file_name}</div>
+        </div>
+        <span className="shrink-0 rounded bg-white px-2 py-0.5 text-xs text-muted">{roleLabel}</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+        <span>视频 {formatNumber(database.video_count)}</span>
+        <span>评论 {formatNumber(database.comment_count)}</span>
+        <span>弹幕 {formatNumber(database.danmaku_count)}</span>
+        <span>{formatBytes(database.size_bytes)}</span>
+      </div>
+      <div className={cn("truncate text-xs", database.ok ? "text-muted" : "text-amber-700")}>
+        {database.ok ? database.relative_path : database.error || "不可用"}
+      </div>
+    </button>
+  );
 }
 
 function ProgressQueuePanel({ queue }: { queue?: ProgressQueue }) {
@@ -827,11 +1130,13 @@ function OwnerFilterButton({
 
 function VideoCard({
   disabled,
+  dbId,
   exporting,
   video,
   onExport,
 }: {
   disabled: boolean;
+  dbId: string;
   exporting: boolean;
   video: VideoSummary;
   onExport: () => void;
@@ -872,9 +1177,10 @@ function VideoCard({
       <div className="flex flex-wrap items-center gap-2 self-center md:flex-col md:items-stretch">
         <a
           className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
-          href={`/video/${video.bvid}`}
+          href={dbPath(`/video/${video.bvid}`, dbId)}
           onClick={() =>
             logClientEvent("client.user.video_card.open_comments", "opened comments from video card", {
+              db_id: dbId,
               bvid: video.bvid,
               title: video.title,
             })
@@ -885,9 +1191,10 @@ function VideoCard({
         </a>
         <a
           className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f]"
-          href={`/danmaku/${video.bvid}`}
+          href={dbPath(`/danmaku/${video.bvid}`, dbId)}
           onClick={() =>
             logClientEvent("client.user.video_card.open_danmaku", "opened danmaku from video card", {
+              db_id: dbId,
               bvid: video.bvid,
               title: video.title,
             })

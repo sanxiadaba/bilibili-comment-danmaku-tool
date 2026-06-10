@@ -206,6 +206,7 @@ export type VideoSummary = {
 
 export type VideoListResponse = {
   videos: VideoSummary[];
+  database?: DatabaseInfo;
 };
 
 export type ParseVideoResponse = {
@@ -237,10 +238,41 @@ export type DatabaseExportResponse = {
   path: string;
   relative_path: string;
   file_name: string;
+  database?: DatabaseInfo;
   video_count: number;
   bvids: string[];
   counts: Record<string, number>;
   size_bytes: number;
+};
+
+export type DatabaseInfo = {
+  id: string;
+  role: "main" | "hotplug" | "legacy_export" | string;
+  name: string;
+  file_name: string;
+  path: string;
+  relative_path: string;
+  exists: boolean;
+  size_bytes: number;
+  video_count: number;
+  comment_count: number;
+  danmaku_count: number;
+  owner_count: number;
+  updated_at: string;
+  ok: boolean;
+  error: string;
+};
+
+export type DatabaseListResponse = {
+  databases: DatabaseInfo[];
+  active_id: string;
+  hotplug_dir: string;
+  legacy_export_dir: string;
+};
+
+export type DatabaseImportResponse = {
+  ok: boolean;
+  database: DatabaseInfo;
 };
 
 export type ProgressTask = {
