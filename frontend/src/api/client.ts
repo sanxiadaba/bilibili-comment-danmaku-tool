@@ -201,6 +201,15 @@ async function requestJson<T>(event: string, url: string, init?: RequestInit, fi
 }
 
 async function parseJsonResponse<T>(response: Response) {
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await response.text();
+    const isHtml = text.trimStart().startsWith("<!doctype") || text.trimStart().startsWith("<html");
+    if (isHtml) {
+      throw new Error("后端 API 返回了前端页面，请重启后端服务或确认当前端口运行的是最新版本");
+    }
+    throw new Error(`后端返回了非 JSON 响应：${response.status}`);
+  }
   if (!response.ok) {
     let detail = "";
     try {

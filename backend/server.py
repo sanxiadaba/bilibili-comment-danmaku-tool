@@ -93,6 +93,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             if parsed.path == "/api/health":
                 self.handle_health_api()
                 return
+            if parsed.path.startswith("/api/"):
+                self.send_json({"error": f"未知 API：{parsed.path}"}, status=404)
+                return
             self.handle_static(parsed.path)
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
