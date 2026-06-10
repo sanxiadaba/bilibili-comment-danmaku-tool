@@ -42,6 +42,17 @@ import { cn, formatFullDateTime, formatNumber, normalizeImageUrl } from "../lib/
 import type { DatabaseInfo, ProgressQueue, ProgressTask, VideoSummary } from "../types";
 
 type ManagementView = "queue" | "database";
+type ExportFormat = "sqlite" | "json";
+type OwnerGroup = {
+  bvids: string[];
+  key: string;
+  name: string;
+  ownerMid: string;
+  videoCount: number;
+  commentCount: number;
+  danmakuCount: number;
+};
+type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
 
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
@@ -58,7 +69,6 @@ export function VideoLibraryPage() {
   const [isLoadingDatabases, setIsLoadingDatabases] = useState(true);
   const [importPath, setImportPath] = useState("");
   const [isImporting, setIsImporting] = useState(false);
-  const [exportFormat, setExportFormat] = useState<"sqlite" | "json">("sqlite");
   const [managementView, setManagementView] = useState<ManagementView>("queue");
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -67,6 +77,7 @@ export function VideoLibraryPage() {
   const [isArchivingSpace, setIsArchivingSpace] = useState(false);
   const [isSubmittingSpace, setIsSubmittingSpace] = useState(false);
   const [exportingKey, setExportingKey] = useState("");
+  const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -155,18 +166,7 @@ export function VideoLibraryPage() {
   }, [hasSpaceQueueWork, loadDatabases, loadVideos]);
 
   const ownerGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      {
-        bvids: string[];
-        key: string;
-        name: string;
-        ownerMid: string;
-        videoCount: number;
-        commentCount: number;
-        danmakuCount: number;
-      }
-    >();
+    const groups = new Map<string, OwnerGroup>();
 
     for (const video of videos) {
       const key = ownerKey(video);
@@ -261,16 +261,17 @@ export function VideoLibraryPage() {
     await runParse(target);
   }
 
-  async function exportOwnerDatabase(owner = selectedOwner) {
+  async function exportOwnerDatabase(owner = selectedOwner, format: ExportFormat) {
     if (!owner || !owner.bvids.length) return;
     setExportingKey(`owner:${owner.key}`);
+    setExportTarget(null);
     setError("");
-    setMessage(`正在导出 ${owner.name} 的 UP 主独立数据库`);
+    setMessage(`正在导出 ${owner.name} 的 UP 主${format === "json" ? " JSON 文件" : "独立数据库"}`);
     try {
       const payload = await exportDatabaseArchive({
         bvids: owner.ownerMid ? undefined : owner.bvids,
         db_id: activeDbId,
-        format: exportFormat,
+        format,
         label: owner.name,
         owner_mid: owner.ownerMid || undefined,
       });
@@ -279,11 +280,11 @@ export function VideoLibraryPage() {
       );
       setNotice({
         kind: "success",
-        title: exportFormat === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成",
+        title: format === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成",
         message:
-          exportFormat === "json"
-            ? `${payload.relative_path} 已导出为 JSON 数据归档，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录`,
+          format === "json"
+            ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
+            : `${payload.relative_path} 已加入热插拔目录；${payload.json_relative_path || "同名 JSON 清单"} 已生成`,
       });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
@@ -307,25 +308,26 @@ export function VideoLibraryPage() {
     }
   }
 
-  async function exportVideoDatabase(video: VideoSummary) {
+  async function exportVideoDatabase(video: VideoSummary, format: ExportFormat) {
     setExportingKey(`video:${video.bvid}`);
+    setExportTarget(null);
     setError("");
-    setMessage(`正在导出 ${video.bvid} 的独立数据库`);
+    setMessage(`正在导出 ${video.bvid} 的${format === "json" ? " JSON 文件" : "独立数据库"}`);
     try {
       const payload = await exportDatabaseArchive({
         bvid: video.bvid,
         db_id: activeDbId,
-        format: exportFormat,
+        format,
         label: `${video.bvid}_${video.title}`,
       });
       setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
       setNotice({
         kind: "success",
-        title: exportFormat === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成",
+        title: format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成",
         message:
-          exportFormat === "json"
-            ? `${payload.relative_path} 已导出为 JSON 数据归档，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录`,
+          format === "json"
+            ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
+            : `${payload.relative_path} 已加入热插拔目录；${payload.json_relative_path || "同名 JSON 清单"} 已生成`,
       });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
@@ -629,7 +631,6 @@ export function VideoLibraryPage() {
         <ManagementPanel
           activeDbId={activeDbId}
           databases={databases}
-          exportFormat={exportFormat}
           hotplugDir={hotplugDir}
           importPath={importPath}
           isImporting={isImporting}
@@ -642,7 +643,6 @@ export function VideoLibraryPage() {
           onPickFolder={() => folderInputRef.current?.click()}
           onRefresh={() => void refreshDatabaseCatalog()}
           onSelect={setActiveDatabase}
-          onExportFormatChange={setExportFormat}
           onViewChange={setManagementView}
           onSubmitImport={submitDatabaseImport}
         />
@@ -823,7 +823,7 @@ export function VideoLibraryPage() {
                       key={owner.key}
                       name={owner.name}
                       videoCount={owner.videoCount}
-                      onExport={() => void exportOwnerDatabase(owner)}
+                      onExport={() => setExportTarget({ kind: "owner", owner })}
                       onClick={() => {
                         logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
                           owner: owner.name,
@@ -871,7 +871,7 @@ export function VideoLibraryPage() {
                   exporting={exportingKey === `video:${video.bvid}`}
                   key={video.bvid}
                   video={video}
-                  onExport={() => void exportVideoDatabase(video)}
+                  onExport={() => setExportTarget({ kind: "video", video })}
                 />
               ))}
             {!isLoading && filteredVideos.length === 0 && (
@@ -880,6 +880,19 @@ export function VideoLibraryPage() {
           </div>
         </section>
       </section>
+      {exportTarget && (
+        <ExportChoiceDialog
+          target={exportTarget}
+          onClose={() => setExportTarget(null)}
+          onChoose={(format) => {
+            if (exportTarget.kind === "owner") {
+              void exportOwnerDatabase(exportTarget.owner, format);
+            } else {
+              void exportVideoDatabase(exportTarget.video, format);
+            }
+          }}
+        />
+      )}
       {notice && <NoticeDialog notice={notice} onClose={() => setNotice(null)} />}
     </main>
   );
@@ -908,6 +921,69 @@ type NoticeState = {
   title: string;
   message: string;
 };
+
+function ExportChoiceDialog({
+  target,
+  onChoose,
+  onClose,
+}: {
+  target: ExportTarget;
+  onChoose: (format: ExportFormat) => void;
+  onClose: () => void;
+}) {
+  const isOwner = target.kind === "owner";
+  const title = isOwner ? "导出 UP 主档案" : "导出视频档案";
+  const name = isOwner ? target.owner.name : target.video.title;
+  const summary = isOwner
+    ? `${target.owner.videoCount} 个视频 · 评论 ${formatNumber(target.owner.commentCount)} · 弹幕 ${formatNumber(target.owner.danmakuCount)}`
+    : `${target.video.bvid} · 评论 ${formatNumber(target.video.comment_total_count)} · 弹幕 ${formatNumber(target.video.danmaku_count)}`;
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg overflow-hidden rounded-md border border-line bg-white shadow-xl">
+        <div className="flex items-start justify-between gap-3 border-b border-line p-4">
+          <div className="min-w-0">
+            <div className="text-base font-semibold text-ink">{title}</div>
+            <div className="mt-1 line-clamp-2 text-sm text-muted">{name}</div>
+            <div className="mt-1 text-xs text-muted">{summary}</div>
+          </div>
+          <button
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#fbfcfe] text-muted transition hover:text-ink"
+            type="button"
+            aria-label="关闭导出选择"
+            onClick={onClose}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <button
+            className="grid min-h-28 gap-2 rounded-md border border-line bg-[#fbfcfe] p-4 text-left transition hover:border-bilibili hover:bg-white"
+            type="button"
+            onClick={() => onChoose("sqlite")}
+          >
+            <span className="inline-flex items-center gap-2 text-sm font-semibold text-ink">
+              <Database size={17} aria-hidden="true" />
+              SQLite 数据库
+            </span>
+            <span className="text-sm leading-6 text-muted">导出为可热插拔的独立数据库，适合继续在本工具中切换查看。</span>
+          </button>
+          <button
+            className="grid min-h-28 gap-2 rounded-md border border-line bg-[#fbfcfe] p-4 text-left transition hover:border-bilibili hover:bg-white"
+            type="button"
+            onClick={() => onChoose("json")}
+          >
+            <span className="inline-flex items-center gap-2 text-sm font-semibold text-ink">
+              <Download size={17} aria-hidden="true" />
+              JSON 文件
+            </span>
+            <span className="text-sm leading-6 text-muted">导出真实数据文件，包含视频信息、评论、楼中楼和弹幕，可再次导入。</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () => void }) {
   const Icon = notice.kind === "success" ? CheckCircle2 : notice.kind === "warning" ? AlertTriangle : XCircle;
@@ -953,7 +1029,6 @@ function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () =>
 function ManagementPanel({
   activeDbId,
   databases,
-  exportFormat,
   hotplugDir,
   importPath,
   isImporting,
@@ -966,13 +1041,11 @@ function ManagementPanel({
   onPickFolder,
   onRefresh,
   onSelect,
-  onExportFormatChange,
   onViewChange,
   onSubmitImport,
 }: {
   activeDbId: string;
   databases: DatabaseInfo[];
-  exportFormat: "sqlite" | "json";
   hotplugDir: string;
   importPath: string;
   isImporting: boolean;
@@ -985,7 +1058,6 @@ function ManagementPanel({
   onPickFolder: () => void;
   onRefresh: () => void;
   onSelect: (dbId: string) => void;
-  onExportFormatChange: (format: "sqlite" | "json") => void;
   onViewChange: (view: ManagementView) => void;
   onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
@@ -1030,7 +1102,6 @@ function ManagementPanel({
           activeDatabaseName={activeDatabase?.name || activeDbId}
           activeDbId={activeDbId}
           databases={databases}
-          exportFormat={exportFormat}
           healthyCount={healthyCount}
           hotplugDir={hotplugDir}
           importPath={importPath}
@@ -1042,7 +1113,6 @@ function ManagementPanel({
           onPickFolder={onPickFolder}
           onRefresh={onRefresh}
           onSelect={onSelect}
-          onExportFormatChange={onExportFormatChange}
           onSubmitImport={onSubmitImport}
         />
       )}
@@ -1083,7 +1153,6 @@ function DatabaseManagerPanel({
   activeDatabaseName,
   activeDbId,
   databases,
-  exportFormat,
   healthyCount,
   hotplugDir,
   importPath,
@@ -1095,13 +1164,11 @@ function DatabaseManagerPanel({
   onPickFolder,
   onRefresh,
   onSelect,
-  onExportFormatChange,
   onSubmitImport,
 }: {
   activeDatabaseName: string;
   activeDbId: string;
   databases: DatabaseInfo[];
-  exportFormat: "sqlite" | "json";
   healthyCount: number;
   hotplugDir: string;
   importPath: string;
@@ -1113,7 +1180,6 @@ function DatabaseManagerPanel({
   onPickFolder: () => void;
   onRefresh: () => void;
   onSelect: (dbId: string) => void;
-  onExportFormatChange: (format: "sqlite" | "json") => void;
   onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
   return (
@@ -1138,29 +1204,6 @@ function DatabaseManagerPanel({
           <div className="grid gap-2 text-sm">
             <InfoRow label="热插拔目录" value={hotplugDir} />
             <InfoRow label="兼容旧导出" value={legacyExportDir} />
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-line bg-[#fbfcfe] p-2 text-sm">
-            <span className="text-muted">导出格式</span>
-            <button
-              className={cn(
-                "inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium transition",
-                exportFormat === "sqlite" ? "bg-ink text-white" : "bg-white text-muted hover:text-ink",
-              )}
-              type="button"
-              onClick={() => onExportFormatChange("sqlite")}
-            >
-              SQLite 数据库
-            </button>
-            <button
-              className={cn(
-                "inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium transition",
-                exportFormat === "json" ? "bg-ink text-white" : "bg-white text-muted hover:text-ink",
-              )}
-              type="button"
-              onClick={() => onExportFormatChange("json")}
-            >
-              JSON 数据
-            </button>
           </div>
           <div className="mt-3 grid max-h-[290px] gap-2 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
             {databases.map((database) => (
