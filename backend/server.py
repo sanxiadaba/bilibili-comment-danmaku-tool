@@ -5,7 +5,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, new_request_id, shutdown_logging
 from bilibili_comment_danmaku import (
@@ -37,6 +37,7 @@ from database_registry import (
     relative_to_root,
     resolve_database_path,
 )
+from control_api import control_capabilities, normalize_control_action_payload
 from errors import BadRequestError
 from progress_state import (
     fail_progress,
@@ -77,6 +78,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         self.start_request_log("GET")
         parsed = urlparse(self.path)
         try:
+            if parsed.path.startswith("/api/v1/control"):
+                self.handle_control_get_api(parsed)
+                return
             if parsed.path == "/api/databases":
                 self.handle_databases_api()
                 return
@@ -112,6 +116,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         self.start_request_log("POST")
         parsed = urlparse(self.path)
         try:
+            if parsed.path.startswith("/api/v1/control"):
+                self.handle_control_post_api(parsed)
+                return
             if parsed.path == "/api/videos/parse":
                 self.handle_parse_video_api()
                 return
@@ -253,6 +260,118 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             fields=fields,
         )
         self.send_json({"ok": True})
+
+    def handle_control_get_api(self, parsed):
+        path = parsed.path.rstrip("/")
+        if path in {"", "/api/v1/control"}:
+            self.send_json(control_capabilities())
+            return
+        if path in {"/api/v1/control/status", "/api/v1/control/progress"}:
+            payload = get_progress_snapshot()
+            if path.endswith("/status"):
+                payload = {
+                    "ok": True,
+                    "version": "v1",
+                    "health": {
+                        "db": str(self.db_path),
+                        "database_dir": str(self.database_dir),
+                        "logging": logging_status(),
+                    },
+                    "progress": payload,
+                }
+            self.send_json(payload)
+            return
+        if path == "/api/v1/control/databases":
+            self.handle_databases_api()
+            return
+        if path == "/api/v1/control/videos":
+            self.handle_videos_api()
+            return
+        if path == "/api/v1/control/comments":
+            self.handle_comments_api(parsed)
+            return
+        if path == "/api/v1/control/danmaku":
+            self.handle_danmaku_api(parsed)
+            return
+        self.send_json({"error": f"未知控制 API：{parsed.path}"}, status=404)
+
+    def handle_control_post_api(self, parsed):
+        path = parsed.path.rstrip("/")
+        if path == "/api/v1/control/actions":
+            body = self.read_json_body()
+            try:
+                action, params = normalize_control_action_payload(body)
+            except LookupError as exc:
+                self.send_json({"error": str(exc), "capabilities": control_capabilities()}, status=404)
+                return
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+            self.dispatch_control_action(action, params)
+            return
+        if path == "/api/v1/control/videos/parse":
+            self.handle_parse_video_api()
+            return
+        if path == "/api/v1/control/space/archive":
+            self.handle_space_archive_api()
+            return
+        if path == "/api/v1/control/archive/export":
+            self.handle_database_export_api()
+            return
+        if path == "/api/v1/control/databases/import":
+            self.handle_database_import_api()
+            return
+        if path == "/api/v1/control/comments/refresh":
+            body = self.read_json_body()
+            self.handle_refresh_api(self.control_query_parsed(parsed, body, ("bvid", "db_id", "delay")))
+            return
+        if path == "/api/v1/control/danmaku/refresh":
+            body = self.read_json_body()
+            self.handle_danmaku_refresh_api(self.control_query_parsed(parsed, body, ("bvid", "db_id")))
+            return
+        self.send_json({"error": f"未知控制 API：{parsed.path}", "capabilities": control_capabilities()}, status=404)
+
+    def dispatch_control_action(self, action, params):
+        if action == "videos.parse":
+            self.run_with_json_body(params, self.handle_parse_video_api)
+            return
+        if action == "space.archive":
+            self.run_with_json_body(params, self.handle_space_archive_api)
+            return
+        if action == "archive.export":
+            self.run_with_json_body(params, self.handle_database_export_api)
+            return
+        if action == "databases.import":
+            self.run_with_json_body(params, self.handle_database_import_api)
+            return
+        if action == "comments.refresh":
+            parsed = self.control_query_parsed(urlparse(self.path), params, ("bvid", "db_id", "delay"))
+            self.handle_refresh_api(parsed)
+            return
+        if action == "danmaku.refresh":
+            parsed = self.control_query_parsed(urlparse(self.path), params, ("bvid", "db_id"))
+            self.handle_danmaku_refresh_api(parsed)
+            return
+        self.send_json({"error": f"不支持的控制动作：{action}"}, status=404)
+
+    def run_with_json_body(self, body, handler):
+        original_body = getattr(self, "_json_body_override", None)
+        self._json_body_override = dict(body)
+        try:
+            handler()
+        finally:
+            if original_body is None:
+                self._json_body_override = None
+            else:
+                self._json_body_override = original_body
+
+    def control_query_parsed(self, parsed, body, keys):
+        query = parse_qs(parsed.query)
+        for key in keys:
+            value = body.get(key)
+            if value is not None and value != "":
+                query[key] = [str(value)]
+        return parsed._replace(query=urlencode({key: values[-1] for key, values in query.items() if values}))
 
     def handle_parse_video_api(self):
         if not refresh_lock.acquire(blocking=False):
@@ -898,6 +1017,8 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def read_json_body(self):
+        if getattr(self, "_json_body_override", None) is not None:
+            return dict(self._json_body_override)
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
