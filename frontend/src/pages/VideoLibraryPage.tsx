@@ -1,20 +1,3 @@
-﻿import {
-  AlertTriangle,
-  Database,
-  Eye,
-  Heart,
-  LinkIcon,
-  ListTree,
-  MessageCircle,
-  FolderOpen,
-  PlayCircle,
-  PlusCircle,
-  RefreshCcw,
-  Search,
-  Settings,
-  Sparkles,
-  Users,
-} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
@@ -27,17 +10,16 @@ import {
   logClientEvent,
   parseVideo,
 } from "../api/client";
-import { ProgressBanner } from "../components/common";
-import { InfoRow } from "../components/common";
-import { StatTile } from "../components/ui/StatTile";
+import { DatabaseManagementSection } from "../components/video-library/DatabaseManagementSection";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
-import { ManagementPanel } from "../components/video-library/ManagementPanel";
+import { LibraryHeader } from "../components/video-library/LibraryHeader";
+import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
+import { LibraryStats } from "../components/video-library/LibraryStats";
 import { NoticeDialog } from "../components/video-library/NoticeDialog";
-import { OwnerFilterButton } from "../components/video-library/OwnerFilterButton";
+import { StatusStrips } from "../components/video-library/StatusStrips";
 import type { ExportFormat, ExportTarget, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
-import { VideoCard } from "../components/video-library/VideoCard";
+import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
-import { cn, formatNumber } from "../lib/utils";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
 import type { DatabaseInfo, VideoSummary } from "../types";
 
@@ -538,334 +520,115 @@ export function VideoLibraryPage() {
 
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-ink">
-      <section className="border-b border-line bg-white">
-        <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6">
-          <div>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
-              <span className="inline-flex items-center gap-1">
-                <Database size={15} aria-hidden="true" />
-                评论视频库
-              </span>
-              <span>{videos.length} 个视频</span>
-              <span>{formatNumber(totals.comments)} 条评论档案</span>
-              {activeDatabase && <span>当前库：{activeDatabase.name}</span>}
-            </div>
-            <h1 className="mt-2 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
-              Bilibili 评论弹幕管理
-            </h1>
-          </div>
-          <div className="flex items-center gap-2 self-center">
-            <button
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
-              type="button"
-              onClick={() => {
-                logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
-                  db_id: activeDbId,
-                  video_count: videos.length,
-                });
-                void refreshDatabaseCatalog();
-              }}
-              disabled={isLoading || isLoadingDatabases}
-            >
-              <RefreshCcw className={cn((isLoading || isLoadingDatabases) && "animate-spin")} size={16} aria-hidden="true" />
-              刷新列表
-            </button>
-            <button
-              className={cn(
-                "inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium transition",
-                showSettings ? "border-bilibili text-bilibili" : "text-muted hover:border-ink hover:text-ink",
-              )}
-              type="button"
-              onClick={() => {
-                logClientEvent("client.user.settings.toggle", "user toggled parse settings", {
-                  show_settings: !showSettings,
-                });
-                setShowSettings((value) => !value);
-              }}
-            >
-              <Settings size={16} aria-hidden="true" />
-              设置
-            </button>
-          </div>
-        </div>
-      </section>
+      <LibraryHeader
+        activeDatabase={activeDatabase}
+        commentCount={totals.comments}
+        isLoading={isLoading}
+        isLoadingDatabases={isLoadingDatabases}
+        showSettings={showSettings}
+        videoCount={videos.length}
+        onRefresh={() => {
+          logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
+            db_id: activeDbId,
+            video_count: videos.length,
+          });
+          void refreshDatabaseCatalog();
+        }}
+        onToggleSettings={() => {
+          logClientEvent("client.user.settings.toggle", "user toggled parse settings", {
+            show_settings: !showSettings,
+          });
+          setShowSettings((value) => !value);
+        }}
+      />
 
-      {error && (
-        <section className="border-b border-red-100 bg-red-50">
-          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-red-700 lg:px-6">{error}</div>
-        </section>
-      )}
+      <StatusStrips
+        error={error}
+        hasSpaceQueueWork={hasSpaceQueueWork}
+        isParsing={isParsing}
+        message={message}
+        parseProgress={parseProgress}
+        spaceProgress={spaceProgress}
+      />
 
-      {message && !error && (
-        <section className="border-b border-cyan-100 bg-cyan-50">
-          <div className="mx-auto max-w-[1540px] px-4 py-2 text-sm text-cyan-700 lg:px-6">{message}</div>
-        </section>
-      )}
+      <LibraryStats totals={totals} videoCount={videos.length} />
 
-      {isParsing && <ProgressBanner progress={parseProgress} fallback="正在抓取评论和弹幕" />}
-      {hasSpaceQueueWork && <ProgressBanner progress={spaceProgress} fallback="正在归档 UP 主全部视频" />}
-
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-6 lg:px-6">
-        <StatTile icon={PlayCircle} label="视频数量" value={videos.length} tone="pink" />
-        <StatTile icon={Eye} label="播放量" value={totals.views} tone="mint" />
-        <StatTile icon={MessageCircle} label="评论档案" value={totals.comments} tone="cyan" />
-        <StatTile icon={AlertTriangle} label="仍可见 / 未返回" value={`${totals.active} / ${totals.deleted}`} tone="mint" />
-        <StatTile icon={Sparkles} label="弹幕档案" value={totals.danmaku} tone="amber" />
-        <StatTile icon={Heart} label="评论点赞" value={totals.likes} tone="amber" />
-      </section>
-
-      <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
-        <ManagementPanel
-          activeDbId={activeDbId}
-          databases={databases}
-          hotplugDir={hotplugDir}
-          importPath={importPath}
-          isImporting={isImporting}
-          isLoading={isLoadingDatabases}
-          legacyExportDir={legacyExportDir}
-          queue={spaceQueue}
-          view={managementView}
-          onImportPathChange={setImportPath}
-          onPickFiles={() => fileInputRef.current?.click()}
-          onPickFolder={() => folderInputRef.current?.click()}
-          onRefresh={() => void refreshDatabaseCatalog()}
-          onSelect={setActiveDatabase}
-          onViewChange={setManagementView}
-          onSubmitImport={submitDatabaseImport}
-        />
-        <input
-          ref={fileInputRef}
-          className="hidden"
-          type="file"
-          accept=".db,.sqlite,.sqlite3,.json"
-          multiple
-          onChange={(event) => void importSelectedFiles(event.target.files, "file")}
-        />
-        <input
-          ref={folderInputRef}
-          className="hidden"
-          type="file"
-          accept=".db,.sqlite,.sqlite3,.json"
-          multiple
-          // @ts-expect-error Chromium supports folder selection via webkitdirectory.
-          webkitdirectory="true"
-          onChange={(event) => void importSelectedFiles(event.target.files, "folder")}
-        />
-      </section>
+      <DatabaseManagementSection
+        activeDbId={activeDbId}
+        databases={databases}
+        fileInputRef={fileInputRef}
+        folderInputRef={folderInputRef}
+        hotplugDir={hotplugDir}
+        importPath={importPath}
+        isImporting={isImporting}
+        isLoading={isLoadingDatabases}
+        legacyExportDir={legacyExportDir}
+        queue={spaceQueue}
+        view={managementView}
+        onFilesSelected={(files, source) => void importSelectedFiles(files, source)}
+        onImportPathChange={setImportPath}
+        onRefresh={() => void refreshDatabaseCatalog()}
+        onSelect={setActiveDatabase}
+        onSubmitImport={submitDatabaseImport}
+        onViewChange={setManagementView}
+      />
 
       <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
-        <aside className="self-start rounded-md border border-line bg-white p-4 shadow-soft">
-          <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-            <PlusCircle size={18} aria-hidden="true" />
-            解析新视频
-          </h2>
-          <form className="mt-4 grid gap-3" onSubmit={submitParse}>
-            <label className="grid gap-2 text-sm text-muted">
-              视频链接或 BV 号
-              <span className="flex h-11 min-w-0 items-center gap-2 rounded-md border border-line px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
-                <LinkIcon size={16} aria-hidden="true" />
-                <input
-                  className="min-w-0 flex-1 bg-transparent text-ink outline-none"
-                  placeholder="https://www.bilibili.com/video/BV..."
-                  value={url}
-                  onChange={(event) => {
-                    setUrl(event.target.value);
-                    setDuplicateVideo(null);
-                    setPendingParseTarget("");
-                  }}
-                />
-              </span>
-            </label>
-            <button
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
-              type="submit"
-              disabled={isTaskBusy}
-            >
-              <RefreshCcw className={cn(isParsing && "animate-spin")} size={16} aria-hidden="true" />
-              {isParsing ? "解析中" : "解析视频"}
-            </button>
-          </form>
-          {duplicateVideo && (
-            <div className="mt-4 grid gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-ink">
-              <div className="flex min-w-0 items-start gap-2">
-                <AlertTriangle className="mt-0.5 shrink-0 text-amber-600" size={17} aria-hidden="true" />
-                <div className="min-w-0">
-                  <div className="font-medium text-amber-900">该视频已在本地档案中</div>
-                  <div className="mt-1 line-clamp-2 text-amber-800">{duplicateVideo.title}</div>
-                  <div className="mt-1 text-xs text-amber-700">
-                    {duplicateVideo.bvid} · 档案 {formatNumber(duplicateVideo.comment_total_count)} · 弹幕{" "}
-                    {formatNumber(duplicateVideo.danmaku_count)}
-                  </div>
-                </div>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <button
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-sm font-medium text-amber-900 transition hover:border-amber-500"
-                  type="button"
-                  onClick={() => openVideo(duplicateVideo)}
-                >
-                  <FolderOpen size={16} aria-hidden="true" />
-                  打开已有档案
-                </button>
-                <button
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
-                  type="button"
-                  disabled={isTaskBusy}
-                  onClick={() => {
-                    logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
-                      bvid: duplicateVideo.bvid,
-                    });
-                    void runParse(pendingParseTarget);
-                  }}
-                >
-                  <RefreshCcw className={cn(isParsing && "animate-spin")} size={16} aria-hidden="true" />
-                  重新抓取
-                </button>
-              </div>
-            </div>
-          )}
-          <div className="mt-4 border-t border-line pt-4">
-            <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-              <Users size={18} aria-hidden="true" />
-              抓取UP主
-            </h2>
-            <form className="mt-4 grid gap-3" onSubmit={submitSpaceArchive}>
-              <label className="grid gap-2 text-sm text-muted">
-                UP 主主页或 mid
-                <span className="flex h-11 min-w-0 items-center gap-2 rounded-md border border-line px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
-                  <LinkIcon size={16} aria-hidden="true" />
-                  <input
-                    className="min-w-0 flex-1 bg-transparent text-ink outline-none"
-                    placeholder="https://space.bilibili.com/123456"
-                    value={ownerRef}
-                    onChange={(event) => setOwnerRef(event.target.value)}
-                  />
-                </span>
-              </label>
-              <button
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-bilibili px-4 text-sm font-medium text-white transition hover:bg-[#e85f89] disabled:cursor-wait disabled:opacity-70"
-                type="submit"
-                disabled={isSubmittingSpace}
-              >
-                <RefreshCcw className={cn((isSubmittingSpace || hasSpaceQueueWork) && "animate-spin")} size={16} aria-hidden="true" />
-                {isSubmittingSpace ? "加入队列中" : "抓取全部视频"}
-              </button>
-            </form>
-          </div>
-          {showSettings && (
-            <div className="mt-4 grid gap-3 border-t border-line pt-4">
-              <label className="grid gap-2 text-sm text-muted">
-                抓取延迟
-                <span className="flex h-10 items-center gap-3 rounded-md border border-line px-3">
-                  <input
-                    className="min-w-0 flex-1 accent-bilibili"
-                    max={2}
-                    min={0}
-                    step={0.05}
-                    type="range"
-                    value={parseDelay}
-                    onChange={(event) => setParseDelay(Number(event.target.value))}
-                  />
-                  <span className="w-14 text-right font-medium text-ink">{parseDelay.toFixed(2)}s</span>
-                </span>
-              </label>
-              <div className="grid gap-2 text-sm">
-                <InfoRow label="Cookie" value="data/cookie.txt" />
-                <InfoRow label="当前数据库" value={activeDatabase?.relative_path || "data/comment_danmaku.db"} />
-                <InfoRow label="热插拔目录" value={hotplugDir} />
-              </div>
-            </div>
-          )}
-          <div className="mt-4 border-t border-line pt-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-                <Users size={18} aria-hidden="true" />
-                UP主分类
-              </h2>
-              <span className="text-xs text-muted">{ownerGroups.length} 位</span>
-            </div>
-            <div className="mt-3 grid gap-2">
-              <OwnerFilterButton
-                active={ownerFilter === "all"}
-                commentCount={totals.comments}
-                danmakuCount={totals.danmaku}
-                name="全部视频"
-                videoCount={videos.length}
-                onClick={() => {
-                  logClientEvent("client.user.videos.owner_filter", "user selected all owners", {
-                    owner: "all",
-                  });
-                  setOwnerFilter("all");
-                }}
-              />
-              <div className="max-h-[360px] overflow-y-auto pr-1">
-                <div className="grid gap-2">
-                  {ownerGroups.map((owner) => (
-                    <OwnerFilterButton
-                      active={ownerFilter === owner.key}
-                      commentCount={owner.commentCount}
-                      danmakuCount={owner.danmakuCount}
-                      exportDisabled={Boolean(exportingKey)}
-                      exporting={exportingKey === `owner:${owner.key}`}
-                      key={owner.key}
-                      name={owner.name}
-                      videoCount={owner.videoCount}
-                      onExport={() => setExportTarget({ kind: "owner", owner })}
-                      onClick={() => {
-                        logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
-                          owner: owner.name,
-                          video_count: owner.videoCount,
-                        });
-                        setOwnerFilter(owner.key);
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </aside>
+        <LibrarySidebar
+          activeDatabase={activeDatabase}
+          duplicateVideo={duplicateVideo}
+          exportingKey={exportingKey}
+          hasSpaceQueueWork={hasSpaceQueueWork}
+          hotplugDir={hotplugDir}
+          isParsing={isParsing}
+          isSubmittingSpace={isSubmittingSpace}
+          isTaskBusy={isTaskBusy}
+          ownerFilter={ownerFilter}
+          ownerGroups={ownerGroups}
+          ownerRef={ownerRef}
+          parseDelay={parseDelay}
+          showSettings={showSettings}
+          totals={totals}
+          url={url}
+          videoCount={videos.length}
+          onDuplicateOpen={openVideo}
+          onDuplicateReparse={() => {
+            if (!duplicateVideo) return;
+            logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
+              bvid: duplicateVideo.bvid,
+            });
+            void runParse(pendingParseTarget);
+          }}
+          onOwnerExport={(owner) => setExportTarget({ kind: "owner", owner })}
+          onOwnerFilterChange={(key, owner) => {
+            logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
+              owner: owner?.name || "all",
+              video_count: owner?.videoCount,
+            });
+            setOwnerFilter(key);
+          }}
+          onOwnerRefChange={setOwnerRef}
+          onParseDelayChange={setParseDelay}
+          onSubmitParse={submitParse}
+          onSubmitSpaceArchive={submitSpaceArchive}
+          onUrlChange={(value) => {
+            setUrl(value);
+            setDuplicateVideo(null);
+            setPendingParseTarget("");
+          }}
+        />
 
-        <section className="flex min-h-[560px] min-w-0 flex-col rounded-md border border-line bg-white shadow-soft">
-          <div className="border-b border-line p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-                <ListTree size={18} aria-hidden="true" />
-                {selectedOwnerName ? `${selectedOwnerName}的视频` : "视频列表"}
-              </h2>
-              <span className="text-sm text-muted">
-                {filteredVideos.length} / {videos.length}
-              </span>
-              <label className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
-                <Search size={16} aria-hidden="true" />
-                <input
-                  className="min-w-0 bg-transparent text-ink outline-none"
-                  placeholder="搜索标题、UP 或 BV"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </label>
-            </div>
-          </div>
-
-          <div className="grid max-h-[70vh] min-h-[420px] content-start gap-3 overflow-y-auto p-4">
-            {isLoading && <div className="p-6 text-center text-sm text-muted">正在载入视频库</div>}
-            {!isLoading &&
-              filteredVideos.map((video) => (
-                <VideoCard
-                  disabled={Boolean(exportingKey)}
-                  dbId={activeDbId}
-                  exporting={exportingKey === `video:${video.bvid}`}
-                  key={video.bvid}
-                  video={video}
-                  onExport={() => setExportTarget({ kind: "video", video })}
-                />
-              ))}
-            {!isLoading && filteredVideos.length === 0 && (
-              <div className="p-6 text-center text-sm text-muted">暂无匹配的视频</div>
-            )}
-          </div>
-        </section>
+        <VideoListPanel
+          activeDbId={activeDbId}
+          exportingKey={exportingKey}
+          isLoading={isLoading}
+          query={query}
+          selectedOwnerName={selectedOwnerName}
+          totalVideoCount={videos.length}
+          videos={filteredVideos}
+          onExport={(video) => setExportTarget({ kind: "video", video })}
+          onQueryChange={setQuery}
+        />
       </section>
       {exportTarget && (
         <ExportChoiceDialog

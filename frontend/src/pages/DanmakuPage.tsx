@@ -42,6 +42,7 @@ import { VirtualList } from "../components/ui/VirtualList";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { csvCell } from "../lib/csv";
 import { cn, formatFullDateTime, formatNumber } from "../lib/utils";
+import { dbPath } from "../lib/videoLibrary";
 import type { DanmakuData } from "../types";
 
 export function DanmakuPage({ bvid }: { bvid?: string }) {
@@ -469,9 +470,4 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
       </section>
     </main>
   );
-}
-
-function dbPath(path: string, dbId: string) {
-  if (!dbId || dbId === "main") return path;
-  return `${path}?db_id=${encodeURIComponent(dbId)}`;
 }

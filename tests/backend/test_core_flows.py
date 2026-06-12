@@ -26,13 +26,14 @@ from database_registry import (  # noqa: E402
     resolve_database_path,
 )
 from errors import BadRequestError  # noqa: E402
+from progress_state import progress_percent, progress_stats  # noqa: E402
 from server import (  # noqa: E402
+    parse_json_object_body,
+)
+from space_archive import (  # noqa: E402
     api_error_response,
     extract_space_mid,
     is_complete,
-    parse_json_object_body,
-    progress_percent,
-    progress_stats,
     should_abort_space_archive,
 )
 from task_queue import InMemoryTaskQueue  # noqa: E402

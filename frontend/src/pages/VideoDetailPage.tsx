@@ -1,4 +1,4 @@
-﻿import {
+import {
   AlertTriangle,
   BarChart3,
   Clock3,
@@ -33,6 +33,7 @@ import { StatTile } from "../components/ui/StatTile";
 import { VirtualList } from "../components/ui/VirtualList";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { csvCell } from "../lib/csv";
+import { dbPath } from "../lib/videoLibrary";
 import {
   cn,
   filterComments,
@@ -585,9 +586,3 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     </main>
   );
 }
-
-function dbPath(path: string, dbId: string) {
-  if (!dbId || dbId === "main") return path;
-  return `${path}?db_id=${encodeURIComponent(dbId)}`;
-}
-
