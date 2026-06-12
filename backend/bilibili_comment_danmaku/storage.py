@@ -321,11 +321,20 @@ def export_archive_to_json(
     for bvid in selected_bvids:
         comments = load_comment_data(source_path, bvid=bvid)
         danmaku = load_danmaku_data(source_path, bvid=bvid, limit=None)
-        videos.append({"bvid": bvid, "comments": comments, "danmaku": danmaku})
+        videos.append(
+            {
+                "bvid": bvid,
+                "metadata": comments.get("metadata") or {},
+                "video_raw": comments.get("video_raw") or {},
+                "comments": comments.get("comments") or [],
+                "comment_items": comments.get("comment_items") or [],
+                "danmaku": danmaku,
+            }
+        )
 
     payload = {
-        "format": "bilibili-comment-danmaku-json-archive",
-        "schema_version": 1,
+        "format": "bilibili-comment-danmaku-json-data",
+        "schema_version": 2,
         "manifest": manifest,
         "videos": videos,
     }
@@ -347,7 +356,10 @@ def import_archive_json_to_sqlite(source_path, target_path):
         payload = json.loads(source_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError("JSON 归档格式不正确") from exc
-    if not isinstance(payload, dict) or payload.get("format") != "bilibili-comment-danmaku-json-archive":
+    if not isinstance(payload, dict) or payload.get("format") not in {
+        "bilibili-comment-danmaku-json-data",
+        "bilibili-comment-danmaku-json-archive",
+    }:
         raise ValueError("不是可导入的 Bilibili JSON 归档")
     videos = payload.get("videos")
     if not isinstance(videos, list) or not videos:
@@ -356,9 +368,19 @@ def import_archive_json_to_sqlite(source_path, target_path):
     remove_sqlite_file_with_sidecars(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     for item in videos:
-        if not isinstance(item, dict) or not isinstance(item.get("comments"), dict):
+        if not isinstance(item, dict):
             raise ValueError("JSON 归档中的视频数据不完整")
-        comments = item["comments"]
+        if isinstance(item.get("comments"), dict):
+            comments = item["comments"]
+        else:
+            comments = {
+                "metadata": item.get("metadata") or {},
+                "video_raw": item.get("video_raw") or {},
+                "comments": item.get("comments") or [],
+                "comment_items": item.get("comment_items") or [],
+            }
+        if not isinstance(comments.get("metadata"), dict) or not isinstance(comments.get("video_raw"), dict):
+            raise ValueError("JSON 归档中的视频数据不完整")
         save_comments_to_sqlite(comments, target_path, replace=True)
         danmaku = item.get("danmaku")
         if isinstance(danmaku, dict):
