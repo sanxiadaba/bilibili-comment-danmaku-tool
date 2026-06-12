@@ -1,0 +1,44 @@
+import { AlertTriangle, CheckCircle2, X, XCircle } from "lucide-react";
+import { cn } from "../../lib/utils";
+import type { NoticeState } from "./types";
+
+export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () => void }) {
+  const Icon = notice.kind === "success" ? CheckCircle2 : notice.kind === "warning" ? AlertTriangle : XCircle;
+  const tone =
+    notice.kind === "success"
+      ? "text-emerald-700 bg-emerald-50 border-emerald-100"
+      : notice.kind === "warning"
+        ? "text-amber-700 bg-amber-50 border-amber-100"
+        : "text-red-700 bg-red-50 border-red-100";
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-md rounded-md border border-line bg-white shadow-xl">
+        <div className={cn("flex items-start gap-3 border-b p-4", tone)}>
+          <Icon className="mt-0.5 shrink-0" size={20} aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <div className="text-base font-semibold text-ink">{notice.title}</div>
+            <div className="mt-1 break-words text-sm leading-6">{notice.message}</div>
+          </div>
+          <button
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/80 text-muted transition hover:text-ink"
+            type="button"
+            aria-label="关闭提示"
+            onClick={onClose}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="flex justify-end p-4">
+          <button
+            className="inline-flex h-10 items-center justify-center rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+            type="button"
+            onClick={onClose}
+          >
+            知道了
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
