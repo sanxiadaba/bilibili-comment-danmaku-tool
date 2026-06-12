@@ -284,7 +284,7 @@ export function VideoLibraryPage() {
         message:
           format === "json"
             ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录；${payload.json_relative_path || "同名 JSON 清单"} 已生成`,
+            : `${payload.relative_path} 已加入热插拔目录`,
       });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
@@ -327,7 +327,7 @@ export function VideoLibraryPage() {
         message:
           format === "json"
             ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录；${payload.json_relative_path || "同名 JSON 清单"} 已生成`,
+            : `${payload.relative_path} 已加入热插拔目录`,
       });
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {

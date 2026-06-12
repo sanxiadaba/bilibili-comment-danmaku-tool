@@ -302,11 +302,8 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(danmaku["metadata"]["total_count"], 1)
             self.assertTrue(export_path.exists())
             manifest_path = export_path.with_suffix(".json")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(result["json_path"], str(manifest_path.resolve()))
-            self.assertTrue(manifest_path.exists())
-            self.assertEqual(manifest["format"], "bilibili-comment-danmaku-archive")
-            self.assertEqual(manifest["archive_kind"], "video")
+            self.assertEqual(result["json_path"], "")
+            self.assertFalse(manifest_path.exists())
             self.assertEqual(result["manifest"]["archive_kind"], "video")
             self.assertEqual(result["manifest"]["bvids"], [BVID])
             self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
@@ -352,6 +349,7 @@ class StorageTests(unittest.TestCase):
             danmaku = load_danmaku_data(imported_db, bvid=BVID)
 
             self.assertTrue(json_path.exists())
+            self.assertFalse(json_path.with_suffix(".db").exists())
             self.assertEqual(payload["format"], "bilibili-comment-danmaku-json-data")
             self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(payload["videos"][0]["metadata"]["bvid"], BVID)
@@ -399,7 +397,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(by_id["db:owner_archive.db"]["ok"])
             self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
 
-    def test_database_catalog_converts_hotplug_json_archive(self):
+    def test_database_catalog_ignores_hotplug_json_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             main_db = root / "comment_danmaku.db"
@@ -412,9 +410,9 @@ class StorageTests(unittest.TestCase):
             by_id = {item["id"]: item for item in catalog}
             converted_db = hotplug_dir / "video_archive.db"
 
-            self.assertTrue(converted_db.exists())
-            self.assertIn("db:video_archive.db", by_id)
-            self.assertEqual(load_comment_data(converted_db, bvid=BVID)["metadata"]["bvid"], BVID)
+            self.assertFalse(converted_db.exists())
+            self.assertNotIn("db:video_archive.db", by_id)
+            self.assertIn("main", by_id)
 
     def test_database_catalog_marks_duplicate_archive(self):
         with tempfile.TemporaryDirectory() as tmp:

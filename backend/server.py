@@ -965,7 +965,6 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
     main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
     database_dir.mkdir(parents=True, exist_ok=True)
-    convert_hotplug_json_archives(database_dir)
     databases = [database_info_for_path(main_db_path, main_db_path, database_dir, db_id="main", role="main")]
     seen = {main_db_path}
 

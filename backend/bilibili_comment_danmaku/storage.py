@@ -267,10 +267,9 @@ def export_archive_to_sqlite(
         target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         target.execute("PRAGMA journal_mode = DELETE")
         target.commit()
-        manifest_path = write_archive_manifest_file(target_path, manifest)
         return {
             "path": str(target_path),
-            "json_path": str(manifest_path.resolve()),
+            "json_path": "",
             "bvids": selected_bvids,
             "counts": counts,
             "manifest": manifest,
