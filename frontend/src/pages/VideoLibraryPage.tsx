@@ -688,7 +688,7 @@ export function VideoLibraryPage() {
   );
 }
 
-function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: ProgressState | null): ProgressQueue {
+export function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: ProgressState | null): ProgressQueue {
   const base: ProgressQueue = {
     active: queue?.active || null,
     queued: queue?.queued || [],
@@ -696,6 +696,7 @@ function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: Prog
   };
   const progressTask = progressToTask(progress);
   if (!progressTask) return base;
+  if (queueHasMatchingTask(base, progressTask)) return base;
 
   if (progressTask.status === "running" || progressTask.status === "waiting") {
     return {
@@ -709,6 +710,16 @@ function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: Prog
     ...base,
     recent: alreadyInRecent ? base.recent : [progressTask, ...base.recent],
   };
+}
+
+function queueHasMatchingTask(queue: ProgressQueue, task: ProgressTask) {
+  return [queue.active, ...queue.queued, ...queue.recent].some((existing) => {
+    if (!existing) return false;
+    if (existing.id === task.id) return true;
+    const existingBvid = existing.bvid || existing.current_bvid;
+    const taskBvid = task.bvid || task.current_bvid;
+    return Boolean(existingBvid && taskBvid && existing.kind === task.kind && existingBvid === taskBvid);
+  });
 }
 
 function progressToTask(progress: ProgressState | null): ProgressTask | null {

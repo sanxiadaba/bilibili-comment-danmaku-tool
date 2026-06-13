@@ -27,6 +27,7 @@ from server import parse_json_object_body  # noqa: E402
 from space_archive import (  # noqa: E402
     api_error_response,
     extract_space_mid,
+    fetch_space_page,
     is_complete,
     should_abort_space_archive,
 )
@@ -364,6 +365,43 @@ class TaskQueueTests(unittest.TestCase):
         finally:
             server.space_archive_service = original_space
             server.video_parse_service = original_video
+
+    def test_space_page_timeout_excludes_backoff_wait(self):
+        import space_archive
+
+        calls = []
+        original_timeout = space_archive.scraper.call_with_hard_timeout
+
+        class FakeBackoff:
+            def wait(self, include_spacing=True, spacing_factor=1.0):
+                calls.append(("wait", include_spacing, spacing_factor))
+                return 12
+
+        class FakeClient:
+            def __init__(self):
+                self.backoff = FakeBackoff()
+
+            def request_json(self, url, **kwargs):
+                calls.append(("request", url, kwargs))
+                return {"code": 0, "data": {"list": {"vlist": []}, "page": {"count": 0}}}
+
+        def fake_hard_timeout(func, timeout_seconds, timeout_message):
+            calls.append(("timeout", timeout_seconds, timeout_message))
+            return func()
+
+        try:
+            space_archive.scraper.call_with_hard_timeout = fake_hard_timeout
+            payload = fetch_space_page(FakeClient(), "https://example.test/list", {"pn": 1}, 1, "434377496")
+        finally:
+            space_archive.scraper.call_with_hard_timeout = original_timeout
+
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(calls[0], ("wait", True, 1.0))
+        self.assertEqual(calls[1][0], "timeout")
+        self.assertEqual(calls[1][1], space_archive.SPACE_PAGE_HARD_TIMEOUT_SECONDS)
+        self.assertEqual(calls[2][0], "request")
+        self.assertFalse(calls[2][2]["wait_for_backoff"])
+        self.assertFalse(calls[2][2]["wait_for_spacing"])
 
     def test_active_task_returning_paused_goes_back_to_queue(self):
         active_started = threading.Event()

@@ -3,6 +3,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 from app_logging import log_event, log_exception
 from bilibili_comment_danmaku import save_comments_to_sqlite, save_danmaku_to_sqlite, scrape_comments, scrape_danmaku
@@ -11,6 +12,12 @@ from bilibili_comment_danmaku.scraper import BilibiliRequestError
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from progress_state import clamp_float, first_int, parse_float, start_progress, update_progress, finish_progress, fail_progress
 from task_queue import InMemoryTaskQueue
+
+
+SPACE_PAGE_SIZE = 20
+SPACE_PAGE_TIMEOUT_SECONDS = 20
+SPACE_PAGE_HARD_TIMEOUT_SECONDS = 35
+SPACE_PAGE_RETRIES = 2
 
 
 def utc_now():
@@ -43,7 +50,7 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
             {
                 "mid": mid,
                 "pn": page,
-                "ps": 30,
+                "ps": SPACE_PAGE_SIZE,
                 "tid": 0,
                 "order": "pubdate",
                 "platform": "web",
@@ -52,11 +59,7 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
             mixin,
         )
         update_progress("space", mid, f"UP视频列表请求 page={page}")
-        payload = scraper.call_with_hard_timeout(
-            lambda: client.request_json(scraper.build_url(endpoint, params), timeout=30),
-            45,
-            f"space_video_list_timeout page={page}",
-        )
+        payload = fetch_space_page(client, endpoint, params, page, mid)
         data = payload.get("data") or {}
         vlist = ((data.get("list") or {}).get("vlist") or [])
         total = (data.get("page") or {}).get("count") or 0
@@ -83,6 +86,36 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
             encoding="utf-8",
         )
     return items
+
+
+def fetch_space_page(client, endpoint, params, page, mid):
+    backoff_wait = client.backoff.wait(include_spacing=True, spacing_factor=1.0)
+    if backoff_wait >= 5:
+        update_progress("space", mid, f"等待 Bilibili 请求冷却 {backoff_wait:.0f}s 后读取 page={page}")
+
+    url = scraper.build_url(endpoint, params)
+    request_url = url
+    for attempt in range(1, SPACE_PAGE_RETRIES + 1):
+        try:
+            return scraper.call_with_hard_timeout(
+                lambda: client.request_json(
+                    request_url,
+                    timeout=SPACE_PAGE_TIMEOUT_SECONDS,
+                    retries=1,
+                    wait_for_backoff=False,
+                    wait_for_spacing=False,
+                    logger=lambda message: update_progress("space", mid, message),
+                ),
+                SPACE_PAGE_HARD_TIMEOUT_SECONDS,
+                f"space_video_list_timeout page={page} attempt={attempt}",
+            )
+        except TimeoutError:
+            if attempt >= SPACE_PAGE_RETRIES:
+                raise
+            cache_buster = urlencode({"_": int(time.time() * 1000), "retry": attempt})
+            request_url = f"{url}&{cache_buster}"
+            update_progress("space", mid, f"UP视频列表 page={page} 超时，重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
+            time.sleep(random.uniform(2.0, 4.0))
 
 
 def db_status(db_path, mid):

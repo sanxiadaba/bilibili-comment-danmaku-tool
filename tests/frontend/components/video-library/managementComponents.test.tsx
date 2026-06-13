@@ -5,8 +5,9 @@ import { ManagementPanel } from "../../../../frontend/src/components/video-libra
 import { OwnerFilterButton } from "../../../../frontend/src/components/video-library/OwnerFilterButton";
 import { ProgressQueuePanel } from "../../../../frontend/src/components/video-library/ProgressQueuePanel";
 import { TaskManagementPanel } from "../../../../frontend/src/components/video-library/TaskManagementPanel";
+import { mergeProgressIntoQueue } from "../../../../frontend/src/pages/VideoLibraryPage";
 import type { OwnerGroup } from "../../../../frontend/src/components/video-library/types";
-import { makeDatabase, makeProgressTask, makeVideo } from "../../helpers/factories";
+import { makeDatabase, makeProgress, makeProgressTask, makeVideo } from "../../helpers/factories";
 
 describe("video library management components", () => {
   it("renders queue progress across active, queued and recent tasks", () => {
@@ -72,6 +73,37 @@ describe("video library management components", () => {
     expect(html).toContain("BV1xx411c7mD");
     expect(html).toContain("暂停");
     expect(html).toContain("停止");
+  });
+
+  it("does not duplicate completed parse progress when queue already has the task", () => {
+    const queue = {
+      active: null,
+      queued: [],
+      recent: [
+        makeProgressTask({
+          id: "parse-1",
+          kind: "parse",
+          bvid: "BV1JogwzEEzD",
+          current_bvid: "BV1JogwzEEzD",
+          status: "finished",
+        }),
+      ],
+    };
+
+    const merged = mergeProgressIntoQueue(
+      queue,
+      makeProgress({
+        active: false,
+        done: true,
+        kind: "parse",
+        bvid: "BV1JogwzEEzD",
+        percent: 100,
+        message: "解析与抓取完成",
+      }),
+    );
+
+    expect(merged.recent).toHaveLength(1);
+    expect(merged.recent[0].id).toBe("parse-1");
   });
 
   it("renders database management cards and import controls", () => {
