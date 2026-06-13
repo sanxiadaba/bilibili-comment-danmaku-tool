@@ -51,7 +51,7 @@ export function TaskManagementPanel({ isControlling, queue, onControl }: TaskMan
 }
 
 function isControllableTaskKind(kind: string) {
-  return kind === "space" || kind === "space_archive" || kind === "parse";
+  return kind === "space" || kind === "space_archive" || kind === "parse" || kind === "delete";
 }
 
 function isTerminalTaskStatus(status: string) {

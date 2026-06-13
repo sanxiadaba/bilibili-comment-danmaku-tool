@@ -132,6 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_mid ON comments (bvid, mid);
 CREATE INDEX IF NOT EXISTS idx_comments_like ON comments (bvid, like_count DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_fetched_at ON videos (fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_owner_mid ON videos (owner_mid, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_comments_mid_global ON comments (mid);
 CREATE INDEX IF NOT EXISTS idx_pictures_rpid ON comment_pictures (rpid);
 CREATE INDEX IF NOT EXISTS idx_emotes_rpid ON comment_emotes (rpid);
 CREATE INDEX IF NOT EXISTS idx_danmaku_bvid ON danmaku (bvid);
@@ -820,7 +821,6 @@ def delete_videos_from_sqlite(db_path, bvids, vacuum=True):
         existing_bvids = [row["bvid"] for row in existing_rows]
         counts_before = count_archive_rows(conn, existing_bvids)
         delete_video_rows(conn, existing_bvids)
-        cleanup_unreferenced_users(conn)
         conn.commit()
         if vacuum:
             conn.execute("VACUUM")
@@ -889,15 +889,34 @@ def vacuum_database(db_path):
 def delete_video_rows(conn, bvids):
     params = list(bvids)
     marks = placeholders(len(params))
+    deleted_user_rows = conn.execute(f"SELECT DISTINCT mid FROM comments WHERE bvid IN ({marks}) AND mid IS NOT NULL AND mid != ''", params).fetchall()
+    deleted_user_mids = [row["mid"] for row in deleted_user_rows]
     conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
     conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
     conn.execute(f"DELETE FROM comments WHERE bvid IN ({marks})", params)
     conn.execute(f"DELETE FROM danmaku WHERE bvid IN ({marks})", params)
     conn.execute(f"DELETE FROM videos WHERE bvid IN ({marks})", params)
+    cleanup_unreferenced_users(conn, deleted_user_mids)
 
 
-def cleanup_unreferenced_users(conn):
-    conn.execute("DELETE FROM users WHERE mid NOT IN (SELECT DISTINCT mid FROM comments WHERE mid IS NOT NULL AND mid != '')")
+def cleanup_unreferenced_users(conn, mids=None):
+    selected_mids = sorted({str(mid).strip() for mid in (mids or []) if str(mid).strip()})
+    if not selected_mids:
+        return
+    marks = placeholders(len(selected_mids))
+    conn.execute(
+        f"""
+        DELETE FROM users
+        WHERE mid IN ({marks})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM comments
+              WHERE comments.mid = users.mid
+              LIMIT 1
+          )
+        """,
+        selected_mids,
+    )
 
 
 def count_archive_rows(conn, bvids):

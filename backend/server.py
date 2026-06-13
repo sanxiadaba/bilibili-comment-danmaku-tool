@@ -5,10 +5,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, shutdown_logging
+from archive_delete_tasks import ArchiveDeleteTaskService
 from auth_store import BilibiliQrLoginService, CookieStore
 from bilibili_comment_danmaku import (
-    delete_owner_from_sqlite,
-    delete_videos_from_sqlite,
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
@@ -71,14 +70,16 @@ auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
 qr_login_service = BilibiliQrLoginService(auth_cookie_store)
 space_archive_service = None
 video_parse_service = None
+archive_delete_service = None
 
 
 def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEFAULT_SPACE_CACHE_DIR, persist=False):
-    global auth_cookie_store, qr_login_service, space_archive_service, video_parse_service
+    global auth_cookie_store, qr_login_service, space_archive_service, video_parse_service, archive_delete_service
     auth_cookie_store = CookieStore(cookie_file)
     qr_login_service = BilibiliQrLoginService(auth_cookie_store)
     space_state_path = space_cache_dir / "space_queue.json" if persist else None
     video_state_path = space_cache_dir / "video_parse_queue.json" if persist else None
+    delete_state_path = space_cache_dir / "archive_delete_queue.json" if persist else None
     space_archive_service = SpaceArchiveService(
         cookie_file,
         space_cache_dir,
@@ -90,15 +91,21 @@ def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEF
         refresh_lock,
         state_path=video_state_path,
     )
+    archive_delete_service = ArchiveDeleteTaskService(
+        refresh_lock,
+        state_path=delete_state_path,
+        vacuum_scheduler=schedule_database_vacuum,
+    )
     set_queue_snapshot_provider(combined_queue_snapshot)
 
 
 def combined_queue_snapshot():
-    if not space_archive_service or not video_parse_service:
+    if not space_archive_service or not video_parse_service or not archive_delete_service:
         return {"active": None, "queued": [], "recent": []}
     space = space_archive_service.snapshot()
     video = video_parse_service.snapshot()
-    active_candidates = [task for task in [space.get("active"), video.get("active")] if task]
+    delete = archive_delete_service.snapshot()
+    active_candidates = [task for task in [space.get("active"), video.get("active"), delete.get("active")] if task]
     running = next((task for task in active_candidates if task.get("status") == "running"), None)
     active = running or (active_candidates[0] if active_candidates else None)
     queued = []
@@ -106,9 +113,9 @@ def combined_queue_snapshot():
         if active and task.get("id") == active.get("id"):
             continue
         queued.append({**task, "queue_position": len(queued) + 1})
-    queued.extend([*(space.get("queued") or []), *(video.get("queued") or [])])
+    queued.extend([*(space.get("queued") or []), *(video.get("queued") or []), *(delete.get("queued") or [])])
     queued = [{**task, "queue_position": index + 1} for index, task in enumerate(queued)]
-    recent = [*(space.get("recent") or []), *(video.get("recent") or [])]
+    recent = [*(space.get("recent") or []), *(video.get("recent") or []), *(delete.get("recent") or [])]
     recent.sort(key=lambda task: task.get("updated_at", ""), reverse=True)
     return {"active": active, "queued": queued, "recent": recent[:10]}
 
@@ -642,13 +649,20 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
             elif task_id and task_id.startswith("space-"):
                 payload = space_archive_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
+            elif task_id and task_id.startswith("delete-"):
+                payload = archive_delete_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
             else:
                 space_payload = space_archive_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
                 video_payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
+                delete_payload = archive_delete_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
                 payload = {
                     "ok": True,
                     "action": action,
-                    "changed": [*(space_payload.get("changed") or []), *(video_payload.get("changed") or [])],
+                    "changed": [
+                        *(space_payload.get("changed") or []),
+                        *(video_payload.get("changed") or []),
+                        *(delete_payload.get("changed") or []),
+                    ],
                     "queue": combined_queue_snapshot(),
                 }
         except ValueError as exc:
@@ -755,7 +769,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             }
         )
 
-    def handle_archive_delete_api(self):
+    def _handle_archive_delete_api_sync_legacy_unused(self):
+        raise NotImplementedError("archive deletion now runs through ArchiveDeleteTaskService")
         if not refresh_lock.acquire(blocking=False):
             log_event(
                 "api.archive_delete.rejected",
@@ -838,6 +853,74 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
                 **result,
             }
+        )
+
+    def handle_archive_delete_api(self):
+        try:
+            body = self.read_json_body()
+            db_path = self.resolve_db_path_from_body(body)
+            bvid = (body.get("bvid") or "").strip()
+            owner_mid = (body.get("owner_mid") or "").strip()
+            raw_bvids = body.get("bvids")
+            if isinstance(raw_bvids, list):
+                bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
+            else:
+                bvids = []
+            if bvid:
+                bvids = [bvid]
+            if owner_mid and bvids:
+                self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
+                return
+            if not owner_mid and not bvids:
+                self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
+                return
+            task = archive_delete_service.enqueue(
+                db_path=db_path,
+                owner_mid=owner_mid,
+                bvids=bvids,
+                request_id=getattr(self, "request_id", ""),
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.archive_delete.queue_error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+            )
+            self.send_json({"error": str(exc)}, status=500)
+            return
+
+        log_event(
+            "task.archive_delete.queued",
+            "archive delete task queued",
+            request_id=getattr(self, "request_id", ""),
+            db=str(db_path),
+            owner_mid=owner_mid,
+            bvid=bvid,
+            bvid_count=len(bvids),
+            task_id=task["id"],
+            queue_position=task["queue_position"],
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
+                "task_id": task["id"],
+                "queue_position": task["queue_position"],
+                "message": "删除任务已加入队列",
+                "deleted_bvids": bvids,
+                "deleted_videos": len(bvids),
+                "missing_bvids": [],
+                "videos": [],
+                "counts": {},
+                "size_before": 0,
+                "size_after": 0,
+                "bytes_reclaimed": 0,
+                "vacuum_deferred": True,
+            },
+            status=202,
         )
 
     def handle_database_import_api(self):
@@ -1212,6 +1295,7 @@ def main():
     configure_task_services(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, persist=True)
     space_archive_service.start_pending_tasks()
     video_parse_service.start_pending_tasks()
+    archive_delete_service.start_pending_tasks()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     log_event(
         "service.start",

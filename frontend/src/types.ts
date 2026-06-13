@@ -303,6 +303,9 @@ export type DatabaseExportResponse = {
 export type ArchiveDeleteResponse = {
   ok: boolean;
   database?: DatabaseInfo;
+  task_id?: string;
+  queue_position?: number;
+  message?: string;
   deleted_bvids: string[];
   deleted_videos: number;
   missing_bvids?: string[];

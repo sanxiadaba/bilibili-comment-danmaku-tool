@@ -400,6 +400,56 @@ export function VideoLibraryPage() {
     }
   }
 
+  async function queueArchiveDeleteTarget() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    const key = target.kind === "owner" ? `owner:${target.owner.key}` : `video:${target.video.bvid}`;
+    const removedBvids = target.kind === "owner" ? new Set(target.owner.bvids) : new Set([target.video.bvid]);
+    setDeletingKey(key);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await deleteArchiveData(
+        target.kind === "owner"
+          ? { db_id: activeDbId, owner_mid: target.owner.ownerMid }
+          : { db_id: activeDbId, bvid: target.video.bvid },
+      );
+      setDeleteTarget(null);
+      setOwnerFilter("all");
+      setLibraryView("tasks");
+      setManagementView("queue");
+      setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
+      setVideoTotal((current) => Math.max(0, current - removedBvids.size));
+      setMessage(payload.message || `删除任务已加入队列：${payload.task_id || "等待执行"}`);
+      setNotice({
+        kind: "success",
+        title: "删除任务已提交",
+        message: "本地档案会在后台删除，任务列表会显示进度；完成后数据库空间也会在后台整理。",
+      });
+      window.setTimeout(() => {
+        void loadVideos({ quiet: true });
+        void loadDatabases({ quiet: true, selectId: activeDbId });
+      }, 3000);
+      logClientEvent("client.user.archive_delete.success", "archive delete task queued", {
+        db_id: activeDbId,
+        target: target.kind,
+        task_id: payload.task_id,
+        queue_position: payload.queue_position,
+        queued_videos: removedBvids.size,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setNotice({ kind: "error", title: "删除失败", message: text });
+      logClientEvent("client.user.archive_delete.error", text, {
+        db_id: activeDbId,
+        target: target.kind,
+      });
+    } finally {
+      setDeletingKey("");
+    }
+  }
+
   async function runParse(target: string) {
     const targetBvid = extractBvid(target);
     logClientEvent("client.user.parse.start", "user started video parse", {
@@ -828,7 +878,7 @@ export function VideoLibraryPage() {
           disabled={Boolean(deletingKey)}
           target={deleteTarget}
           onClose={() => setDeleteTarget(null)}
-          onConfirm={() => void deleteArchiveTarget()}
+          onConfirm={() => void queueArchiveDeleteTarget()}
         />
       )}
       {notice && <NoticeDialog notice={notice} onClose={() => setNotice(null)} />}

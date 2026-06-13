@@ -13,6 +13,7 @@ from pathlib import Path
 
 from helpers import BVID, make_archive, make_comment
 
+from archive_delete_tasks import ArchiveDeleteTaskService  # noqa: E402
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
@@ -270,6 +271,27 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(set(result["deleted_bvids"]), {BVID, "BV2222222222"})
             self.assertEqual([video["bvid"] for video in page["videos"]], ["BV3333333333"])
 
+    def test_archive_delete_task_deletes_in_background(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), db_path, replace=True)
+            scheduled = []
+            service = ArchiveDeleteTaskService(threading.Lock(), vacuum_scheduler=lambda path, request_id="": scheduled.append((Path(path), request_id)))
+
+            task = service.enqueue(db_path, bvids=[BVID], request_id="req-1")
+            self.assertTrue(task["id"].startswith("delete-"))
+            self.assertEqual(task["queue_position"], 1)
+            self.assertTrue(service.queue.wait_until_idle(timeout=2))
+
+            snapshot = service.snapshot()
+            self.assertIsNone(snapshot["active"])
+            self.assertEqual(snapshot["recent"][0]["status"], "finished")
+            self.assertEqual(snapshot["recent"][0]["complete"], 1)
+            self.assertEqual(scheduled, [(db_path, "req-1")])
+            with self.assertRaises(LookupError):
+                load_comment_data(db_path, bvid=BVID)
+
     def test_vacuum_database_reports_reclaimed_space(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"
@@ -525,4 +547,3 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual(files[0]["filename"], "archive.db")
         self.assertEqual(files[0]["content"], content)
-

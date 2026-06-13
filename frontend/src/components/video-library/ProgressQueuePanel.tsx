@@ -192,6 +192,7 @@ function TaskButton({
 
 function taskTitle(task: ProgressTask) {
   const bvid = task.bvid || task.current_bvid;
+  if (task.kind === "delete") return task.owner_ref || (bvid ? `删除 ${bvid}` : "删除本地档案");
   if (task.kind === "parse") return bvid ? `视频 ${bvid}` : "视频抓取";
   if (task.mid) return `UP ${task.mid}`;
   return task.owner_ref || task.id;
@@ -209,7 +210,7 @@ function taskStatusLabel(task: ProgressTask) {
 }
 
 function isControllableTaskKind(kind: string) {
-  return kind === "space" || kind === "space_archive" || kind === "parse";
+  return kind === "space" || kind === "space_archive" || kind === "parse" || kind === "delete";
 }
 
 function isTerminalTaskStatus(status: string) {
