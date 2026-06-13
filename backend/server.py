@@ -125,6 +125,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             if parsed.path == "/api/space/archive":
                 self.handle_space_archive_api()
                 return
+            if parsed.path == "/api/space/tasks/control":
+                self.handle_space_task_control_api()
+                return
             if parsed.path == "/api/danmaku/refresh":
                 self.handle_danmaku_refresh_api(parsed)
                 return
@@ -318,6 +321,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         if path == "/api/v1/control/space/archive":
             self.handle_space_archive_api()
             return
+        if path == "/api/v1/control/space/tasks/control":
+            self.handle_space_task_control_api()
+            return
         if path == "/api/v1/control/archive/export":
             self.handle_database_export_api()
             return
@@ -340,6 +346,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             return
         if action == "space.archive":
             self.run_with_json_body(params, self.handle_space_archive_api)
+            return
+        if action == "space.tasks.control":
+            self.run_with_json_body(params, self.handle_space_task_control_api)
             return
         if action == "archive.export":
             self.run_with_json_body(params, self.handle_database_export_api)
@@ -546,6 +555,25 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             },
             status=202,
         )
+
+    def handle_space_task_control_api(self):
+        body = self.read_json_body()
+        action = str(body.get("action") or "").strip().lower()
+        task_id = str(body.get("task_id") or "").strip() or None
+        try:
+            payload = space_archive_service.control_tasks(action, task_id=task_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        log_event(
+            "task.space_archive.control",
+            "space archive task control requested",
+            request_id=getattr(self, "request_id", ""),
+            action=action,
+            task_id=task_id or "",
+            changed_count=len(payload.get("changed") or []),
+        )
+        self.send_json(payload)
 
     def handle_database_export_api(self):
         body = self.read_json_body()

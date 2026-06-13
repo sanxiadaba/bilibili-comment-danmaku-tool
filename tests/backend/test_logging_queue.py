@@ -254,5 +254,95 @@ class TaskQueueTests(unittest.TestCase):
             self.assertEqual(persisted["queued"], [])
             self.assertEqual([task["mid"] for task in persisted["history"]], ["2", "1"])
 
+    def test_queue_can_pause_resume_and_stop_queued_tasks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            events = []
+            release = threading.Event()
+
+            def runner(task):
+                events.append(task["mid"])
+                release.wait(1)
+                queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+            queue = InMemoryTaskQueue("space", runner, state_path=state_path)
+            first = queue.enqueue({"mid": "1", "owner_ref": "1"})
+            second = queue.enqueue({"mid": "2", "owner_ref": "2"})
+            paused = queue.control("pause", task_id=second["id"])
+            self.assertEqual(paused["queue"]["queued"][0]["status"], "paused")
+
+            resumed = queue.control("resume", task_id=second["id"])
+            self.assertEqual(resumed["queue"]["queued"][0]["status"], "queued")
+            self.assertFalse(resumed["queue"]["queued"][0]["pause_requested"])
+
+            stopped = queue.control("stop", task_id=second["id"])
+            self.assertEqual(stopped["queue"]["queued"], [])
+            self.assertEqual(stopped["changed"][0]["status"], "stopped")
+            self.assertEqual(queue.snapshot()["recent"][0]["status"], "stopped")
+
+            release.set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if len(queue.snapshot()["recent"]) == 2:
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(events, ["1"])
+
+    def test_queue_pause_and_stop_active_are_visible_to_runner(self):
+        active_started = threading.Event()
+        release_active = threading.Event()
+        observed = []
+
+        def runner(task):
+            active_started.set()
+            release_active.wait(1)
+            observed.append((task.get("pause_requested"), task.get("stop_requested")))
+            queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+        queue = InMemoryTaskQueue("space", runner)
+        first = queue.enqueue({"mid": "1", "owner_ref": "1"})
+        self.assertTrue(active_started.wait(1))
+        pause_result = queue.control("pause", task_id=first["id"])
+        stop_result = queue.control("stop", task_id=first["id"])
+        self.assertTrue(pause_result["changed"][0]["pause_requested"])
+        self.assertTrue(stop_result["changed"][0]["stop_requested"])
+        release_active.set()
+
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if observed:
+                break
+            time.sleep(0.01)
+        self.assertEqual(observed, [(True, True)])
+
+    def test_active_task_returning_paused_goes_back_to_queue(self):
+        active_started = threading.Event()
+        release_active = threading.Event()
+
+        def runner(task):
+            active_started.set()
+            release_active.wait(1)
+            queue.update(task, status="paused", message="paused", progress=25)
+
+        queue = InMemoryTaskQueue("space", runner)
+        first = queue.enqueue({"mid": "1", "owner_ref": "1"})
+        self.assertTrue(active_started.wait(1))
+        queue.control("pause", task_id=first["id"])
+        release_active.set()
+
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            snapshot = queue.snapshot()
+            if snapshot["queued"] and snapshot["queued"][0]["status"] == "paused":
+                break
+            time.sleep(0.01)
+
+        snapshot = queue.snapshot()
+        self.assertIsNone(snapshot["active"])
+        self.assertEqual(snapshot["queued"][0]["id"], first["id"])
+        self.assertEqual(snapshot["queued"][0]["status"], "paused")
+        self.assertEqual(snapshot["recent"], [])
+
 
 

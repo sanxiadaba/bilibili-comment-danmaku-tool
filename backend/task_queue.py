@@ -61,6 +61,56 @@ class InMemoryTaskQueue:
                 self.start_worker_locked()
                 self.condition.notify_all()
 
+    def control(self, action, task_id=None):
+        action = (action or "").strip().lower()
+        if action not in {"pause", "resume", "stop"}:
+            raise ValueError("unsupported task control action")
+        with self.condition:
+            changed = []
+            if action == "pause":
+                if self.active and self.matches_task(self.active, task_id):
+                    self.active["pause_requested"] = True
+                    changed.append(self.public_task(self.active))
+                for task in self.queued:
+                    if self.matches_task(task, task_id):
+                        task["status"] = "paused"
+                        task["message"] = "paused"
+                        changed.append(self.public_task(task))
+            elif action == "resume":
+                for task in self.queued:
+                    if self.matches_task(task, task_id) and task.get("status") == "paused":
+                        task["status"] = "queued"
+                        task["message"] = "queued"
+                        task["pause_requested"] = False
+                        task["stop_requested"] = False
+                        changed.append(self.public_task(task))
+                if self.active and self.matches_task(self.active, task_id):
+                    self.active["pause_requested"] = False
+                    self.active["stop_requested"] = False
+                    changed.append(self.public_task(self.active))
+                if any(task.get("status") == "queued" for task in self.queued):
+                    self.start_worker_locked()
+            elif action == "stop":
+                if self.active and self.matches_task(self.active, task_id):
+                    self.active["stop_requested"] = True
+                    changed.append(self.public_task(self.active))
+                kept = []
+                for task in self.queued:
+                    if self.matches_task(task, task_id):
+                        self.update_locked(task, status="stopped", message="stopped", finished_at=utc_now(), stop_requested=True)
+                        self.history.insert(0, self.public_task(task))
+                        changed.append(self.public_task(task))
+                    else:
+                        kept.append(task)
+                self.queued = kept
+                del self.history[self.history_limit :]
+            self.persist_locked()
+            self.condition.notify_all()
+            return {"ok": True, "action": action, "changed": changed, "queue": self.snapshot_unlocked()}
+
+    def matches_task(self, task, task_id):
+        return not task_id or task.get("id") == task_id
+
     def start_worker_locked(self):
         if not self.worker_running:
             self.worker_running = True
@@ -73,7 +123,12 @@ class InMemoryTaskQueue:
                     self.worker_running = False
                     self.persist_locked()
                     return
-                task = self.queued.pop(0)
+                next_index = next((index for index, item in enumerate(self.queued) if item.get("status") != "paused"), None)
+                if next_index is None:
+                    self.worker_running = False
+                    self.persist_locked()
+                    return
+                task = self.queued.pop(next_index)
                 self.active = task
                 self.update_locked(task, status="waiting", message="waiting for active task")
                 self.persist_locked()
@@ -89,6 +144,12 @@ class InMemoryTaskQueue:
                 )
 
             with self.condition:
+                if task.get("status") == "paused":
+                    self.active = None
+                    self.queued.insert(0, task)
+                    self.persist_locked()
+                    self.condition.notify_all()
+                    continue
                 if not task.get("finished_at"):
                     self.update_locked(
                         task,
@@ -114,12 +175,15 @@ class InMemoryTaskQueue:
 
     def snapshot(self):
         with self.condition:
-            queued = [self.public_task(task, index + 1) for index, task in enumerate(self.queued)]
-            return {
-                "active": self.public_task(self.active) if self.active else None,
-                "queued": queued,
-                "recent": list(self.history),
-            }
+            return self.snapshot_unlocked()
+
+    def snapshot_unlocked(self):
+        queued = [self.public_task(task, index + 1) for index, task in enumerate(self.queued)]
+        return {
+            "active": self.public_task(self.active) if self.active else None,
+            "queued": queued,
+            "recent": list(self.history),
+        }
 
     def public_task(self, task, queue_position=None):
         payload = {
@@ -140,6 +204,8 @@ class InMemoryTaskQueue:
             "archived": task.get("archived", 0),
             "skipped": task.get("skipped", 0),
             "failed": task.get("failed", 0),
+            "pause_requested": bool(task.get("pause_requested")),
+            "stop_requested": bool(task.get("stop_requested")),
         }
         if queue_position is not None:
             payload["queue_position"] = queue_position

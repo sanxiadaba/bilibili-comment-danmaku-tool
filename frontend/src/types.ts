@@ -312,6 +312,8 @@ export type ProgressTask = {
   skipped: number;
   failed: number;
   queue_position?: number;
+  pause_requested?: boolean;
+  stop_requested?: boolean;
 };
 
 export type ProgressQueue = {

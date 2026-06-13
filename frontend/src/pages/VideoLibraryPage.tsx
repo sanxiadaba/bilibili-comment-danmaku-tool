@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
   archiveSpaceVideos,
+  controlSpaceTasks,
   exportDatabaseArchive,
   fetchDatabases,
   fetchVideos,
@@ -15,9 +16,11 @@ import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDial
 import { LibraryHeader } from "../components/video-library/LibraryHeader";
 import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
 import { LibraryStats } from "../components/video-library/LibraryStats";
+import { LibraryTabs } from "../components/video-library/LibraryTabs";
 import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
-import type { ExportFormat, ExportTarget, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
+import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
+import type { ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
@@ -39,6 +42,8 @@ export function VideoLibraryPage() {
   const [importPath, setImportPath] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [managementView, setManagementView] = useState<ManagementView>("queue");
+  const [libraryView, setLibraryView] = useState<LibraryView>("videos");
+  const [isControllingTask, setIsControllingTask] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState("all");
@@ -384,6 +389,7 @@ export function VideoLibraryPage() {
         dbId: activeDbId,
       });
       setOwnerRef(payload.mid);
+      setLibraryView("tasks");
       setMessage(`已加入抓取队列：${payload.mid}，排队第 ${payload.queue_position} 个`);
       logClientEvent("client.user.space_archive.accepted", "space archive task accepted", {
         db_id: activeDbId,
@@ -400,6 +406,26 @@ export function VideoLibraryPage() {
       setMessage("");
     } finally {
       setIsSubmittingSpace(false);
+    }
+  }
+
+  async function controlTasks(action: "pause" | "resume" | "stop", taskId?: string) {
+    setIsControllingTask(true);
+    setError("");
+    try {
+      await controlSpaceTasks(action, taskId);
+      const actionLabel = action === "pause" ? "暂停" : action === "resume" ? "继续" : "停止";
+      setMessage(taskId ? `任务已请求${actionLabel}` : `全部任务已请求${actionLabel}`);
+      logClientEvent("client.user.space_task.control", "space task control requested", {
+        action,
+        task_id: taskId,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      logClientEvent("client.user.space_task.control_error", text, { action, task_id: taskId });
+    } finally {
+      setIsControllingTask(false);
     }
   }
 
@@ -553,83 +579,100 @@ export function VideoLibraryPage() {
 
       <LibraryStats totals={totals} videoCount={videos.length} />
 
-      <DatabaseManagementSection
-        activeDbId={activeDbId}
-        databases={databases}
-        fileInputRef={fileInputRef}
-        folderInputRef={folderInputRef}
-        hotplugDir={hotplugDir}
-        importPath={importPath}
-        isImporting={isImporting}
-        isLoading={isLoadingDatabases}
-        legacyExportDir={legacyExportDir}
-        queue={spaceQueue}
-        view={managementView}
-        onFilesSelected={(files, source) => void importSelectedFiles(files, source)}
-        onImportPathChange={setImportPath}
-        onRefresh={() => void refreshDatabaseCatalog()}
-        onSelect={setActiveDatabase}
-        onSubmitImport={submitDatabaseImport}
-        onViewChange={setManagementView}
+      <LibraryTabs
+        active={libraryView}
+        databaseCount={databases.length}
+        hasTaskWork={hasSpaceQueueWork}
+        queuedCount={spaceQueue?.queued?.length || 0}
+        videoCount={videos.length}
+        onChange={setLibraryView}
       />
 
-      <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
-        <LibrarySidebar
-          activeDatabase={activeDatabase}
-          duplicateVideo={duplicateVideo}
-          exportingKey={exportingKey}
-          hasSpaceQueueWork={hasSpaceQueueWork}
-          hotplugDir={hotplugDir}
-          isParsing={isParsing}
-          isSubmittingSpace={isSubmittingSpace}
-          isTaskBusy={isTaskBusy}
-          ownerFilter={ownerFilter}
-          ownerGroups={ownerGroups}
-          ownerRef={ownerRef}
-          parseDelay={parseDelay}
-          showSettings={showSettings}
-          totals={totals}
-          url={url}
-          videoCount={videos.length}
-          onDuplicateOpen={openVideo}
-          onDuplicateReparse={() => {
-            if (!duplicateVideo) return;
-            logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
-              bvid: duplicateVideo.bvid,
-            });
-            void runParse(pendingParseTarget);
-          }}
-          onOwnerExport={(owner) => setExportTarget({ kind: "owner", owner })}
-          onOwnerFilterChange={(key, owner) => {
-            logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
-              owner: owner?.name || "all",
-              video_count: owner?.videoCount,
-            });
-            setOwnerFilter(key);
-          }}
-          onOwnerRefChange={setOwnerRef}
-          onParseDelayChange={setParseDelay}
-          onSubmitParse={submitParse}
-          onSubmitSpaceArchive={submitSpaceArchive}
-          onUrlChange={(value) => {
-            setUrl(value);
-            setDuplicateVideo(null);
-            setPendingParseTarget("");
-          }}
-        />
+      {libraryView === "videos" && (
+        <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
+          <LibrarySidebar
+            activeDatabase={activeDatabase}
+            duplicateVideo={duplicateVideo}
+            exportingKey={exportingKey}
+            hasSpaceQueueWork={hasSpaceQueueWork}
+            hotplugDir={hotplugDir}
+            isParsing={isParsing}
+            isSubmittingSpace={isSubmittingSpace}
+            isTaskBusy={isTaskBusy}
+            ownerFilter={ownerFilter}
+            ownerGroups={ownerGroups}
+            ownerRef={ownerRef}
+            parseDelay={parseDelay}
+            showSettings={showSettings}
+            totals={totals}
+            url={url}
+            videoCount={videos.length}
+            onDuplicateOpen={openVideo}
+            onDuplicateReparse={() => {
+              if (!duplicateVideo) return;
+              logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
+                bvid: duplicateVideo.bvid,
+              });
+              void runParse(pendingParseTarget);
+            }}
+            onOwnerExport={(owner) => setExportTarget({ kind: "owner", owner })}
+            onOwnerFilterChange={(key, owner) => {
+              logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
+                owner: owner?.name || "all",
+                video_count: owner?.videoCount,
+              });
+              setOwnerFilter(key);
+            }}
+            onOwnerRefChange={setOwnerRef}
+            onParseDelayChange={setParseDelay}
+            onSubmitParse={submitParse}
+            onSubmitSpaceArchive={submitSpaceArchive}
+            onUrlChange={(value) => {
+              setUrl(value);
+              setDuplicateVideo(null);
+              setPendingParseTarget("");
+            }}
+          />
 
-        <VideoListPanel
+          <VideoListPanel
+            activeDbId={activeDbId}
+            exportingKey={exportingKey}
+            isLoading={isLoading}
+            query={query}
+            selectedOwnerName={selectedOwnerName}
+            totalVideoCount={videos.length}
+            videos={filteredVideos}
+            onExport={(video) => setExportTarget({ kind: "video", video })}
+            onQueryChange={setQuery}
+          />
+        </section>
+      )}
+
+      {libraryView === "tasks" && (
+        <TaskManagementPanel isControlling={isControllingTask} queue={spaceQueue} onControl={(action, taskId) => void controlTasks(action, taskId)} />
+      )}
+
+      {libraryView === "databases" && (
+        <DatabaseManagementSection
           activeDbId={activeDbId}
-          exportingKey={exportingKey}
-          isLoading={isLoading}
-          query={query}
-          selectedOwnerName={selectedOwnerName}
-          totalVideoCount={videos.length}
-          videos={filteredVideos}
-          onExport={(video) => setExportTarget({ kind: "video", video })}
-          onQueryChange={setQuery}
+          databases={databases}
+          fileInputRef={fileInputRef}
+          folderInputRef={folderInputRef}
+          hotplugDir={hotplugDir}
+          importPath={importPath}
+          isImporting={isImporting}
+          isLoading={isLoadingDatabases}
+          legacyExportDir={legacyExportDir}
+          queue={spaceQueue}
+          view="database"
+          onFilesSelected={(files, source) => void importSelectedFiles(files, source)}
+          onImportPathChange={setImportPath}
+          onRefresh={() => void refreshDatabaseCatalog()}
+          onSelect={setActiveDatabase}
+          onSubmitImport={submitDatabaseImport}
+          onViewChange={setManagementView}
         />
-      </section>
+      )}
       {exportTarget && (
         <ExportChoiceDialog
           target={exportTarget}

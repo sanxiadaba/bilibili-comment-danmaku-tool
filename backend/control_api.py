@@ -80,6 +80,21 @@ CONTROL_ACTIONS = {
         },
         "example": {"owner_ref": "https://space.bilibili.com/123456", "db_id": "main", "delay": 1.0},
     },
+    "space.tasks.control": {
+        "method": "POST",
+        "endpoint": f"{CONTROL_NAMESPACE}/space/tasks/control",
+        "description": "Pause, resume or stop queued UP-owner archive tasks. Omitting task_id applies to all current queue work.",
+        "async": False,
+        "schema": {
+            "type": "object",
+            "required": ["action"],
+            "properties": {
+                "action": {"type": "string", "enum": ["pause", "resume", "stop"]},
+                "task_id": {"type": "string", "description": "Optional task id from /api/v1/control/progress."},
+            },
+        },
+        "example": {"action": "pause"},
+    },
     "archive.export": {
         "method": "POST",
         "endpoint": f"{CONTROL_NAMESPACE}/archive/export",

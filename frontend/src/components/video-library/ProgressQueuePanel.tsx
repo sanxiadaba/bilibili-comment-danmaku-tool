@@ -1,8 +1,16 @@
-import { RefreshCcw } from "lucide-react";
+import { Pause, Play, RefreshCcw, Square } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { ProgressQueue, ProgressTask } from "../../types";
 
-export function ProgressQueuePanel({ embedded = false, queue }: { embedded?: boolean; queue?: ProgressQueue }) {
+type ProgressQueuePanelProps = {
+  embedded?: boolean;
+  isControlling?: boolean;
+  queue?: ProgressQueue;
+  onControl?: (action: "pause" | "resume" | "stop", taskId?: string) => void;
+};
+
+export function ProgressQueuePanel({ embedded = false, isControlling = false, queue, onControl }: ProgressQueuePanelProps) {
   const queued = queue?.queued || [];
   const recent = queue?.recent || [];
   const active = queue?.active || null;
@@ -21,7 +29,7 @@ export function ProgressQueuePanel({ embedded = false, queue }: { embedded?: boo
       )}
       <div className="grid gap-3 p-4">
         {active ? (
-          <QueueTaskRow task={active} tone="active" />
+          <QueueTaskRow isControlling={isControlling} onControl={onControl} task={active} tone="active" />
         ) : (
           <div className="rounded-md border border-dashed border-line bg-[#fbfcfe] px-3 py-3 text-sm text-muted">
             暂无正在运行的抓取任务
@@ -30,7 +38,7 @@ export function ProgressQueuePanel({ embedded = false, queue }: { embedded?: boo
         {queued.length > 0 && (
           <div className="grid gap-2">
             {queued.map((task) => (
-              <QueueTaskRow key={task.id} task={task} tone="queued" />
+              <QueueTaskRow isControlling={isControlling} key={task.id} onControl={onControl} task={task} tone="queued" />
             ))}
           </div>
         )}
@@ -54,10 +62,22 @@ export function ProgressQueuePanel({ embedded = false, queue }: { embedded?: boo
   return <section className="rounded-md border border-line bg-white shadow-soft">{content}</section>;
 }
 
-function QueueTaskRow({ task, tone }: { task: ProgressTask; tone: "active" | "queued" | "recent" }) {
+function QueueTaskRow({
+  isControlling = false,
+  onControl,
+  task,
+  tone,
+}: {
+  isControlling?: boolean;
+  onControl?: (action: "pause" | "resume" | "stop", taskId?: string) => void;
+  task: ProgressTask;
+  tone: "active" | "queued" | "recent";
+}) {
   const percent = Math.max(0, Math.min(100, Math.round(task.progress || 0)));
   const status = taskStatusLabel(task);
   const title = task.mid ? `UP ${task.mid}` : task.owner_ref || task.id;
+  const canControl = Boolean(onControl) && tone !== "recent";
+  const isPaused = task.status === "paused";
   return (
     <div
       className={cn(
@@ -87,6 +107,16 @@ function QueueTaskRow({ task, tone }: { task: ProgressTask; tone: "active" | "qu
           </div>
         </div>
       </div>
+      {canControl && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {isPaused ? (
+            <TaskButton disabled={isControlling} icon={Play} label="继续" onClick={() => onControl?.("resume", task.id)} />
+          ) : (
+            <TaskButton disabled={isControlling || task.pause_requested} icon={Pause} label={task.pause_requested ? "等待暂停" : "暂停"} onClick={() => onControl?.("pause", task.id)} />
+          )}
+          <TaskButton disabled={isControlling || task.stop_requested} icon={Square} label={task.stop_requested ? "等待停止" : "停止"} onClick={() => onControl?.("stop", task.id)} />
+        </div>
+      )}
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
         <div className="h-full rounded-full bg-bilibili transition-all duration-300" style={{ width: `${percent}%` }} />
       </div>
@@ -94,10 +124,36 @@ function QueueTaskRow({ task, tone }: { task: ProgressTask; tone: "active" | "qu
   );
 }
 
+function TaskButton({
+  disabled,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  disabled?: boolean;
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line bg-white px-2.5 text-xs font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+      disabled={disabled}
+      type="button"
+      onClick={onClick}
+    >
+      <Icon size={14} aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
 function taskStatusLabel(task: ProgressTask) {
   if (task.status === "running") return "运行中";
   if (task.status === "waiting") return "等待当前任务";
   if (task.status === "queued") return "排队中";
+  if (task.status === "paused") return "已暂停";
+  if (task.status === "stopped") return "已停止";
   if (task.status === "finished") return "已完成";
   if (task.status === "failed") return "失败";
   return task.status || "未知";

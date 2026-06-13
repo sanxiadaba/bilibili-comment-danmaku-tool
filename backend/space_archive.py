@@ -177,6 +177,9 @@ class SpaceArchiveService:
     def start_pending_tasks(self):
         self.queue.start_pending_worker()
 
+    def control_tasks(self, action, task_id=None):
+        return self.queue.control(action, task_id=task_id)
+
     def update_task(self, task, **fields):
         self.queue.update(task, **fields)
 
@@ -230,6 +233,34 @@ class SpaceArchiveService:
             status = db_status(db_path, mid)
             complete = sum(1 for video in items if is_complete(video, status))
             for index, item in enumerate(items, start=1):
+                if task.get("stop_requested"):
+                    self.update_task(
+                        task,
+                        status="stopped",
+                        message="已停止",
+                        finished_at=utc_now(),
+                        total=total,
+                        complete=complete,
+                        archived=archived,
+                        skipped=skipped,
+                        failed=failed,
+                    )
+                    finish_progress("space", mid, f"UP 主归档已停止：{complete}/{total}")
+                    return
+                if task.get("pause_requested"):
+                    self.update_task(
+                        task,
+                        status="paused",
+                        message="已暂停，可继续",
+                        finished_at="",
+                        total=total,
+                        complete=complete,
+                        archived=archived,
+                        skipped=skipped,
+                        failed=failed,
+                    )
+                    update_progress("space", current_bvid or mid, f"UP视频归档已暂停 complete={complete} total={total}")
+                    return
                 current_bvid = item.get("bvid") or ""
                 if is_complete(item, status):
                     skipped += 1

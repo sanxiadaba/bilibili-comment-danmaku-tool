@@ -113,6 +113,20 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
   );
 }
 
+export async function controlSpaceTasks(action: "pause" | "resume" | "stop", taskId?: string) {
+  return requestJson<{ ok: boolean; action: string; queue: ProgressState["queue"] }>(
+    "space.control",
+    `/api/space/tasks/control?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, task_id: taskId }),
+    },
+    { action, task_id: taskId },
+  );
+}
+
 export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string; db_id?: string; format?: "sqlite" | "json" }) {
   return requestJson<DatabaseExportResponse>(
     "database.export",

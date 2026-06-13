@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   archiveSpaceVideos,
+  controlSpaceTasks,
   exportDatabaseArchive,
   fetchCommentData,
   fetchDanmakuData,
@@ -56,6 +57,7 @@ describe("API client", () => {
 
     await parseVideo("BV1xx411c7mD", 0.5, "main");
     await archiveSpaceVideos("https://space.bilibili.com/123456", { delay: 1, dbId: "main" });
+    await controlSpaceTasks("pause", "space-1");
     await importDatabase("D:/archive.json");
     await exportDatabaseArchive({ format: "json", bvid: "BV1xx411c7mD", db_id: "main" });
 
@@ -69,8 +71,9 @@ describe("API client", () => {
       delay: 1,
       db_id: "main",
     });
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ path: "D:/archive.json" });
-    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toMatchObject({
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ action: "pause", task_id: "space-1" });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({ path: "D:/archive.json" });
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body as string)).toMatchObject({
       format: "json",
       bvid: "BV1xx411c7mD",
     });

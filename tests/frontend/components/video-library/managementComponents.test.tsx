@@ -4,6 +4,7 @@ import { ExportChoiceDialog } from "../../../../frontend/src/components/video-li
 import { ManagementPanel } from "../../../../frontend/src/components/video-library/ManagementPanel";
 import { OwnerFilterButton } from "../../../../frontend/src/components/video-library/OwnerFilterButton";
 import { ProgressQueuePanel } from "../../../../frontend/src/components/video-library/ProgressQueuePanel";
+import { TaskManagementPanel } from "../../../../frontend/src/components/video-library/TaskManagementPanel";
 import type { OwnerGroup } from "../../../../frontend/src/components/video-library/types";
 import { makeDatabase, makeProgressTask, makeVideo } from "../../helpers/factories";
 
@@ -23,6 +24,26 @@ describe("video library management components", () => {
     expect(html).toContain("active task");
     expect(html).toContain("queued task");
     expect(html).toContain("done task");
+    expect(html).toContain("抓取队列");
+  });
+
+  it("renders task controls for active and paused queue work", () => {
+    const html = renderToStaticMarkup(
+      <TaskManagementPanel
+        isControlling={false}
+        queue={{
+          active: makeProgressTask({ id: "task-1", status: "running", pause_requested: true }),
+          queued: [makeProgressTask({ id: "task-2", status: "paused", message: "paused task" })],
+          recent: [],
+        }}
+        onControl={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("全部暂停");
+    expect(html).toContain("继续");
+    expect(html).toContain("等待暂停");
+    expect(html).toContain("paused task");
   });
 
   it("renders database management cards and import controls", () => {

@@ -58,6 +58,8 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(payload["actions"]["archive.export"]["endpoint"], "/api/v1/control/archive/export")
         self.assertEqual(payload["actions"]["archive.export"]["schema"]["properties"]["format"]["enum"], ["sqlite", "json"])
         self.assertIn("format", payload["actions"]["archive.export"]["params"])
+        self.assertEqual(payload["actions"]["space.tasks.control"]["endpoint"], "/api/v1/control/space/tasks/control")
+        self.assertIn("action", payload["actions"]["space.tasks.control"]["params"])
 
     def test_control_openapi_document_includes_action_schemas(self):
         payload = control_openapi_document()
@@ -66,6 +68,8 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(payload["openapi"], "3.1.0")
         self.assertIn("/api/v1/control/actions", payload["paths"])
         self.assertEqual(export_schema["properties"]["format"]["enum"], ["sqlite", "json"])
+        task_control_schema = payload["paths"]["/api/v1/control/space/tasks/control"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertEqual(task_control_schema["properties"]["action"]["enum"], ["pause", "resume", "stop"])
 
     def test_control_action_payload_normalizes_params(self):
         action, params = normalize_control_action_payload(
@@ -75,6 +79,10 @@ class RequestParsingTests(unittest.TestCase):
         self.assertEqual(action, "archive.export")
         self.assertEqual(params["format"], "json")
         self.assertEqual(params["bvid"], BVID)
+
+        action, params = normalize_control_action_payload({"action": "space.tasks.control", "params": {"action": "pause"}})
+        self.assertEqual(action, "space.tasks.control")
+        self.assertEqual(params["action"], "pause")
 
     def test_control_action_payload_rejects_unknown_action(self):
         with self.assertRaises(LookupError):
