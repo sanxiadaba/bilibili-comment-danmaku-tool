@@ -19,6 +19,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
+from control_api import control_capabilities, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
     list_database_catalog,
@@ -1657,6 +1658,28 @@ class TaskQueueTests(unittest.TestCase):
 
 
 class RequestParsingTests(unittest.TestCase):
+    def test_control_capabilities_describe_machine_callable_actions(self):
+        payload = control_capabilities()
+
+        self.assertEqual(payload["version"], "v1")
+        self.assertEqual(payload["namespace"], "/api/v1/control")
+        self.assertEqual(payload["actions"]["videos.parse"]["endpoint"], "/api/v1/control/videos/parse")
+        self.assertEqual(payload["actions"]["archive.export"]["endpoint"], "/api/v1/control/archive/export")
+        self.assertIn("format=sqlite|json", payload["actions"]["archive.export"]["params"])
+
+    def test_control_action_payload_normalizes_params(self):
+        action, params = normalize_control_action_payload(
+            {"action": "archive.export", "params": {"format": "json", "bvid": BVID}}
+        )
+
+        self.assertEqual(action, "archive.export")
+        self.assertEqual(params["format"], "json")
+        self.assertEqual(params["bvid"], BVID)
+
+    def test_control_action_payload_rejects_unknown_action(self):
+        with self.assertRaises(LookupError):
+            normalize_control_action_payload({"action": "unknown.action", "params": {}})
+
     def test_parse_json_object_body_accepts_empty_or_object(self):
         self.assertEqual(parse_json_object_body(b""), {})
         self.assertEqual(parse_json_object_body(b"  "), {})

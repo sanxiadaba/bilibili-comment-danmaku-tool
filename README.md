@@ -82,6 +82,66 @@ pnpm server
 http://127.0.0.1:8000/
 ```
 
+## 外部控制 API
+
+本服务也可以被其它本地程序或接口直接调用。第三方集成建议使用稳定命名空间：
+
+```text
+http://127.0.0.1:8000/api/v1/control
+```
+
+能力发现：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/control
+```
+
+统一动作入口：
+
+```text
+POST /api/v1/control/actions
+```
+
+请求体格式：
+
+```json
+{
+  "action": "archive.export",
+  "params": {
+    "format": "json",
+    "bvid": "BV1xx411c7mD",
+    "db_id": "main"
+  }
+}
+```
+
+常用动作：
+
+- `videos.parse`：抓取单个视频评论和弹幕。
+- `comments.refresh`：刷新指定视频评论。
+- `danmaku.refresh`：刷新指定视频弹幕。
+- `space.archive`：把 UP 主全部视频归档任务加入队列。
+- `archive.export`：导出视频、视频集合或 UP 主归档。
+- `databases.import`：从本机路径导入 SQLite 数据库或 JSON 归档。
+
+也可以直接调用 REST 风格端点：
+
+```text
+POST /api/v1/control/videos/parse
+POST /api/v1/control/comments/refresh
+POST /api/v1/control/danmaku/refresh
+POST /api/v1/control/space/archive
+POST /api/v1/control/archive/export
+POST /api/v1/control/databases/import
+GET  /api/v1/control/status
+GET  /api/v1/control/progress
+GET  /api/v1/control/videos?db_id=main
+GET  /api/v1/control/comments?bvid=BV...&db_id=main
+GET  /api/v1/control/danmaku?bvid=BV...&db_id=main
+```
+
+导出格式是互斥的：`format=json` 只生成 JSON 文件，`format=sqlite` 只生成 SQLite 数据库文件。长耗时抓取任务可通过 `/api/v1/control/progress` 或 `/api/v1/control/status` 查询实时进度和队列状态。
+
 ## 开发模式
 
 启动后端服务：
