@@ -45,6 +45,8 @@ import { cn, formatFullDateTime, formatNumber } from "../lib/utils";
 import { dbPath } from "../lib/videoLibrary";
 import type { DanmakuData } from "../types";
 
+const INITIAL_DANMAKU_LIMIT = 2000;
+
 export function DanmakuPage({ bvid }: { bvid?: string }) {
   const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
   const [danmaku, setDanmaku] = useState<DanmakuData | null>(null);
@@ -57,6 +59,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoadingAll, setIsLoadingAll] = useState(false);
   const deferredQuery = useDeferredValue(query);
   const danmakuProgress = useProgressPolling(isRefreshing, "danmaku");
 
@@ -68,11 +71,11 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
     });
   }, []);
 
-  const loadDanmaku = useCallback(async () => {
+  const loadDanmaku = useCallback(async (options: { all?: boolean } = {}) => {
     setIsLoading(true);
     setError("");
     try {
-      const payload = await fetchDanmakuData(bvid, dbId);
+      const payload = await fetchDanmakuData(bvid, dbId, { limit: options.all ? null : INITIAL_DANMAKU_LIMIT });
       applyDanmakuPayload(payload);
       setMessage("");
     } catch (reason: unknown) {
@@ -218,7 +221,23 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   }
 
   const totalCount = danmaku?.metadata.total_count ?? 0;
+  const loadedCount = danmaku?.items.length ?? 0;
+  const hasPartialDanmaku = Boolean(danmaku && loadedCount < totalCount);
   const fetchedAt = danmaku?.metadata.fetched_at ? formatFullDateTime(danmaku.metadata.fetched_at) : "-";
+
+  async function loadAllDanmaku() {
+    setIsLoadingAll(true);
+    setError("");
+    try {
+      const payload = await fetchDanmakuData(danmaku?.metadata.bvid || bvid, dbId, { limit: null });
+      applyDanmakuPayload(payload);
+      setMessage(`已加载全部弹幕：${payload.metadata.total_count} 条`);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIsLoadingAll(false);
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -274,6 +293,17 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               <RefreshCcw className={cn(isRefreshing && "animate-spin")} size={16} aria-hidden="true" />
               {isRefreshing ? "抓取中" : "刷新弹幕"}
             </button>
+            {hasPartialDanmaku && (
+              <button
+                className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
+                type="button"
+                onClick={() => void loadAllDanmaku()}
+                disabled={isLoadingAll}
+              >
+                <ListTree className={cn(isLoadingAll && "animate-pulse")} size={16} aria-hidden="true" />
+                {isLoadingAll ? "加载中" : `加载全部 ${formatNumber(totalCount)}`}
+              </button>
+            )}
             <a
               className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={`https://www.bilibili.com/video/${danmaku?.metadata.bvid || bvid || ""}`}

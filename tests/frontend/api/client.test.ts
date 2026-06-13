@@ -6,6 +6,7 @@ import {
   createAuthQrCode,
   deleteArchiveData,
   exportDatabaseArchive,
+  fetchDatabases,
   fetchCommentData,
   fetchDanmakuData,
   fetchProgress,
@@ -59,6 +60,25 @@ describe("API client", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("offset=80");
   });
 
+  it("can skip heavy video metadata on append requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [] }));
+    globalThis.fetch = fetchMock;
+
+    await fetchVideos("main", { includeMeta: false, limit: 40, offset: 40 });
+
+    expect(fetchMock.mock.calls[0][0]).toContain("include_meta=0");
+  });
+
+  it("can skip heavy database catalog details", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ databases: [] }));
+    globalThis.fetch = fetchMock;
+
+    await fetchDatabases("main", { includeDetails: false });
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/databases?");
+    expect(fetchMock.mock.calls[0][0]).toContain("include_details=0");
+  });
+
   it("sends parse, space archive, import and export payloads", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true, videos: [], bvid: "BV1xx411c7mD" })));
     globalThis.fetch = fetchMock;
@@ -102,7 +122,7 @@ describe("API client", () => {
 
     await fetchCommentData("BV1xx411c7mD", "archive");
     await refreshCommentData("BV1xx411c7mD", "archive");
-    await fetchDanmakuData("BV1xx411c7mD", "archive");
+    await fetchDanmakuData("BV1xx411c7mD", "archive", { limit: 2000 });
     await refreshDanmakuData("BV1xx411c7mD", "archive");
 
     expect(fetchMock.mock.calls[0][0]).toContain("/api/comments?");
@@ -111,6 +131,7 @@ describe("API client", () => {
     expect(fetchMock.mock.calls[1][0]).toContain("/api/refresh?");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[2][0]).toContain("/api/danmaku?");
+    expect(fetchMock.mock.calls[2][0]).toContain("limit=2000");
     expect(fetchMock.mock.calls[3][0]).toContain("/api/danmaku/refresh?");
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
   });

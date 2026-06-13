@@ -89,13 +89,13 @@ export function VideoLibraryPage() {
   );
 
   const loadDatabases = useCallback(
-    async (options?: { quiet?: boolean; selectId?: string }) => {
+    async (options?: { includeDetails?: boolean; quiet?: boolean; selectId?: string }) => {
       const selectedId = options?.selectId || activeDbId;
       if (!options?.quiet) {
         setIsLoadingDatabases(true);
       }
       try {
-        const payload = await fetchDatabases(selectedId);
+        const payload = await fetchDatabases(selectedId, { includeDetails: options?.includeDetails ?? false });
         setDatabases(payload.databases);
         setHotplugDir(payload.hotplug_dir);
         setLegacyExportDir(payload.legacy_export_dir);
@@ -114,16 +114,22 @@ export function VideoLibraryPage() {
     [activeDbId],
   );
 
-  const loadVideos = useCallback(async (options?: { append?: boolean; offset?: number; quiet?: boolean }) => {
+  const loadVideos = useCallback(async (options?: { append?: boolean; includeMeta?: boolean; offset?: number; quiet?: boolean }) => {
     if (!options?.quiet) {
       setIsLoading(true);
     }
     setError("");
     try {
       const offset = options?.offset || 0;
-      const payload = await fetchVideos(activeDbId, { limit: VIDEO_PAGE_SIZE, offset });
+      const payload = await fetchVideos(activeDbId, {
+        includeMeta: options?.includeMeta ?? !options?.append,
+        limit: VIDEO_PAGE_SIZE,
+        offset,
+      });
       setVideos((current) => (options?.append ? mergeVideosByBvid(current, payload.videos) : payload.videos));
-      setOwnerSummaries(payload.owners || []);
+      if (payload.owners) {
+        setOwnerSummaries(payload.owners);
+      }
       setVideoTotal(payload.total ?? payload.videos.length);
       setHasMoreVideos(Boolean(payload.has_more));
     } catch (reason: unknown) {
@@ -154,23 +160,36 @@ export function VideoLibraryPage() {
     if (!isArchivingSpace || hasSpaceQueueWork) return;
     setIsArchivingSpace(false);
     void loadVideos();
-    void loadDatabases({ quiet: true });
-  }, [hasSpaceQueueWork, isArchivingSpace, loadDatabases, loadVideos]);
+  }, [hasSpaceQueueWork, isArchivingSpace, loadVideos]);
 
   useEffect(() => {
     if (!hasSpaceQueueWork) return;
     setManagementView("queue");
     const timer = window.setInterval(() => {
-      void loadVideos({ quiet: true });
-      void loadDatabases({ quiet: true });
+      void loadVideos({ includeMeta: false, quiet: true });
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [hasSpaceQueueWork, loadDatabases, loadVideos]);
+  }, [hasSpaceQueueWork, loadVideos]);
+
+  useEffect(() => {
+    if (libraryView !== "databases") return;
+    void loadDatabases({ includeDetails: true, quiet: true });
+  }, [libraryView, loadDatabases]);
 
   const ownerGroups = useMemo(() => {
     if (ownerSummaries.length) {
+      const bvidsByOwner = new Map<string, string[]>();
+      for (const video of videos) {
+        const key = ownerKey(video);
+        const bvids = bvidsByOwner.get(key);
+        if (bvids) {
+          bvids.push(video.bvid);
+        } else {
+          bvidsByOwner.set(key, [video.bvid]);
+        }
+      }
       return ownerSummaries.map((owner) => ({
-        bvids: owner.owner_mid ? [] : videos.filter((video) => ownerKey(video) === owner.key).map((video) => video.bvid),
+        bvids: owner.owner_mid ? [] : bvidsByOwner.get(owner.key) || [],
         key: owner.key,
         name: owner.name,
         ownerMid: owner.owner_mid,
@@ -690,7 +709,7 @@ export function VideoLibraryPage() {
       db_id: activeDbId,
     });
     setError("");
-    await loadDatabases({ selectId: activeDbId });
+    await loadDatabases({ includeDetails: true, selectId: activeDbId });
     await loadVideos({ quiet: true });
   }
 

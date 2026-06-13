@@ -145,16 +145,30 @@ CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_ctime ON danmaku (bvid, ctime, dmid)
 """
 
 
-def connect(db_path):
-    conn = sqlite3.connect(db_path)
+SQLITE_CACHE_SIZE_KB = 64 * 1024
+SQLITE_MMAP_SIZE_BYTES = 256 * 1024 * 1024
+
+
+def connect(db_path, readonly=False):
+    if readonly:
+        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    else:
+        conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute(f"PRAGMA cache_size = {-SQLITE_CACHE_SIZE_KB}")
+    conn.execute(f"PRAGMA mmap_size = {SQLITE_MMAP_SIZE_BYTES}")
     conn.execute("PRAGMA wal_autocheckpoint = 512")
     conn.execute(f"PRAGMA journal_size_limit = {DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES}")
     return conn
+
+
+def connect_readonly(db_path):
+    return connect(db_path, readonly=True)
 
 
 def prepare_database_path(db_path):
@@ -740,13 +754,11 @@ def load_comment_data(db_path, bvid=None):
         conn.close()
 
 
-def list_video_summaries_page(db_path, limit=40, offset=0):
+def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True):
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
-    conn = connect(db_path)
+    conn = connect_readonly(db_path)
     try:
-        ensure_schema(conn)
-        conn.commit()
         total = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
         rows = conn.execute(
             """
@@ -796,14 +808,16 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
             (limit, offset),
         ).fetchall()
         videos = [video_summary_from_row(row) for row in rows]
-        return {
+        payload = {
             "videos": videos,
-            "owners": list_owner_summaries(conn),
             "total": total,
             "limit": limit,
             "offset": offset,
             "has_more": offset + len(videos) < total,
         }
+        if include_owners:
+            payload["owners"] = list_owner_summaries(conn)
+        return payload
     finally:
         conn.close()
 
@@ -833,25 +847,13 @@ def list_owner_summaries(conn):
                     WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
-                COUNT(c.rpid) AS comment_count,
-                COUNT(DISTINCT NULLIF(c.mid, '')) AS user_count,
-                SUM(LENGTH(COALESCE(c.message, ''))) AS comment_text_bytes
+                SUM(c.comment_count) AS comment_count
             FROM videos v
-            LEFT JOIN comments c ON c.bvid = v.bvid
-            GROUP BY owner_key
-        ),
-        comment_asset_stats AS (
-            SELECT
-                CASE
-                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
-                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
-                END AS owner_key,
-                COUNT(DISTINCT p.id) AS picture_count,
-                COUNT(DISTINCT e.id) AS emote_count
-            FROM videos v
-            LEFT JOIN comments c ON c.bvid = v.bvid
-            LEFT JOIN comment_pictures p ON p.rpid = c.rpid
-            LEFT JOIN comment_emotes e ON e.rpid = c.rpid
+            JOIN (
+                SELECT bvid, COUNT(*) AS comment_count
+                FROM comments
+                GROUP BY bvid
+            ) c ON c.bvid = v.bvid
             GROUP BY owner_key
         ),
         danmaku_stats AS (
@@ -860,10 +862,13 @@ def list_owner_summaries(conn):
                     WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
-                COUNT(d.dmid) AS danmaku_count,
-                SUM(LENGTH(COALESCE(d.content, ''))) AS danmaku_text_bytes
+                SUM(d.danmaku_count) AS danmaku_count
             FROM videos v
-            LEFT JOIN danmaku d ON d.bvid = v.bvid
+            JOIN (
+                SELECT bvid, COUNT(*) AS danmaku_count
+                FROM danmaku
+                GROUP BY bvid
+            ) d ON d.bvid = v.bvid
             GROUP BY owner_key
         ),
         weighted AS (
@@ -878,15 +883,9 @@ def list_owner_summaries(conn):
                     owner_videos.video_count * 4096
                     + COALESCE(comment_stats.comment_count, 0) * 900
                     + COALESCE(danmaku_stats.danmaku_count, 0) * 260
-                    + COALESCE(comment_asset_stats.picture_count, 0) * 240
-                    + COALESCE(comment_asset_stats.emote_count, 0) * 180
-                    + COALESCE(comment_stats.user_count, 0) * 420
-                    + COALESCE(comment_stats.comment_text_bytes, 0) * 2
-                    + COALESCE(danmaku_stats.danmaku_text_bytes, 0) * 2
                 ) AS storage_weight
             FROM owner_videos
             LEFT JOIN comment_stats ON comment_stats.owner_key = owner_videos.owner_key
-            LEFT JOIN comment_asset_stats ON comment_asset_stats.owner_key = owner_videos.owner_key
             LEFT JOIN danmaku_stats ON danmaku_stats.owner_key = owner_videos.owner_key
         )
         SELECT

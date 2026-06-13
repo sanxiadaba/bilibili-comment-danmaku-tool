@@ -193,6 +193,10 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(page["videos"][0]["comment_total_count"], 2)
             self.assertEqual(page["videos"][0]["danmaku_count"], 2)
 
+            fast_page = list_video_summaries_page(db_path, limit=1, offset=1, include_owners=False)
+            self.assertNotIn("owners", fast_page)
+            self.assertEqual([video["bvid"] for video in fast_page["videos"]], ["BV2222222222"])
+
     def test_video_page_owner_summaries_use_full_database_not_current_page(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"
@@ -557,6 +561,23 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(main["top_owners"][0]["owner_mid"], "42")
             self.assertEqual(main["top_owners"][0]["video_count"], 1)
             self.assertEqual(main["top_owners"][0]["comment_count"], 2)
+
+    def test_database_catalog_can_skip_expensive_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            top = make_comment("1", 1, "top comment", mid="100", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+
+            catalog = list_database_catalog(main_db, hotplug_dir, include_details=False)
+            main = {item["id"]: item for item in catalog}["main"]
+
+            self.assertTrue(main["ok"])
+            self.assertEqual(main["video_count"], 1)
+            self.assertEqual(main["comment_count"], 1)
+            self.assertEqual(main["top_owners"], [])
+            self.assertEqual(main["coverage_status"], "unique")
 
     def test_database_catalog_ignores_hotplug_json_archive(self):
         with tempfile.TemporaryDirectory() as tmp:

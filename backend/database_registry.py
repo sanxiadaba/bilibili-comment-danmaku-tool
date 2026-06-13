@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bilibili_comment_danmaku.archive import import_archive_json_to_sqlite, read_archive_meta
-from bilibili_comment_danmaku.storage import connect, ensure_schema
+from bilibili_comment_danmaku.storage import connect, connect_readonly, ensure_schema
 from errors import BadRequestError
 
 
@@ -38,11 +38,20 @@ def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     return candidate
 
 
-def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
+def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, include_details=True):
     main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
     database_dir.mkdir(parents=True, exist_ok=True)
-    databases = [database_info_for_path(main_db_path, main_db_path, database_dir, db_id="main", role="main")]
+    databases = [
+        database_info_for_path(
+            main_db_path,
+            main_db_path,
+            database_dir,
+            db_id="main",
+            role="main",
+            include_details=include_details,
+        )
+    ]
     seen = {main_db_path}
 
     for base_dir, prefix, role in ((database_dir, "db", "hotplug"), (LEGACY_EXPORT_DIR, "legacy", "legacy_export")):
@@ -63,13 +72,15 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
                     database_dir,
                     db_id=f"{prefix}:{path.name}",
                     role=role,
+                    include_details=include_details,
                 )
             )
-    annotate_database_coverage(databases)
+    if include_details:
+        annotate_database_coverage(databases)
     return [public_database_info(database) for database in databases]
 
 
-def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, db_id=None, role=None):
+def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, db_id=None, role=None, include_details=True):
     path = Path(path).resolve()
     main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
@@ -125,31 +136,15 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
         info["error"] = "文件不存在"
         return info
     try:
-        conn = connect(path)
+        conn = connect(path) if include_details else connect_readonly(path)
         try:
-            ensure_schema(conn)
-            conn.commit()
+            if include_details:
+                ensure_schema(conn)
+                conn.commit()
             archive_meta = read_archive_meta(conn)
             storage = database_storage_info(conn, path)
-            row = conn.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM videos) AS video_count,
-                    (SELECT COUNT(*) FROM comments) AS comment_count,
-                    (SELECT COUNT(*) FROM danmaku) AS danmaku_count,
-                    (SELECT COUNT(DISTINCT owner_mid) FROM videos WHERE owner_mid IS NOT NULL AND owner_mid <> '') AS owner_count
-                """
-            ).fetchone()
-            bvid_rows = conn.execute(
-                """
-                SELECT bvid, title, owner_mid, owner_name, fetched_at,
-                       (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
-                       (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
-                FROM videos
-                ORDER BY fetched_at DESC, bvid
-                LIMIT 2000
-                """
-            ).fetchall()
+            row = database_counts(conn)
+            bvid_rows = list_database_bvid_stats(conn) if include_details else list_database_bvid_stats_light(conn)
             bvid_stats = [
                 {
                     "bvid": item["bvid"],
@@ -162,7 +157,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
                 }
                 for item in bvid_rows
             ]
-            top_owners = list_database_top_owners(conn)
+            top_owners = list_database_top_owners(conn) if include_details else []
             archive_kind = archive_kind_from_meta_or_stats(archive_meta, bvid_stats, info["role"])
             info.update(
                 {
@@ -186,6 +181,44 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     except Exception as exc:
         info["error"] = str(exc)
     return info
+
+
+def database_counts(conn):
+    return conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM videos) AS video_count,
+            (SELECT COUNT(*) FROM comments) AS comment_count,
+            (SELECT COUNT(*) FROM danmaku) AS danmaku_count,
+            (SELECT COUNT(DISTINCT owner_mid) FROM videos WHERE owner_mid IS NOT NULL AND owner_mid <> '') AS owner_count
+        """
+    ).fetchone()
+
+
+def list_database_bvid_stats(conn):
+    return conn.execute(
+        """
+        SELECT bvid, title, owner_mid, owner_name, fetched_at,
+               (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
+               (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
+        FROM videos
+        ORDER BY fetched_at DESC, bvid
+        LIMIT 2000
+        """
+    ).fetchall()
+
+
+def list_database_bvid_stats_light(conn):
+    return conn.execute(
+        """
+        SELECT bvid, title, owner_mid, owner_name, fetched_at,
+               0 AS comment_count,
+               0 AS danmaku_count
+        FROM videos
+        ORDER BY fetched_at DESC, bvid
+        LIMIT 50
+        """
+    ).fetchall()
 
 
 def database_storage_info(conn, path):
