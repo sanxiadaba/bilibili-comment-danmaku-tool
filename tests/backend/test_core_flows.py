@@ -19,7 +19,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from control_api import control_capabilities, normalize_control_action_payload  # noqa: E402
+from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
     list_database_catalog,
@@ -1663,9 +1663,19 @@ class RequestParsingTests(unittest.TestCase):
 
         self.assertEqual(payload["version"], "v1")
         self.assertEqual(payload["namespace"], "/api/v1/control")
+        self.assertEqual(payload["openapi_endpoint"], "/api/v1/control/openapi.json")
         self.assertEqual(payload["actions"]["videos.parse"]["endpoint"], "/api/v1/control/videos/parse")
         self.assertEqual(payload["actions"]["archive.export"]["endpoint"], "/api/v1/control/archive/export")
-        self.assertIn("format=sqlite|json", payload["actions"]["archive.export"]["params"])
+        self.assertEqual(payload["actions"]["archive.export"]["schema"]["properties"]["format"]["enum"], ["sqlite", "json"])
+        self.assertIn("format", payload["actions"]["archive.export"]["params"])
+
+    def test_control_openapi_document_includes_action_schemas(self):
+        payload = control_openapi_document()
+        export_schema = payload["paths"]["/api/v1/control/archive/export"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+
+        self.assertEqual(payload["openapi"], "3.1.0")
+        self.assertIn("/api/v1/control/actions", payload["paths"])
+        self.assertEqual(export_schema["properties"]["format"]["enum"], ["sqlite", "json"])
 
     def test_control_action_payload_normalizes_params(self):
         action, params = normalize_control_action_payload(

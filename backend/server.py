@@ -37,7 +37,7 @@ from database_registry import (
     relative_to_root,
     resolve_database_path,
 )
-from control_api import control_capabilities, normalize_control_action_payload
+from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload
 from errors import BadRequestError
 from progress_state import (
     fail_progress,
@@ -265,6 +265,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
         if path in {"", "/api/v1/control"}:
             self.send_json(control_capabilities())
+            return
+        if path == "/api/v1/control/openapi.json":
+            self.send_json(control_openapi_document())
             return
         if path in {"/api/v1/control/status", "/api/v1/control/progress"}:
             payload = get_progress_snapshot()
