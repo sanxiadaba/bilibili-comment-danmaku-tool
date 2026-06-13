@@ -96,6 +96,12 @@ http://127.0.0.1:8000/api/v1/control
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/control
 ```
 
+OpenAPI 契约：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/control/openapi.json
+```
+
 统一动作入口：
 
 ```text
@@ -123,6 +129,8 @@ POST /api/v1/control/actions
 - `space.archive`：把 UP 主全部视频归档任务加入队列。
 - `archive.export`：导出视频、视频集合或 UP 主归档。
 - `databases.import`：从本机路径导入 SQLite 数据库或 JSON 归档。
+
+`/api/v1/control` 返回的每个 action 都包含 `schema`、`example`、`endpoint` 和是否异步执行的 `async` 标记，外部系统可以用这些信息生成表单、校验参数或映射自己的接口。
 
 也可以直接调用 REST 风格端点：
 
