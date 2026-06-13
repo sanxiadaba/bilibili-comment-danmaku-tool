@@ -47,6 +47,7 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     list_video_summaries_page,
     save_comments_to_sqlite,
     save_danmaku_to_sqlite,
+    vacuum_database,
 )
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 class StorageTests(unittest.TestCase):
@@ -231,10 +232,11 @@ class StorageTests(unittest.TestCase):
                 replace=True,
             )
 
-            result = delete_videos_from_sqlite(db_path, [BVID])
+            result = delete_videos_from_sqlite(db_path, [BVID], vacuum=False)
             page = list_video_summaries_page(db_path, limit=10)
 
             self.assertEqual(result["deleted_videos"], 1)
+            self.assertTrue(result["vacuum_deferred"])
             self.assertEqual(result["deleted_bvids"], [BVID])
             self.assertEqual(result["counts"]["comments"], 1)
             self.assertEqual(result["counts"]["comment_pictures"], 1)
@@ -261,12 +263,23 @@ class StorageTests(unittest.TestCase):
             other["video_raw"] = {**other["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
             save_comments_to_sqlite(other, db_path, replace=True)
 
-            result = delete_owner_from_sqlite(db_path, "42")
+            result = delete_owner_from_sqlite(db_path, "42", vacuum=False)
             page = list_video_summaries_page(db_path, limit=10)
 
             self.assertEqual(result["deleted_videos"], 2)
             self.assertEqual(set(result["deleted_bvids"]), {BVID, "BV2222222222"})
             self.assertEqual([video["bvid"] for video in page["videos"]], ["BV3333333333"])
+
+    def test_vacuum_database_reports_reclaimed_space(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+
+            result = vacuum_database(db_path)
+
+            self.assertIn("size_before", result)
+            self.assertIn("size_after", result)
+            self.assertGreaterEqual(result["bytes_reclaimed"], 0)
 
     def test_export_archive_to_sqlite_creates_independent_subset_database(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -512,5 +525,4 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual(files[0]["filename"], "archive.db")
         self.assertEqual(files[0]["content"], content)
-
 

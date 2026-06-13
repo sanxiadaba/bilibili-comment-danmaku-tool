@@ -834,6 +834,7 @@ def delete_videos_from_sqlite(db_path, bvids, vacuum=True):
             "size_before": size_before,
             "size_after": size_after,
             "bytes_reclaimed": max(0, size_before - size_after),
+            "vacuum_deferred": not vacuum,
         }
     except Exception:
         conn.rollback()
@@ -865,6 +866,24 @@ def delete_owner_from_sqlite(db_path, owner_mid, vacuum=True):
     if not rows:
         raise LookupError("没有找到这个 UP 主的本地视频")
     return delete_videos_from_sqlite(db_path, [row["bvid"] for row in rows], vacuum=vacuum)
+
+
+def vacuum_database(db_path):
+    db_path = Path(db_path)
+    size_before = db_path.stat().st_size if db_path.exists() else 0
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    size_after = db_path.stat().st_size if db_path.exists() else 0
+    return {
+        "size_before": size_before,
+        "size_after": size_after,
+        "bytes_reclaimed": max(0, size_before - size_after),
+    }
 
 
 def delete_video_rows(conn, bvids):

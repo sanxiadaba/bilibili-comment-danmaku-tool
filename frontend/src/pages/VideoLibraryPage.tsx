@@ -364,14 +364,20 @@ export function VideoLibraryPage() {
       setDeleteTarget(null);
       setOwnerFilter("all");
       setMessage(
-        `已删除 ${payload.deleted_videos} 个视频，评论 ${payload.counts.comments || 0} 条，弹幕 ${
-          payload.counts.danmaku || 0
-        } 条，释放 ${formatBytes(payload.bytes_reclaimed || 0)}`,
+        payload.vacuum_deferred
+          ? `已删除 ${payload.deleted_videos} 个视频，评论 ${payload.counts.comments || 0} 条，弹幕 ${
+              payload.counts.danmaku || 0
+            } 条；数据库空间正在后台回收`
+          : `已删除 ${payload.deleted_videos} 个视频，评论 ${payload.counts.comments || 0} 条，弹幕 ${
+              payload.counts.danmaku || 0
+            } 条，释放 ${formatBytes(payload.bytes_reclaimed || 0)}`,
       );
       setNotice({
         kind: "success",
         title: "本地档案已删除",
-        message: `已从当前数据库删除 ${payload.deleted_videos} 个视频；数据库空间已执行回收。`,
+        message: payload.vacuum_deferred
+          ? `已从当前数据库删除 ${payload.deleted_videos} 个视频；空间回收已转入后台，不影响继续操作。`
+          : `已从当前数据库删除 ${payload.deleted_videos} 个视频；数据库空间已执行回收。`,
       });
       await loadVideos({ quiet: true });
       await loadDatabases({ quiet: true, selectId: activeDbId });

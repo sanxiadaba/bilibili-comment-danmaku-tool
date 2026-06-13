@@ -20,6 +20,7 @@ from bilibili_comment_danmaku import (
     save_comments_to_sqlite,
     scrape_comments,
     scrape_danmaku,
+    vacuum_database,
 )
 from database_registry import (
     DATABASE_EXTENSIONS,
@@ -65,6 +66,7 @@ DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
+maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
 qr_login_service = BilibiliQrLoginService(auth_cookie_store)
 space_archive_service = None
@@ -109,6 +111,40 @@ def combined_queue_snapshot():
     recent = [*(space.get("recent") or []), *(video.get("recent") or [])]
     recent.sort(key=lambda task: task.get("updated_at", ""), reverse=True)
     return {"active": active, "queued": queued, "recent": recent[:10]}
+
+
+def schedule_database_vacuum(db_path, request_id=""):
+    if maintenance_lock.locked():
+        log_event(
+            "database.vacuum.skip",
+            "database vacuum already scheduled",
+            request_id=request_id,
+            db=str(db_path),
+            level="warning",
+        )
+        return
+
+    def worker():
+        with maintenance_lock:
+            log_event("database.vacuum.wait", "waiting to reclaim database space", request_id=request_id, db=str(db_path))
+            with refresh_lock:
+                try:
+                    result = vacuum_database(db_path)
+                except Exception as exc:
+                    log_exception("database.vacuum.error", str(exc), request_id=request_id, db=str(db_path))
+                    return
+            log_event(
+                "database.vacuum.finish",
+                "database space reclaimed",
+                request_id=request_id,
+                db=str(db_path),
+                bytes_reclaimed=result["bytes_reclaimed"],
+                size_before=result["size_before"],
+                size_after=result["size_after"],
+            )
+
+    thread = threading.Thread(target=worker, name="database-vacuum", daemon=True)
+    thread.start()
 
 
 configure_task_services()
@@ -720,29 +756,38 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         )
 
     def handle_archive_delete_api(self):
-        body = self.read_json_body()
-        db_path = self.resolve_db_path_from_body(body)
-        bvid = (body.get("bvid") or "").strip()
-        owner_mid = (body.get("owner_mid") or "").strip()
-        raw_bvids = body.get("bvids")
-        if isinstance(raw_bvids, list):
-            bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
-        else:
-            bvids = []
-        if bvid:
-            bvids = [bvid]
-        if owner_mid and bvids:
-            self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
-            return
-        if not owner_mid and not bvids:
-            self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
+        if not refresh_lock.acquire(blocking=False):
+            log_event(
+                "api.archive_delete.rejected",
+                "archive delete rejected because another task is active",
+                request_id=getattr(self, "request_id", ""),
+                level="warning",
+            )
+            self.send_json({"error": "已有抓取、刷新或删除任务正在进行，请稍后再试"}, status=409)
             return
 
         try:
+            body = self.read_json_body()
+            db_path = self.resolve_db_path_from_body(body)
+            bvid = (body.get("bvid") or "").strip()
+            owner_mid = (body.get("owner_mid") or "").strip()
+            raw_bvids = body.get("bvids")
+            if isinstance(raw_bvids, list):
+                bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
+            else:
+                bvids = []
+            if bvid:
+                bvids = [bvid]
+            if owner_mid and bvids:
+                self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
+                return
+            if not owner_mid and not bvids:
+                self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
+                return
             result = (
-                delete_owner_from_sqlite(db_path, owner_mid)
+                delete_owner_from_sqlite(db_path, owner_mid, vacuum=False)
                 if owner_mid
-                else delete_videos_from_sqlite(db_path, bvids)
+                else delete_videos_from_sqlite(db_path, bvids, vacuum=False)
             )
         except LookupError as exc:
             log_event(
@@ -772,6 +817,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             self.send_json({"error": str(exc)}, status=500)
             return
+        finally:
+            refresh_lock.release()
 
         log_event(
             "api.archive_delete.finish",
@@ -782,7 +829,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             deleted_videos=result["deleted_videos"],
             counts=result["counts"],
             bytes_reclaimed=result["bytes_reclaimed"],
+            vacuum_deferred=result.get("vacuum_deferred"),
         )
+        schedule_database_vacuum(db_path, getattr(self, "request_id", ""))
         self.send_json(
             {
                 "ok": True,

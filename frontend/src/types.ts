@@ -316,6 +316,7 @@ export type ArchiveDeleteResponse = {
   size_before: number;
   size_after: number;
   bytes_reclaimed: number;
+  vacuum_deferred?: boolean;
 };
 
 export type DatabaseInfo = {
