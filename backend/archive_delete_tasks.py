@@ -95,10 +95,11 @@ class ArchiveDeleteTaskService:
                 bvid_count=len(bvids),
             )
             self.queue.update(task, message="正在删除评论、弹幕和视频记录", progress=35)
+            progress = self.delete_progress_callback(task)
             result = (
-                delete_owner_from_sqlite(db_path, owner_mid, vacuum=False)
+                delete_owner_from_sqlite(db_path, owner_mid, vacuum=False, progress_callback=progress)
                 if owner_mid
-                else delete_videos_from_sqlite(db_path, bvids, vacuum=False)
+                else delete_videos_from_sqlite(db_path, bvids, vacuum=False, progress_callback=progress)
             )
             deleted_videos = result.get("deleted_videos", 0)
             deleted_bvids = result.get("deleted_bvids") or []
@@ -129,6 +130,9 @@ class ArchiveDeleteTaskService:
                 counts=counts,
                 bytes_reclaimed=result.get("bytes_reclaimed", 0),
                 vacuum_deferred=result.get("vacuum_deferred"),
+                wal_peak=result.get("wal_peak", 0),
+                wal_after=result.get("wal_after", 0),
+                chunks=result.get("chunks", 0),
             )
             if self.vacuum_scheduler:
                 self.vacuum_scheduler(db_path, request_id)
@@ -151,3 +155,35 @@ class ArchiveDeleteTaskService:
                 owner_mid=owner_mid,
                 bvid_count=len(bvids),
             )
+
+    def delete_progress_callback(self, task):
+        labels = {
+            "comments": "正在分批删除评论",
+            "danmaku": "正在分批删除弹幕",
+            "videos": "正在删除视频记录",
+        }
+
+        def progress(payload):
+            stage = payload.get("stage", "delete")
+            chunks = int(payload.get("chunks") or 0)
+            wal_peak = int(payload.get("wal_peak") or 0)
+            wal_after = int(payload.get("wal_after") or 0)
+            self.queue.update(
+                task,
+                message=f"{labels.get(stage, '正在删除')}，已处理 {chunks} 批，WAL 峰值 {format_bytes(wal_peak)}，当前 {format_bytes(wal_after)}",
+                progress=min(92, 35 + chunks),
+            )
+
+        return progress
+
+
+def format_bytes(value):
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        size = 0.0
+    units = ["B", "KB", "MB", "GB"]
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f}{unit}" if unit != "B" else f"{int(size)}B"
+        size /= 1024

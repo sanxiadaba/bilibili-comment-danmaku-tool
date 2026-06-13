@@ -15,6 +15,7 @@ from .storage import (
     prepare_database_path,
     save_danmaku_to_sqlite,
     save_comments_to_sqlite,
+    wal_file_size,
     vacuum_database,
 )
 from .url_utils import extract_bvid
@@ -35,6 +36,7 @@ __all__ = [
     "read_archive_meta",
     "save_danmaku_to_sqlite",
     "save_comments_to_sqlite",
+    "wal_file_size",
     "vacuum_database",
     "scrape_comments",
     "scrape_danmaku",

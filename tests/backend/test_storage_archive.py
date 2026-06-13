@@ -50,6 +50,7 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     save_danmaku_to_sqlite,
     vacuum_database,
 )
+import bilibili_comment_danmaku.storage as storage  # noqa: E402
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 class StorageTests(unittest.TestCase):
     def test_comment_refresh_keeps_missing_comments_as_deleted(self):
@@ -244,6 +245,61 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(result["counts"]["comment_emotes"], 1)
             self.assertEqual(result["counts"]["danmaku"], 1)
             self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222"])
+            with self.assertRaises(LookupError):
+                load_comment_data(db_path, bvid=BVID)
+
+    def test_delete_video_uses_chunked_commits_to_limit_wal_growth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            comments = [make_comment(str(index), 1, f"comment {index}", mid=str(index)) for index in range(12)]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", comments), db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": f"dm-{index}",
+                            "progress": float(index),
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000000 + index,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 1,
+                            "like_count": 0,
+                            "content": f"danmaku {index}",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        }
+                        for index in range(9)
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+            original_comment_batch = storage.DELETE_COMMENT_BATCH_SIZE
+            original_danmaku_batch = storage.DELETE_DANMAKU_BATCH_SIZE
+            original_threshold = storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES
+            progress = []
+            try:
+                storage.DELETE_COMMENT_BATCH_SIZE = 5
+                storage.DELETE_DANMAKU_BATCH_SIZE = 4
+                storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 1
+                result = delete_videos_from_sqlite(db_path, [BVID], vacuum=False, progress_callback=progress.append)
+            finally:
+                storage.DELETE_COMMENT_BATCH_SIZE = original_comment_batch
+                storage.DELETE_DANMAKU_BATCH_SIZE = original_danmaku_batch
+                storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = original_threshold
+
+            self.assertEqual(result["deleted_videos"], 1)
+            self.assertGreater(result["chunks"], 1)
+            self.assertGreaterEqual(result["wal_peak"], result["wal_after"])
+            self.assertLess(result["wal_after"], 1024 * 1024)
+            self.assertGreaterEqual(len(progress), 3)
+            self.assertEqual({item["stage"] for item in progress}, {"comments", "danmaku", "videos"})
             with self.assertRaises(LookupError):
                 load_comment_data(db_path, bvid=BVID)
 
