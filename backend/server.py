@@ -1106,6 +1106,7 @@ def main():
     )
     handler.db_path = prepare_database_path(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
+    space_archive_service.start_pending_tasks()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     log_event(
         "service.start",
