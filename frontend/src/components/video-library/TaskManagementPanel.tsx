@@ -11,7 +11,7 @@ type TaskManagementPanelProps = {
 export function TaskManagementPanel({ isControlling, queue, onControl }: TaskManagementPanelProps) {
   const active = queue?.active || null;
   const queued = queue?.queued || [];
-  const controllableTasks = [active, ...queued].filter((task) => task && (task.kind === "space" || task.kind === "space_archive"));
+  const controllableTasks = [active, ...queued].filter((task) => task && isControllableTaskKind(task.kind));
   const hasControllableWork = controllableTasks.length > 0;
   const hasPaused = controllableTasks.some((task) => task?.status === "paused");
 
@@ -21,7 +21,7 @@ export function TaskManagementPanel({ isControlling, queue, onControl }: TaskMan
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
           <div>
             <h2 className="text-base font-semibold text-ink">任务列表</h2>
-            <p className="mt-1 text-sm text-muted">暂停会在当前视频处理完成后生效；停止会结束当前归档任务并保留已入库数据。</p>
+            <p className="mt-1 text-sm text-muted">暂停会在当前阶段完成后生效；停止会结束当前任务并保留已入库数据。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink hover:border-bilibili hover:text-bilibili disabled:opacity-60" disabled={!hasControllableWork || isControlling} type="button" onClick={() => onControl("pause")}>
@@ -42,4 +42,8 @@ export function TaskManagementPanel({ isControlling, queue, onControl }: TaskMan
       </div>
     </section>
   );
+}
+
+function isControllableTaskKind(kind: string) {
+  return kind === "space" || kind === "space_archive" || kind === "parse";
 }

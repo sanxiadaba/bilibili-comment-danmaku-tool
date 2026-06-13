@@ -46,7 +46,7 @@ describe("video library management components", () => {
     expect(html).toContain("paused task");
   });
 
-  it("shows single-video progress tasks without archive controls", () => {
+  it("shows single-video progress tasks with task controls", () => {
     const html = renderToStaticMarkup(
       <TaskManagementPanel
         isControlling={false}
@@ -56,6 +56,7 @@ describe("video library management components", () => {
             kind: "parse",
             mid: "",
             owner_ref: "视频抓取",
+            bvid: "BV1xx411c7mD",
             status: "running",
             message: "正在抓取评论",
             current_bvid: "BV1xx411c7mD",
@@ -67,10 +68,10 @@ describe("video library management components", () => {
       />,
     );
 
-    expect(html).toContain("视频抓取");
+    expect(html).toContain("视频 BV1xx411c7mD");
     expect(html).toContain("BV1xx411c7mD");
-    expect(html).not.toContain("等待暂停");
-    expect(html).not.toContain("等待停止");
+    expect(html).toContain("暂停");
+    expect(html).toContain("停止");
   });
 
   it("renders database management cards and import controls", () => {

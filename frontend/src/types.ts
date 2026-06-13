@@ -210,10 +210,14 @@ export type VideoListResponse = {
 };
 
 export type ParseVideoResponse = {
+  ok?: boolean;
   bvid: string;
-  before_count: number;
-  scraped_count: number;
-  after_count: number;
+  task_id?: string;
+  queue_position?: number;
+  message?: string;
+  before_count?: number;
+  scraped_count?: number;
+  after_count?: number;
   active_count?: number;
   deleted_count?: number;
   danmaku_count?: number;
@@ -298,6 +302,8 @@ export type ProgressTask = {
   kind: string;
   mid: string;
   owner_ref: string;
+  bvid?: string;
+  video_ref?: string;
   status: "queued" | "waiting" | "running" | "finished" | "failed" | string;
   message: string;
   created_at: string;

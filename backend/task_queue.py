@@ -191,6 +191,8 @@ class InMemoryTaskQueue:
             "kind": task.get("kind", self.kind),
             "mid": task.get("mid", ""),
             "owner_ref": task.get("owner_ref", ""),
+            "bvid": task.get("bvid", ""),
+            "video_ref": task.get("video_ref", ""),
             "status": task.get("status", ""),
             "message": task.get("message", ""),
             "created_at": task.get("created_at", ""),
@@ -226,7 +228,7 @@ class InMemoryTaskQueue:
         self.history = [
             task
             for task in payload.get("history", [])
-            if isinstance(task, dict) and task.get("status") in {"finished", "failed"}
+            if isinstance(task, dict) and task.get("status") in {"finished", "failed", "stopped"}
         ][: self.history_limit]
 
         recovered = []
@@ -275,10 +277,16 @@ class InMemoryTaskQueue:
             "history": list(self.history[: self.history_limit]),
             "updated_at": utc_now(),
         }
+        temp_path = None
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
             temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(self.state_path)
         except OSError:
+            if temp_path:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             pass

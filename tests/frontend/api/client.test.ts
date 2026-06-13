@@ -52,7 +52,7 @@ describe("API client", () => {
   });
 
   it("sends parse, space archive, import and export payloads", async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true, videos: [] })));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true, videos: [], bvid: "BV1xx411c7mD" })));
     globalThis.fetch = fetchMock;
 
     await parseVideo("BV1xx411c7mD", 0.5, "main");

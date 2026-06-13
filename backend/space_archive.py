@@ -51,7 +51,12 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
             },
             mixin,
         )
-        payload = client.request_json(scraper.build_url(endpoint, params), timeout=30)
+        update_progress("space", mid, f"UP视频列表请求 page={page}")
+        payload = scraper.call_with_hard_timeout(
+            lambda: client.request_json(scraper.build_url(endpoint, params), timeout=30),
+            45,
+            f"space_video_list_timeout page={page}",
+        )
         data = payload.get("data") or {}
         vlist = ((data.get("list") or {}).get("vlist") or [])
         total = (data.get("page") or {}).get("count") or 0
@@ -158,7 +163,7 @@ class SpaceArchiveService:
         self.cookie_file = cookie_file
         self.cache_dir = cache_dir
         self.refresh_lock = refresh_lock
-        self.queue = InMemoryTaskQueue("space", self.run_queue_task, state_path=state_path or (cache_dir / "space_queue.json"))
+        self.queue = InMemoryTaskQueue("space", self.run_queue_task, state_path=state_path)
 
     def enqueue(self, db_path, mid, owner_ref, options, request_id=""):
         return self.queue.enqueue(

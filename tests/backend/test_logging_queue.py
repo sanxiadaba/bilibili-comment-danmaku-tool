@@ -316,6 +316,55 @@ class TaskQueueTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(observed, [(True, True)])
 
+    def test_combined_queue_keeps_waiting_parse_task_visible(self):
+        import server
+
+        original_space = server.space_archive_service
+        original_video = server.video_parse_service
+
+        class FakeService:
+            def __init__(self, snapshot):
+                self._snapshot = snapshot
+
+            def snapshot(self):
+                return self._snapshot
+
+        try:
+            server.space_archive_service = FakeService(
+                {
+                    "active": {
+                        "id": "space-1",
+                        "kind": "space",
+                        "status": "running",
+                        "updated_at": "2026-06-13T00:00:02+00:00",
+                    },
+                    "queued": [],
+                    "recent": [],
+                }
+            )
+            server.video_parse_service = FakeService(
+                {
+                    "active": {
+                        "id": "parse-1",
+                        "kind": "parse",
+                        "status": "waiting",
+                        "bvid": "BV1xx411c7mD",
+                        "updated_at": "2026-06-13T00:00:01+00:00",
+                    },
+                    "queued": [],
+                    "recent": [],
+                }
+            )
+
+            snapshot = server.combined_queue_snapshot()
+
+            self.assertEqual(snapshot["active"]["id"], "space-1")
+            self.assertEqual(snapshot["queued"][0]["id"], "parse-1")
+            self.assertEqual(snapshot["queued"][0]["queue_position"], 1)
+        finally:
+            server.space_archive_service = original_space
+            server.video_parse_service = original_video
+
     def test_active_task_returning_paused_goes_back_to_queue(self):
         active_started = threading.Event()
         release_active = threading.Event()

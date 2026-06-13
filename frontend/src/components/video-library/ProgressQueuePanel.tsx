@@ -23,7 +23,7 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
             抓取队列
           </h2>
           <span className="text-sm text-muted">
-            {active ? "1 个运行中" : "无运行任务"} · {queued.length} 个排队中
+            {active ? "1 个运行中" : "无运行任务"} / {queued.length} 个排队中
           </span>
         </div>
       )}
@@ -75,8 +75,8 @@ function QueueTaskRow({
 }) {
   const percent = Math.max(0, Math.min(100, Math.round(task.progress || 0)));
   const status = taskStatusLabel(task);
-  const title = task.mid ? `UP ${task.mid}` : task.owner_ref || task.id;
-  const canControl = Boolean(onControl) && tone !== "recent" && (task.kind === "space" || task.kind === "space_archive");
+  const title = taskTitle(task);
+  const canControl = Boolean(onControl) && tone !== "recent" && isControllableTaskKind(task.kind);
   const isPaused = task.status === "paused";
   return (
     <div
@@ -94,7 +94,7 @@ function QueueTaskRow({
           </div>
           <div className="mt-1 truncate text-xs text-muted">
             {task.message || "等待抓取"}
-            {task.current_bvid ? ` · ${task.current_bvid}` : ""}
+            {task.current_bvid ? ` / ${task.current_bvid}` : ""}
           </div>
         </div>
         <div className="shrink-0 text-right text-xs text-muted">
@@ -103,7 +103,7 @@ function QueueTaskRow({
             {task.complete || 0}/{task.total || 0}
           </div>
           <div>
-            新增 {task.archived || 0} · 跳过 {task.skipped || 0} · 失败 {task.failed || 0}
+            新增 {task.archived || 0} / 跳过 {task.skipped || 0} / 失败 {task.failed || 0}
           </div>
         </div>
       </div>
@@ -148,6 +148,13 @@ function TaskButton({
   );
 }
 
+function taskTitle(task: ProgressTask) {
+  const bvid = task.bvid || task.current_bvid;
+  if (task.kind === "parse") return bvid ? `视频 ${bvid}` : "视频抓取";
+  if (task.mid) return `UP ${task.mid}`;
+  return task.owner_ref || task.id;
+}
+
 function taskStatusLabel(task: ProgressTask) {
   if (task.status === "running") return "运行中";
   if (task.status === "waiting") return "等待当前任务";
@@ -157,4 +164,8 @@ function taskStatusLabel(task: ProgressTask) {
   if (task.status === "finished") return "已完成";
   if (task.status === "failed") return "失败";
   return task.status || "未知";
+}
+
+function isControllableTaskKind(kind: string) {
+  return kind === "space" || kind === "space_archive" || kind === "parse";
 }

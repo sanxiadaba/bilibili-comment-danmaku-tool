@@ -55,6 +55,7 @@ from space_archive import (
     extract_space_mid,
     normalize_space_archive_options,
 )
+from video_tasks import VideoParseTaskService
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -64,8 +65,49 @@ DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
-space_archive_service = SpaceArchiveService(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, refresh_lock)
-set_queue_snapshot_provider(space_archive_service.snapshot)
+space_archive_service = None
+video_parse_service = None
+
+
+def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEFAULT_SPACE_CACHE_DIR, persist=False):
+    global space_archive_service, video_parse_service
+    space_state_path = space_cache_dir / "space_queue.json" if persist else None
+    video_state_path = space_cache_dir / "video_parse_queue.json" if persist else None
+    space_archive_service = SpaceArchiveService(
+        cookie_file,
+        space_cache_dir,
+        refresh_lock,
+        state_path=space_state_path,
+    )
+    video_parse_service = VideoParseTaskService(
+        cookie_file,
+        refresh_lock,
+        state_path=video_state_path,
+    )
+    set_queue_snapshot_provider(combined_queue_snapshot)
+
+
+def combined_queue_snapshot():
+    if not space_archive_service or not video_parse_service:
+        return {"active": None, "queued": [], "recent": []}
+    space = space_archive_service.snapshot()
+    video = video_parse_service.snapshot()
+    active_candidates = [task for task in [space.get("active"), video.get("active")] if task]
+    running = next((task for task in active_candidates if task.get("status") == "running"), None)
+    active = running or (active_candidates[0] if active_candidates else None)
+    queued = []
+    for task in active_candidates:
+        if active and task.get("id") == active.get("id"):
+            continue
+        queued.append({**task, "queue_position": len(queued) + 1})
+    queued.extend([*(space.get("queued") or []), *(video.get("queued") or [])])
+    queued = [{**task, "queue_position": index + 1} for index, task in enumerate(queued)]
+    recent = [*(space.get("recent") or []), *(video.get("recent") or [])]
+    recent.sort(key=lambda task: task.get("updated_at", ""), reverse=True)
+    return {"active": active, "queued": queued, "recent": recent[:10]}
+
+
+configure_task_services()
 
 
 class CommentDanmakuServer(BaseHTTPRequestHandler):
@@ -386,130 +428,47 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         return parsed._replace(query=urlencode({key: values[-1] for key, values in query.items() if values}))
 
     def handle_parse_video_api(self):
-        if not refresh_lock.acquire(blocking=False):
+        body = self.read_json_body()
+        db_path = self.resolve_db_path_from_body(body)
+        video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
+        if not video_ref:
             log_event(
-                "task.rejected",
-                "parse rejected because another task is active",
+                "task.parse.invalid_input",
+                "parse request missing video reference",
                 request_id=getattr(self, "request_id", ""),
-                kind="parse",
-                reason="busy",
-            )
-            self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
-            return
-
-        try:
-            body = self.read_json_body()
-            db_path = self.resolve_db_path_from_body(body)
-            video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
-            if not video_ref:
-                log_event(
-                    "task.parse.invalid_input",
-                    "parse request missing video reference",
-                    request_id=getattr(self, "request_id", ""),
-                    level="warning",
-                )
-                self.send_json({"error": "请输入 Bilibili 视频链接或 BV 号"}, status=400)
-                return
-            bvid = extract_bvid(video_ref)
-            delay = parse_float(body.get("delay"), 0.35)
-            try:
-                before = load_comment_data(db_path, bvid=bvid)["metadata"]["comment_total_count"]
-            except LookupError:
-                before = 0
-
-            log_event(
-                "task.parse.start",
-                "parse video started",
-                request_id=getattr(self, "request_id", ""),
-                db=str(db_path),
-                bvid=bvid,
-                delay=delay,
-                existing_comment_count=before,
-            )
-            start_progress("parse", bvid, "准备解析视频并抓取评论")
-            logs = []
-            log = make_progress_logger("parse", bvid, logs)
-
-            output_data = scrape_comments(
-                video_ref,
-                cookie_file=str(DEFAULT_COOKIE_FILE),
-                delay=delay,
-                logger=log,
-            )
-            update_progress("parse", bvid, "评论抓取完成，正在保存评论档案")
-            save_comments_to_sqlite(output_data, db_path, replace=True)
-            update_progress("parse", bvid, "正在抓取弹幕")
-            danmaku_result = scrape_danmaku(
-                output_data["metadata"]["bvid"],
-                output_data["video_raw"],
-                logger=log,
-            )
-            if len(danmaku_result.get("items") or []) > 0:
-                update_progress("parse", bvid, "弹幕抓取完成，正在保存弹幕档案")
-                save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
-            else:
-                log("danmaku: got=0, skipped saving empty danmaku archive")
-                log_event(
-                    "task.parse.empty_danmaku_skipped",
-                    "parse skipped saving empty danmaku archive",
-                    request_id=getattr(self, "request_id", ""),
-                    bvid=bvid,
-                )
-            payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
-            finish_progress("parse", bvid, "解析与抓取完成")
-            log_event(
-                "task.parse.finish",
-                "parse video finished",
-                request_id=getattr(self, "request_id", ""),
-                bvid=output_data["metadata"]["bvid"],
-                before_count=before,
-                scraped_count=output_data["metadata"]["comment_total_count"],
-                after_count=payload["metadata"]["comment_total_count"],
-                danmaku_count=len(danmaku_result.get("items") or []),
-            )
-            self.send_json(
-                {
-                    "bvid": output_data["metadata"]["bvid"],
-                    "before_count": before,
-                    "scraped_count": output_data["metadata"]["comment_total_count"],
-                    "after_count": payload["metadata"]["comment_total_count"],
-                    "active_count": payload["metadata"].get("active_comment_count"),
-                    "deleted_count": payload["metadata"].get("deleted_comment_count"),
-                    "danmaku_count": len(danmaku_result.get("items") or []),
-                    "video": next(
-                        (
-                            item
-                            for item in list_video_summaries(db_path)
-                            if item["bvid"] == output_data["metadata"]["bvid"]
-                        ),
-                        None,
-                    ),
-                    "logs": logs[-12:],
-                }
-            )
-        except ValueError as exc:
-            fail_progress("parse", bvid if "bvid" in locals() else "", str(exc))
-            log_event(
-                "task.parse.input_error",
-                str(exc),
-                request_id=getattr(self, "request_id", ""),
-                bvid=bvid if "bvid" in locals() else "",
                 level="warning",
             )
+            self.send_json({"error": "请输入 Bilibili 视频链接或 BV 号"}, status=400)
+            return
+        try:
+            bvid = extract_bvid(video_ref)
+        except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)
-        except Exception as exc:
-            payload, status = api_error_response(exc)
-            fail_progress("parse", bvid if "bvid" in locals() else "", payload["error"])
-            log_exception(
-                "task.parse.error",
-                payload["error"],
-                request_id=getattr(self, "request_id", ""),
-                bvid=bvid if "bvid" in locals() else "",
-                status=status,
-            )
-            self.send_json(payload, status=status)
-        finally:
-            refresh_lock.release()
+            return
+        task = video_parse_service.enqueue(
+            db_path=db_path,
+            video_ref=video_ref,
+            delay=parse_float(body.get("delay"), 0.35),
+            request_id=getattr(self, "request_id", ""),
+        )
+        log_event(
+            "task.parse.queued",
+            "parse video task queued",
+            request_id=getattr(self, "request_id", ""),
+            bvid=bvid,
+            task_id=task["id"],
+            queue_position=task["queue_position"],
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "bvid": bvid,
+                "task_id": task["id"],
+                "queue_position": task["queue_position"],
+                "message": "视频抓取任务已加入队列",
+            },
+            status=202,
+        )
 
     def handle_space_archive_api(self):
         body = self.read_json_body()
@@ -561,13 +520,25 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         action = str(body.get("action") or "").strip().lower()
         task_id = str(body.get("task_id") or "").strip() or None
         try:
-            payload = space_archive_service.control_tasks(action, task_id=task_id)
+            if task_id and task_id.startswith("parse-"):
+                payload = video_parse_service.control_tasks(action, task_id=task_id)
+            elif task_id and task_id.startswith("space-"):
+                payload = space_archive_service.control_tasks(action, task_id=task_id)
+            else:
+                space_payload = space_archive_service.control_tasks(action, task_id=task_id)
+                video_payload = video_parse_service.control_tasks(action, task_id=task_id)
+                payload = {
+                    "ok": True,
+                    "action": action,
+                    "changed": [*(space_payload.get("changed") or []), *(video_payload.get("changed") or [])],
+                    "queue": combined_queue_snapshot(),
+                }
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)
             return
         log_event(
-            "task.space_archive.control",
-            "space archive task control requested",
+            "task.queue.control",
+            "task queue control requested",
             request_id=getattr(self, "request_id", ""),
             action=action,
             task_id=task_id or "",
@@ -1134,7 +1105,9 @@ def main():
     )
     handler.db_path = prepare_database_path(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
+    configure_task_services(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, persist=True)
     space_archive_service.start_pending_tasks()
+    video_parse_service.start_pending_tasks()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     log_event(
         "service.start",

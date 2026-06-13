@@ -336,26 +336,20 @@ export function VideoLibraryPage() {
     setDuplicateVideo(null);
     setPendingParseTarget("");
     setError("");
-    setMessage("正在解析并抓取评论，评论较多时可能需要几十秒");
+    setMessage("正在提交视频抓取任务，任务列表会显示当前进度");
     try {
       window.localStorage.setItem("bilibili-comment-delay", String(parseDelay));
       const payload = await parseVideo(target, parseDelay, activeDbId);
-      logClientEvent("client.user.parse.success", "video parse completed", {
+      logClientEvent("client.user.parse.success", "video parse task queued", {
         db_id: activeDbId,
         bvid: payload.bvid,
-        scraped_count: payload.scraped_count,
-        after_count: payload.after_count,
-        danmaku_count: payload.danmaku_count,
+        task_id: payload.task_id,
+        queue_position: payload.queue_position,
+        scraped_count: payload.scraped_count || 0,
+        after_count: payload.after_count || 0,
+        danmaku_count: payload.danmaku_count || 0,
       });
-      setMessage(
-        `解析完成：本次抓到 ${payload.scraped_count} 条评论和 ${payload.danmaku_count ?? 0} 条弹幕，档案共 ${
-          payload.after_count
-        } 条，未返回 ${
-          payload.deleted_count ?? 0
-        } 条`,
-      );
-      window.history.pushState({}, "", dbPath(`/video/${payload.bvid}`, activeDbId));
-      window.dispatchEvent(new PopStateEvent("popstate"));
+      setMessage(payload.message || `视频抓取任务已加入队列：${payload.bvid}`);
     } catch (reason: unknown) {
       logClientEvent("client.user.parse.error", reason instanceof Error ? reason.message : String(reason), {
         db_id: activeDbId,
