@@ -129,6 +129,23 @@ describe("video library management components", () => {
     expect(merged.recent[0].id).toBe("parse-1");
   });
 
+  it("does not re-add hidden progress tasks after clearing history", () => {
+    const merged = mergeProgressIntoQueue(
+      { active: null, queued: [], recent: [] },
+      makeProgress({
+        active: false,
+        done: true,
+        kind: "parse",
+        bvid: "BV1JogwzEEzD",
+        percent: 100,
+        message: "解析与抓取完成",
+      }),
+      new Set(["id:parse:BV1JogwzEEzD"]),
+    );
+
+    expect(merged.recent).toHaveLength(0);
+  });
+
   it("renders database management cards and import controls", () => {
     const html = renderToStaticMarkup(
       <ManagementPanel

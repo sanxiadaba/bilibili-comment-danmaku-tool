@@ -58,10 +58,12 @@ export async function fetchCommentData(bvid?: string, dbId = "main") {
   return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId });
 }
 
-export async function fetchVideos(dbId = "main") {
+export async function fetchVideos(dbId = "main", options: { limit?: number; offset?: number } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
+  if (options.limit) query.set("limit", String(options.limit));
+  if (options.offset) query.set("offset", String(options.offset));
   appendDbId(query, dbId);
-  return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store" }, { db_id: dbId });
+  return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store" }, { db_id: dbId, limit: options.limit, offset: options.offset });
 }
 
 export async function fetchDanmakuData(bvid?: string, dbId = "main") {

@@ -207,6 +207,10 @@ export type VideoSummary = {
 export type VideoListResponse = {
   videos: VideoSummary[];
   database?: DatabaseInfo;
+  total?: number;
+  limit?: number;
+  offset?: number;
+  has_more?: boolean;
 };
 
 export type ParseVideoResponse = {

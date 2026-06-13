@@ -28,8 +28,12 @@ import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
 import type { CookieStatus, DatabaseInfo, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
 
+const VIDEO_PAGE_SIZE = 40;
+
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
+  const [videoTotal, setVideoTotal] = useState(0);
+  const [hasMoreVideos, setHasMoreVideos] = useState(false);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
   const [cookieStatus, setCookieStatus] = useState<CookieStatus | null>(null);
   const [activeDbId, setActiveDbId] = useState(() => initialDatabaseId());
@@ -57,6 +61,7 @@ export function VideoLibraryPage() {
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
+  const [hiddenTaskKeys, setHiddenTaskKeys] = useState<Set<string>>(() => new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const parseProgress = useProgressPolling(isParsing, "parse");
@@ -66,7 +71,7 @@ export function VideoLibraryPage() {
     return saved ? Number(saved) || 0.35 : 0.35;
   });
   const spaceQueue = spaceProgress?.queue;
-  const taskQueue = useMemo(() => mergeProgressIntoQueue(spaceQueue, spaceProgress), [spaceQueue, spaceProgress]);
+  const taskQueue = useMemo(() => mergeProgressIntoQueue(spaceQueue, spaceProgress, hiddenTaskKeys), [hiddenTaskKeys, spaceQueue, spaceProgress]);
   const hasSpaceQueueWork = Boolean(spaceQueue?.active || spaceQueue?.queued?.length);
   const hasTaskWork = Boolean(taskQueue.active || taskQueue.queued.length || taskQueue.recent.length);
   const isTaskBusy = isParsing || hasSpaceQueueWork;
@@ -101,14 +106,17 @@ export function VideoLibraryPage() {
     [activeDbId],
   );
 
-  const loadVideos = useCallback(async (options?: { quiet?: boolean }) => {
+  const loadVideos = useCallback(async (options?: { append?: boolean; offset?: number; quiet?: boolean }) => {
     if (!options?.quiet) {
       setIsLoading(true);
     }
     setError("");
     try {
-      const payload = await fetchVideos(activeDbId);
-      setVideos(payload.videos);
+      const offset = options?.offset || 0;
+      const payload = await fetchVideos(activeDbId, { limit: VIDEO_PAGE_SIZE, offset });
+      setVideos((current) => (options?.append ? mergeVideosByBvid(current, payload.videos) : payload.videos));
+      setVideoTotal(payload.total ?? payload.videos.length);
+      setHasMoreVideos(Boolean(payload.has_more));
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -219,6 +227,10 @@ export function VideoLibraryPage() {
       { views: 0, comments: 0, active: 0, deleted: 0, likes: 0, danmaku: 0 },
     );
   }, [videos]);
+
+  async function loadMoreVideos() {
+    await loadVideos({ append: true, offset: videos.length, quiet: true });
+  }
 
   async function submitParse(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -349,6 +361,11 @@ export function VideoLibraryPage() {
     try {
       window.localStorage.setItem("bilibili-comment-delay", String(parseDelay));
       const payload = await parseVideo(target, parseDelay, activeDbId);
+      setHiddenTaskKeys((previous) => {
+        const next = new Set(previous);
+        next.delete(`id:parse:${payload.bvid}`);
+        return next;
+      });
       logClientEvent("client.user.parse.success", "video parse task queued", {
         db_id: activeDbId,
         bvid: payload.bvid,
@@ -420,6 +437,9 @@ export function VideoLibraryPage() {
     setError("");
     try {
       await controlSpaceTasks(action, taskId);
+      if (action === "clear") {
+        rememberHiddenTasks(taskId);
+      }
       const actionLabel = taskActionLabel(action);
       setMessage(taskId ? `任务已请求${actionLabel}` : `全部任务已请求${actionLabel}`);
       logClientEvent("client.user.space_task.control", "space task control requested", {
@@ -433,6 +453,22 @@ export function VideoLibraryPage() {
     } finally {
       setIsControllingTask(false);
     }
+  }
+
+  function rememberHiddenTasks(taskId?: string) {
+    const targets = taskId ? allQueueTasks(taskQueue).filter((task) => task.id === taskId) : taskQueue.recent;
+    if (!targets.length && taskId) {
+      targets.push({ id: taskId } as ProgressTask);
+    }
+    setHiddenTaskKeys((previous) => {
+      const next = new Set(previous);
+      for (const task of targets) {
+        for (const key of taskHideKeys(task)) {
+          next.add(key);
+        }
+      }
+      return next;
+    });
   }
 
   function openVideo(video: VideoSummary) {
@@ -558,7 +594,7 @@ export function VideoLibraryPage() {
         isLoading={isLoading}
         isLoadingDatabases={isLoadingDatabases}
         showSettings={showSettings}
-        videoCount={videos.length}
+        videoCount={videoTotal || videos.length}
         onRefresh={() => {
           logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
             db_id: activeDbId,
@@ -583,14 +619,14 @@ export function VideoLibraryPage() {
         spaceProgress={spaceProgress}
       />
 
-      <LibraryStats totals={totals} videoCount={videos.length} />
+      <LibraryStats totals={totals} videoCount={videoTotal || videos.length} />
 
       <LibraryTabs
         active={libraryView}
         databaseCount={databases.length}
         hasTaskWork={hasTaskWork}
         queuedCount={(taskQueue.active ? 1 : 0) + taskQueue.queued.length}
-        videoCount={videos.length}
+        videoCount={videoTotal || videos.length}
         onChange={setLibraryView}
       />
 
@@ -648,8 +684,11 @@ export function VideoLibraryPage() {
             query={query}
             selectedOwnerName={selectedOwnerName}
             totalVideoCount={videos.length}
+            backendTotalVideoCount={videoTotal}
+            hasMore={hasMoreVideos}
             videos={filteredVideos}
             onExport={(video) => setExportTarget({ kind: "video", video })}
+            onLoadMore={() => void loadMoreVideos()}
             onQueryChange={setQuery}
           />
         </section>
@@ -698,14 +737,15 @@ export function VideoLibraryPage() {
   );
 }
 
-export function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: ProgressState | null): ProgressQueue {
+export function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: ProgressState | null, hiddenTaskKeys: Set<string> = new Set()): ProgressQueue {
   const base: ProgressQueue = {
     active: queue?.active || null,
     queued: queue?.queued || [],
-    recent: queue?.recent || [],
+    recent: (queue?.recent || []).filter((task) => !isHiddenTask(task, hiddenTaskKeys)),
   };
   const progressTask = progressToTask(progress);
   if (!progressTask) return base;
+  if (isHiddenTask(progressTask, hiddenTaskKeys)) return base;
   if (queueHasMatchingTask(base, progressTask)) return base;
 
   if (progressTask.status === "running" || progressTask.status === "waiting") {
@@ -720,6 +760,23 @@ export function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progres
     ...base,
     recent: alreadyInRecent ? base.recent : [progressTask, ...base.recent],
   };
+}
+
+function allQueueTasks(queue: ProgressQueue) {
+  return [queue.active, ...queue.queued, ...queue.recent].filter(Boolean) as ProgressTask[];
+}
+
+function isHiddenTask(task: ProgressTask, hiddenTaskKeys: Set<string>) {
+  return taskHideKeys(task).some((key) => hiddenTaskKeys.has(key));
+}
+
+function taskHideKeys(task: ProgressTask) {
+  const keys = [`id:${task.id}`];
+  const bvid = task.bvid || task.current_bvid;
+  if (bvid && ["parse", "comments", "danmaku"].includes(task.kind)) {
+    keys.push(`id:${task.kind}:${bvid}`);
+  }
+  return keys;
 }
 
 function queueHasMatchingTask(queue: ProgressQueue, task: ProgressTask) {
@@ -764,4 +821,12 @@ function progressToTask(progress: ProgressState | null): ProgressTask | null {
     skipped: 0,
     failed: progress.error ? 1 : 0,
   };
+}
+
+function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummary[]) {
+  const byBvid = new Map(current.map((video) => [video.bvid, video]));
+  for (const video of incoming) {
+    byBvid.set(video.bvid, video);
+  }
+  return Array.from(byBvid.values());
 }

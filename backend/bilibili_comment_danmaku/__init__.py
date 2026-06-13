@@ -8,6 +8,7 @@ from .archive import (
 )
 from .storage import (
     list_video_summaries,
+    list_video_summaries_page,
     load_comment_data,
     load_danmaku_data,
     prepare_database_path,
@@ -25,6 +26,7 @@ __all__ = [
     "import_archive_json_to_sqlite",
     "inspect_cookie_status",
     "list_video_summaries",
+    "list_video_summaries_page",
     "load_comment_data",
     "load_danmaku_data",
     "prepare_database_path",

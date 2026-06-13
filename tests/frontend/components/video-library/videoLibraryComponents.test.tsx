@@ -54,12 +54,15 @@ describe("video library components", () => {
       renderToStaticMarkup(
         <VideoListPanel
           activeDbId="main"
+          backendTotalVideoCount={0}
           exportingKey=""
+          hasMore={false}
           isLoading
           query=""
           totalVideoCount={0}
           videos={[]}
           onExport={() => undefined}
+          onLoadMore={() => undefined}
           onQueryChange={() => undefined}
         />,
       ),
@@ -69,12 +72,15 @@ describe("video library components", () => {
       renderToStaticMarkup(
         <VideoListPanel
           activeDbId="main"
+          backendTotalVideoCount={0}
           exportingKey=""
+          hasMore={false}
           isLoading={false}
           query=""
           totalVideoCount={0}
           videos={[]}
           onExport={() => undefined}
+          onLoadMore={() => undefined}
           onQueryChange={() => undefined}
         />,
       ),
@@ -83,19 +89,48 @@ describe("video library components", () => {
     const html = renderToStaticMarkup(
       <VideoListPanel
         activeDbId="archive"
+        backendTotalVideoCount={1}
         exportingKey="video:BV1xx411c7mD"
+        hasMore={false}
         isLoading={false}
         query="test"
         selectedOwnerName="Owner"
         totalVideoCount={1}
         videos={[makeVideo()]}
         onExport={() => undefined}
+        onLoadMore={() => undefined}
         onQueryChange={() => undefined}
       />,
     );
     expect(html).toContain("Test video");
     expect(html).toContain("BV1xx411c7mD");
     expect(html).toContain("1 / 1");
+  });
+
+  it("renders a backend pagination affordance for large video lists", () => {
+    const videos = Array.from({ length: 40 }, (_item, index) =>
+      makeVideo({ bvid: `BV1xx411c${String(index).padStart(3, "0")}`, title: `Video ${index}` }),
+    );
+
+    const html = renderToStaticMarkup(
+      <VideoListPanel
+        activeDbId="main"
+        backendTotalVideoCount={45}
+        exportingKey=""
+        hasMore
+        isLoading={false}
+        query=""
+        totalVideoCount={45}
+        videos={videos}
+        onExport={() => undefined}
+        onLoadMore={() => undefined}
+        onQueryChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("40 / 45");
+    expect(html).toContain("加载更多视频");
+    expect(html).toContain("Video 39");
   });
 
   it("renders cookie login diagnostics in settings", () => {

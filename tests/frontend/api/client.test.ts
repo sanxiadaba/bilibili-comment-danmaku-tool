@@ -44,11 +44,13 @@ describe("API client", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [] }));
     globalThis.fetch = fetchMock;
 
-    const payload = await fetchVideos("archive 1");
+    const payload = await fetchVideos("archive 1", { limit: 40, offset: 80 });
 
     expect(payload.videos).toEqual([]);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/videos?"), { cache: "no-store" });
     expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive+1");
+    expect(fetchMock.mock.calls[0][0]).toContain("limit=40");
+    expect(fetchMock.mock.calls[0][0]).toContain("offset=80");
   });
 
   it("sends parse, space archive, import and export payloads", async () => {

@@ -125,12 +125,17 @@ CREATE TABLE IF NOT EXISTS archive_meta (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_bvid_ctime ON comments (bvid, ctime, rpid);
+CREATE INDEX IF NOT EXISTS idx_comments_bvid_deleted ON comments (bvid, is_deleted);
+CREATE INDEX IF NOT EXISTS idx_comments_bvid_level ON comments (bvid, level);
 CREATE INDEX IF NOT EXISTS idx_comments_root ON comments (bvid, root, ctime, rpid);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments (bvid, parent);
 CREATE INDEX IF NOT EXISTS idx_comments_mid ON comments (bvid, mid);
 CREATE INDEX IF NOT EXISTS idx_comments_like ON comments (bvid, like_count DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_fetched_at ON videos (fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_owner_mid ON videos (owner_mid, fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pictures_rpid ON comment_pictures (rpid);
 CREATE INDEX IF NOT EXISTS idx_emotes_rpid ON comment_emotes (rpid);
+CREATE INDEX IF NOT EXISTS idx_danmaku_bvid ON danmaku (bvid);
 CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_progress ON danmaku (bvid, progress, dmid);
 CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_ctime ON danmaku (bvid, ctime, dmid);
 """
@@ -922,6 +927,73 @@ def list_video_summaries(db_path):
             """
         ).fetchall()
         return [video_summary_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_video_summaries_page(db_path, limit=40, offset=0):
+    limit = max(1, min(int(limit or 40), 200))
+    offset = max(0, int(offset or 0))
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        conn.commit()
+        total = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+        rows = conn.execute(
+            """
+            WITH page_videos AS (
+                SELECT *
+                FROM videos
+                ORDER BY fetched_at DESC
+                LIMIT ? OFFSET ?
+            )
+            SELECT
+                v.*,
+                COALESCE(c.comment_total_count_actual, 0) AS comment_total_count_actual,
+                COALESCE(c.active_comment_count, 0) AS active_comment_count,
+                COALESCE(c.deleted_comment_count, 0) AS deleted_comment_count,
+                COALESCE(c.top_level_comment_count_actual, 0) AS top_level_comment_count_actual,
+                COALESCE(c.nested_comment_count_actual, 0) AS nested_comment_count_actual,
+                COALESCE(c.comment_like_count, 0) AS comment_like_count,
+                c.latest_comment_ctime,
+                COALESCE(d.danmaku_count, 0) AS danmaku_count,
+                d.latest_danmaku_fetched_at
+            FROM page_videos v
+            LEFT JOIN (
+                SELECT
+                    bvid,
+                    COUNT(rpid) AS comment_total_count_actual,
+                    SUM(CASE WHEN is_deleted = 0 THEN 1 ELSE 0 END) AS active_comment_count,
+                    SUM(CASE WHEN is_deleted = 1 THEN 1 ELSE 0 END) AS deleted_comment_count,
+                    SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END) AS top_level_comment_count_actual,
+                    SUM(CASE WHEN level = 2 THEN 1 ELSE 0 END) AS nested_comment_count_actual,
+                    SUM(COALESCE(like_count, 0)) AS comment_like_count,
+                    MAX(ctime) AS latest_comment_ctime
+                FROM comments
+                WHERE bvid IN (SELECT bvid FROM page_videos)
+                GROUP BY bvid
+            ) c ON c.bvid = v.bvid
+            LEFT JOIN (
+                SELECT
+                    bvid,
+                    COUNT(dmid) AS danmaku_count,
+                    MAX(fetched_at) AS latest_danmaku_fetched_at
+                FROM danmaku
+                WHERE bvid IN (SELECT bvid FROM page_videos)
+                GROUP BY bvid
+            ) d ON d.bvid = v.bvid
+            ORDER BY v.fetched_at DESC
+            """,
+            (limit, offset),
+        ).fetchall()
+        videos = [video_summary_from_row(row) for row in rows]
+        return {
+            "videos": videos,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(videos) < total,
+        }
     finally:
         conn.close()
 

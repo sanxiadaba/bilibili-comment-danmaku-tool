@@ -4,25 +4,31 @@ import type { VideoSummary } from "../../types";
 
 type VideoListPanelProps = {
   activeDbId: string;
+  backendTotalVideoCount: number;
   exportingKey: string;
+  hasMore: boolean;
   isLoading: boolean;
   query: string;
   selectedOwnerName?: string;
   totalVideoCount: number;
   videos: VideoSummary[];
   onExport: (video: VideoSummary) => void;
+  onLoadMore: () => void;
   onQueryChange: (value: string) => void;
 };
 
 export function VideoListPanel({
   activeDbId,
+  backendTotalVideoCount,
   exportingKey,
+  hasMore,
   isLoading,
   query,
   selectedOwnerName,
   totalVideoCount,
   videos,
   onExport,
+  onLoadMore,
   onQueryChange,
 }: VideoListPanelProps) {
   return (
@@ -34,7 +40,7 @@ export function VideoListPanel({
             {selectedOwnerName ? `${selectedOwnerName}的视频` : "视频列表"}
           </h2>
           <span className="text-sm text-muted">
-            {videos.length} / {totalVideoCount}
+            {videos.length} / {backendTotalVideoCount || totalVideoCount}
           </span>
           <label className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
             <Search size={16} aria-hidden="true" />
@@ -61,6 +67,15 @@ export function VideoListPanel({
               onExport={() => onExport(video)}
             />
           ))}
+        {!isLoading && hasMore && !query && !selectedOwnerName && (
+          <button
+            className="mx-auto inline-flex h-10 items-center justify-center rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+            type="button"
+            onClick={onLoadMore}
+          >
+            加载更多视频（剩余 {(backendTotalVideoCount || totalVideoCount) - videos.length}）
+          </button>
+        )}
         {!isLoading && videos.length === 0 && (
           <div className="p-6 text-center text-sm text-muted">暂无匹配的视频</div>
         )}

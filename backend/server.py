@@ -14,6 +14,7 @@ from bilibili_comment_danmaku import (
     extract_bvid,
     inspect_cookie_status,
     list_video_summaries,
+    list_video_summaries_page,
     load_comment_data,
     load_danmaku_data,
     prepare_database_path,
@@ -248,16 +249,25 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
     def handle_videos_api(self):
         db_path = self.resolve_db_path_from_query()
         try:
-            videos = list_video_summaries(db_path)
+            query = parse_qs(urlparse(self.path).query)
+            limit = first_query_int(query, "limit", 40)
+            offset = first_query_int(query, "offset", 0)
+            page = list_video_summaries_page(db_path, limit=limit, offset=offset)
             log_event(
                 "api.videos.list",
                 "listed local videos",
                 request_id=getattr(self, "request_id", ""),
                 db=str(db_path),
-                video_count=len(videos),
+                video_count=len(page["videos"]),
+                total=page["total"],
+                limit=page["limit"],
+                offset=page["offset"],
             )
             self.send_json(
-                {"videos": videos, "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir))}
+                {
+                    **page,
+                    "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
+                }
             )
         except Exception as exc:
             log_exception("api.videos.list_error", str(exc), request_id=getattr(self, "request_id", ""))
@@ -1083,6 +1093,13 @@ def safe_print(message):
         print(message, flush=True)
     except OSError:
         pass
+
+
+def first_query_int(query, key, default):
+    try:
+        return int(query.get(key, [default])[0])
+    except (TypeError, ValueError):
+        return default
 
 
 def parse_optional_int(value):

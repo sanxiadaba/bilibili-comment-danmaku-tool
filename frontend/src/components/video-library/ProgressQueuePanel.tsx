@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Pause, Play, RefreshCcw, RotateCcw, Square, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -11,10 +12,20 @@ type ProgressQueuePanelProps = {
   onControl?: (action: TaskControlAction, taskId?: string) => void;
 };
 
+const RECENT_TASK_PAGE_SIZE = 8;
+
 export function ProgressQueuePanel({ embedded = false, isControlling = false, queue, onControl }: ProgressQueuePanelProps) {
   const queued = queue?.queued || [];
   const recent = queue?.recent || [];
   const active = queue?.active || null;
+  const [recentPage, setRecentPage] = useState(1);
+  const recentVisibleCount = Math.min(recent.length, recentPage * RECENT_TASK_PAGE_SIZE);
+  const visibleRecent = recent.slice(0, recentVisibleCount);
+
+  useEffect(() => {
+    setRecentPage(1);
+  }, [recent.length]);
+
   const content = (
     <>
       {!embedded && (
@@ -60,9 +71,18 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
                 </button>
               )}
             </div>
-            {recent.slice(0, 10).map((task) => (
+            {visibleRecent.map((task) => (
               <QueueTaskRow isControlling={isControlling} key={task.id} onControl={onControl} task={task} tone="recent" />
             ))}
+            {recentVisibleCount < recent.length && (
+              <button
+                className="justify-self-start rounded-md border border-line bg-white px-3 py-1.5 text-xs font-medium text-muted transition hover:border-bilibili hover:text-bilibili"
+                type="button"
+                onClick={() => setRecentPage((value) => value + 1)}
+              >
+                显示更多记录（剩余 {recent.length - recentVisibleCount}）
+              </button>
+            )}
           </div>
         )}
       </div>

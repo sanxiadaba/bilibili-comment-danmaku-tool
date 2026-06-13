@@ -43,6 +43,7 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     load_comment_data,
     load_danmaku_data,
     list_video_summaries,
+    list_video_summaries_page,
     save_comments_to_sqlite,
     save_danmaku_to_sqlite,
 )
@@ -130,6 +131,62 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(loaded["items"][0]["is_up_owner"])
             self.assertEqual([bucket["bucket_start"] for bucket in loaded["buckets"]], [0, 10])
             self.assertEqual(summaries[0]["danmaku_count"], 2)
+
+    def test_list_video_summaries_page_limits_aggregation_to_requested_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            archives = [
+                ("BV1111111111", "2024-01-01T00:00:00+00:00", 1),
+                ("BV2222222222", "2024-01-02T00:00:00+00:00", 2),
+                ("BV3333333333", "2024-01-03T00:00:00+00:00", 3),
+            ]
+
+            for bvid, fetched_at, comment_count in archives:
+                comments = [
+                    make_comment(f"{bvid}-{index}", 1, f"comment {index}", like=index + 1)
+                    for index in range(comment_count)
+                ]
+                archive = make_archive(fetched_at, comments)
+                archive["metadata"]["bvid"] = bvid
+                archive["metadata"]["source_url"] = f"https://www.bilibili.com/video/{bvid}"
+                save_comments_to_sqlite(archive, db_path, replace=True)
+                save_danmaku_to_sqlite(
+                    {
+                        "bvid": bvid,
+                        "cid": "456",
+                        "items": [
+                            {
+                                "bvid": bvid,
+                                "cid": "456",
+                                "dmid": f"{bvid}-dm-{index}",
+                                "progress": float(index),
+                                "mode": 1,
+                                "font_size": 25,
+                                "color": 0xFFFFFF,
+                                "ctime": 1700000000 + index,
+                                "pool": 0,
+                                "user_hash": "hash",
+                                "weight": 1,
+                                "like_count": 0,
+                                "content": f"danmaku {index}",
+                                "fetched_at": fetched_at,
+                            }
+                            for index in range(comment_count)
+                        ],
+                    },
+                    db_path,
+                    replace=True,
+                )
+
+            page = list_video_summaries_page(db_path, limit=1, offset=1)
+
+            self.assertEqual(page["total"], 3)
+            self.assertEqual(page["limit"], 1)
+            self.assertEqual(page["offset"], 1)
+            self.assertTrue(page["has_more"])
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222"])
+            self.assertEqual(page["videos"][0]["comment_total_count"], 2)
+            self.assertEqual(page["videos"][0]["danmaku_count"], 2)
 
     def test_export_archive_to_sqlite_creates_independent_subset_database(self):
         with tempfile.TemporaryDirectory() as tmp:
