@@ -208,8 +208,8 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
 
   if (isLoading && !danmaku) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#f4f7fb]">
-        <div className="flex items-center gap-3 rounded-md border border-line bg-white px-5 py-4 text-sm text-muted shadow-soft">
+      <main className="app-shell grid place-items-center">
+        <div className="surface-card flex items-center gap-3 rounded-md px-5 py-4 text-sm text-muted">
           <RefreshCcw className="animate-spin" size={18} aria-hidden="true" />
           正在载入弹幕数据
         </div>
@@ -221,8 +221,8 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   const fetchedAt = danmaku?.metadata.fetched_at ? formatFullDateTime(danmaku.metadata.fetched_at) : "-";
 
   return (
-    <main className="min-h-screen bg-[#f4f7fb] text-ink">
-      <section className="border-b border-line bg-white">
+    <main className="app-shell">
+      <section className="app-header">
         <div className="mx-auto grid max-w-[1800px] gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6 2xl:px-8">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
@@ -240,7 +240,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
           </div>
           <div className="flex flex-wrap items-center gap-2 self-center lg:flex-col lg:items-stretch">
             <a
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath("/", dbId)}
               onClick={() =>
                 logClientEvent("client.user.danmaku.nav_library", "user opened video library from danmaku", {
@@ -253,7 +253,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               视频库
             </a>
             <a
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath(`/video/${danmaku?.metadata.bvid || bvid || ""}`, dbId)}
               onClick={() =>
                 logClientEvent("client.user.danmaku.nav_comments", "user opened comments from danmaku", {
@@ -266,7 +266,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               评论页
             </a>
             <button
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
               type="button"
               onClick={refreshCurrentDanmaku}
               disabled={isRefreshing}
@@ -275,7 +275,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               {isRefreshing ? "抓取中" : "刷新弹幕"}
             </button>
             <a
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+              className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={`https://www.bilibili.com/video/${danmaku?.metadata.bvid || bvid || ""}`}
               rel="noreferrer"
               target="_blank"
@@ -315,12 +315,12 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
       </section>
 
       <section className="mx-auto grid max-w-[1800px] gap-4 px-4 pb-6 lg:grid-cols-[380px_minmax(0,1fr)] lg:px-6 2xl:grid-cols-[400px_minmax(0,1fr)_440px] 2xl:px-8">
-        <aside className="flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md border border-line bg-white shadow-soft lg:sticky lg:top-4">
-          <div className="border-b border-line p-4">
+        <aside className="surface-card flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md lg:sticky lg:top-4">
+          <div className="border-b border-line/80 bg-white/42 p-4">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={17} />
               <input
-                className="h-10 w-full rounded-md border border-line bg-white pl-10 pr-3 text-sm outline-none transition focus:border-bilibili focus:ring-2 focus:ring-pink-100"
+                className="input-shell h-10 w-full rounded-md pl-10 pr-3 text-sm outline-none"
                 placeholder="搜索弹幕、dmid 或颜色"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -341,7 +341,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
                 onChange={setModeFilter}
               />
               <button
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-muted transition hover:border-ink hover:text-ink"
+                className="btn-quiet inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted"
                 type="button"
                 onClick={resetDanmakuFilters}
               >
@@ -349,7 +349,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
                 重置
               </button>
               <button
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-muted transition hover:border-ink hover:text-ink disabled:opacity-60"
+                className="btn-quiet inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted disabled:opacity-60"
                 type="button"
                 onClick={exportDanmaku}
                 disabled={!danmaku}
@@ -359,7 +359,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               </button>
             </div>
 
-            <label className="mt-3 flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
+            <label className="input-shell mt-3 flex h-10 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-muted">
               <SlidersHorizontal size={15} aria-hidden="true" />
               <select
                 className="min-w-0 flex-1 truncate bg-transparent text-ink outline-none"
@@ -460,7 +460,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
           </Panel>
         </section>
 
-        <aside className="min-w-0 overflow-hidden rounded-md border border-line bg-white shadow-soft lg:col-span-2 lg:min-h-[720px] 2xl:col-span-1">
+        <aside className="surface-card min-w-0 overflow-hidden rounded-md lg:col-span-2 lg:min-h-[720px] 2xl:col-span-1">
           {selectedItem ? (
             <DanmakuDetail item={selectedItem} />
           ) : (

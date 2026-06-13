@@ -14,10 +14,10 @@ type VideoCardProps = {
 
 export function VideoCard({ disabled, dbId, exporting, video, onExport }: VideoCardProps) {
   return (
-    <article className="grid gap-3 rounded-md border border-line bg-[#fbfcfe] p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
-      <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100">
+    <article className="interactive-card grid gap-3 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
+      <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100 shadow-sm">
         {video.pic && <img className="h-full w-full object-cover" src={normalizeImageUrl(video.pic)} alt={video.title} referrerPolicy="no-referrer" />}
-        <span className="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-1 text-xs font-medium text-white">{video.bvid}</span>
+        <span className="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-1 text-xs font-medium text-white shadow-sm">{video.bvid}</span>
       </div>
       <div className="min-w-0 self-center">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -39,7 +39,7 @@ export function VideoCard({ disabled, dbId, exporting, video, onExport }: VideoC
       </div>
       <div className="flex flex-wrap items-center gap-2 self-center md:flex-col md:items-stretch">
         <a
-          className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+          className="btn-quiet inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium"
           href={dbPath(`/video/${video.bvid}`, dbId)}
           onClick={() =>
             logClientEvent("client.user.video_card.open_comments", "opened comments from video card", {
@@ -53,7 +53,7 @@ export function VideoCard({ disabled, dbId, exporting, video, onExport }: VideoC
           <ChevronRight size={15} aria-hidden="true" />
         </a>
         <a
-          className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f]"
+          className="btn-primary inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium"
           href={dbPath(`/danmaku/${video.bvid}`, dbId)}
           onClick={() =>
             logClientEvent("client.user.video_card.open_danmaku", "opened danmaku from video card", {
@@ -67,7 +67,7 @@ export function VideoCard({ disabled, dbId, exporting, video, onExport }: VideoC
           <Sparkles size={15} aria-hidden="true" />
         </a>
         <button
-          className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+          className="btn-quiet inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
           type="button"
           disabled={disabled}
           onClick={onExport}

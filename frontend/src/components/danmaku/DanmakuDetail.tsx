@@ -15,9 +15,9 @@ export function DanmakuDetail({ item }: DanmakuDetailProps) {
   const createdAt = item.ctime ? formatFullDateTime(new Date(item.ctime * 1000).toISOString()) : "-";
   return (
     <div>
-      <div className="border-b border-line p-4">
+      <div className="border-b border-line/80 bg-white/42 p-4">
         <div className="flex items-start gap-3">
-          <span className="inline-flex h-11 w-20 shrink-0 items-center justify-center rounded-md bg-amber-50 text-base font-semibold text-amber">
+          <span className="inline-flex h-11 w-20 shrink-0 items-center justify-center rounded-md bg-amber-50 text-base font-semibold text-amber ring-1 ring-amber-100">
             {formatProgress(item.progress)}
           </span>
           <div className="min-w-0 flex-1">
@@ -38,7 +38,7 @@ export function DanmakuDetail({ item }: DanmakuDetailProps) {
         </div>
       </div>
 
-      <div className="border-b border-line p-4">
+      <div className="border-b border-line/80 p-4">
         <h3 className="text-sm font-semibold text-ink">显示信息</h3>
         <dl className="mt-3 grid gap-2 text-sm">
           <InfoRow label="颜色" value={colorNameForDanmaku(item.color)} />

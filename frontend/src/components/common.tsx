@@ -12,7 +12,7 @@ type MetricProps = {
 
 export function Metric({ icon: Icon, label, value }: MetricProps) {
   return (
-    <span className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-[#fbfcfe] px-2.5 text-sm">
+    <span className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white/78 px-2.5 text-sm shadow-sm">
       <Icon size={15} aria-hidden="true" />
       {label} {formatNumber(value)}
     </span>
@@ -28,10 +28,12 @@ type PanelProps = {
 
 export function Panel({ icon: Icon, title, action, children }: PanelProps) {
   return (
-    <section className="min-w-0 overflow-hidden rounded-md border border-line bg-white shadow-soft">
-      <div className="flex min-h-14 items-center justify-between border-b border-line px-4">
+    <section className="surface-card min-w-0 overflow-hidden rounded-md">
+      <div className="flex min-h-14 items-center justify-between border-b border-line/80 bg-white/50 px-4">
         <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
-          <Icon size={18} aria-hidden="true" />
+          <span className="grid h-8 w-8 place-items-center rounded-md bg-[#f6f9fc] text-bilibili ring-1 ring-line">
+            <Icon size={17} aria-hidden="true" />
+          </span>
           {title}
         </h2>
         {action && <span className="text-sm text-muted">{action}</span>}
@@ -52,21 +54,21 @@ export function ProgressBanner({ progress, fallback }: ProgressBannerProps) {
   const stage = progress?.stage || "准备中";
   const stats = selectProgressStats(progress?.stats || {});
   return (
-    <section className="border-b border-amber-100 bg-[#fff8e7]">
+    <section className="border-b border-amber-100 bg-amber-50/82 backdrop-blur">
       <div className="mx-auto max-w-[1540px] px-4 py-3 text-sm text-[#5f4612] lg:px-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2 font-semibold text-ink">
               <RefreshCcw className="animate-spin text-amber" size={16} aria-hidden="true" />
               <span>{stage}</span>
-              <span className="rounded bg-white px-2 py-0.5 text-xs font-medium text-[#6b4b13]">{percent}%</span>
+              <span className="rounded bg-white/90 px-2 py-0.5 text-xs font-medium text-[#6b4b13] shadow-sm">{percent}%</span>
             </div>
             <div className="mt-1 truncate text-sm text-[#6b4b13]">{progress?.message || fallback}</div>
           </div>
           {stats.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               {stats.map(([label, value]) => (
-                <span className="rounded-md border border-amber-100 bg-white px-2.5 py-1 text-xs" key={label}>
+                <span className="rounded-md border border-amber-100 bg-white/85 px-2.5 py-1 text-xs shadow-sm" key={label}>
                   {label} <strong className="text-ink">{value}</strong>
                 </span>
               ))}
@@ -74,8 +76,8 @@ export function ProgressBanner({ progress, fallback }: ProgressBannerProps) {
           )}
         </div>
 
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
-          <div className="h-full rounded-full bg-amber transition-all duration-300" style={{ width: `${percent}%` }} />
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/80 shadow-inner">
+          <div className="h-full rounded-full bg-gradient-to-r from-amber to-bilibili transition-all duration-300" style={{ width: `${percent}%` }} />
         </div>
 
         {logs.length > 0 && (
@@ -136,7 +138,7 @@ type InfoRowProps = {
 
 export function InfoRow({ label, value }: InfoRowProps) {
   return (
-    <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 rounded bg-[#fbfcfe] px-3 py-2">
+    <div className="surface-muted grid grid-cols-[72px_minmax(0,1fr)] gap-3 rounded px-3 py-2">
       <dt className="text-muted">{label}</dt>
       <dd className="break-all font-mono text-xs text-ink">{value}</dd>
     </div>
@@ -151,7 +153,7 @@ type DetailMetricProps = {
 
 export function DetailMetric({ icon: Icon, label, value }: DetailMetricProps) {
   return (
-    <div className="rounded-md border border-line bg-[#fbfcfe] p-3">
+    <div className="surface-muted rounded-md p-3">
       <div className="flex items-center gap-2 text-xs text-muted">
         <Icon size={14} aria-hidden="true" />
         {label}
@@ -163,7 +165,7 @@ export function DetailMetric({ icon: Icon, label, value }: DetailMetricProps) {
 
 export function OwnerBadge() {
   return (
-    <span className="inline-flex shrink-0 items-center rounded border border-bilibili/25 bg-pink-50 px-1.5 py-0.5 text-xs font-medium text-bilibili">
+    <span className="inline-flex shrink-0 items-center rounded border border-bilibili/25 bg-pink-50 px-1.5 py-0.5 text-xs font-medium text-bilibili shadow-sm">
       UP主
     </span>
   );

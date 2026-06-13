@@ -62,8 +62,8 @@ export function ManagementPanel({
   const authLabel = cookieStatus?.is_login ? AUTH_LABEL_VALID : cookieStatus?.exists ? AUTH_LABEL_STALE : AUTH_LABEL_MISSING;
 
   return (
-    <section className="rounded-md border border-line bg-white shadow-soft">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+    <section className="surface-card rounded-md">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/80 bg-white/42 px-4 py-3">
         <div className="min-w-0">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
             <Settings size={18} aria-hidden="true" />
@@ -73,7 +73,7 @@ export function ManagementPanel({
             队列 {hasActiveTask ? "运行中" : "空闲"} · {queuedCount} 个排队 · 数据库 {healthyCount}/{databases.length} 可用
           </div>
         </div>
-        <div className="inline-flex rounded-md border border-line bg-[#fbfcfe] p-1">
+        <div className="inline-flex rounded-md border border-line bg-[#f6f9fc]/90 p-1 shadow-inner">
           <ManagementTab
             active={view === "queue"}
             icon={RefreshCcw}
@@ -119,7 +119,7 @@ function ManagementTab({ active, icon: Icon, label, meta, onClick }: { active: b
     <button
       className={cn(
         "inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition",
-        active ? "bg-ink text-white" : "text-muted hover:bg-white hover:text-ink",
+        active ? "bg-white text-ink shadow-sm ring-1 ring-line" : "text-muted hover:bg-white hover:text-ink",
       )}
       type="button"
       onClick={onClick}
@@ -168,12 +168,12 @@ function DatabaseManagerPanel({
 }: DatabaseManagerPanelProps) {
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/80 px-4 py-3">
         <div className="min-w-0 text-sm text-muted">
           {databases.length} 个已发现 · {healthyCount} 个可用 · 当前 {activeDatabaseName}
         </div>
         <button
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+          className="btn-quiet inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
           type="button"
           disabled={isLoading}
           onClick={onRefresh}
@@ -193,18 +193,18 @@ function DatabaseManagerPanel({
             {databases.map((database) => (
               <DatabaseCard active={database.id === activeDbId} database={database} key={database.id} onSelect={() => onSelect(database.id)} />
             ))}
-            {!isLoading && databases.length === 0 && <div className="rounded-md border border-dashed border-line bg-[#fbfcfe] p-4 text-sm text-muted">没有发现数据库</div>}
+            {!isLoading && databases.length === 0 && <div className="surface-muted rounded-md border-dashed p-4 text-sm text-muted">没有发现数据库</div>}
           </div>
         </div>
 
-        <form className="grid content-start gap-3 rounded-md border border-line bg-[#fbfcfe] p-3" onSubmit={onSubmitImport}>
+        <form className="surface-muted grid content-start gap-3 rounded-md p-3" onSubmit={onSubmitImport}>
           <div>
             <div className="text-sm font-semibold text-ink">导入已有数据库</div>
             <div className="mt-1 text-xs text-muted">可导入 .db/.sqlite/.sqlite3 或导出的 JSON 数据文件。</div>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             <button
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
               type="button"
               disabled={isImporting}
               onClick={onPickFiles}
@@ -213,7 +213,7 @@ function DatabaseManagerPanel({
               选择文件
             </button>
             <button
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
               type="button"
               disabled={isImporting}
               onClick={onPickFolder}
@@ -224,13 +224,13 @@ function DatabaseManagerPanel({
           </div>
           <label className="grid gap-2 text-sm text-muted">
             本机路径导入
-            <span className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line bg-white px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
+            <span className="input-shell flex h-10 min-w-0 items-center gap-2 rounded-md px-3">
               <FolderOpen size={16} aria-hidden="true" />
               <input className="min-w-0 flex-1 bg-transparent text-ink outline-none" placeholder="D:\\backups\\archive.db 或 archive.json" value={importPath} onChange={(event) => onImportPathChange(event.target.value)} />
             </span>
           </label>
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
+            className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
             type="submit"
             disabled={isImporting}
           >
@@ -258,8 +258,8 @@ function DatabaseCard({ active, database, onSelect }: { active: boolean; databas
   return (
     <button
       className={cn(
-        "grid min-w-0 gap-2 rounded-md border p-3 text-left transition",
-        active ? "border-bilibili bg-pink-50" : "border-line bg-white hover:border-bilibili",
+        "interactive-card grid min-w-0 gap-2 rounded-md border p-3 text-left transition",
+        active ? "border-bilibili bg-pink-50/90 shadow-sm" : "border-line bg-white/70 hover:border-bilibili hover:bg-white",
         !database.ok && "border-amber-200 bg-amber-50",
       )}
       type="button"

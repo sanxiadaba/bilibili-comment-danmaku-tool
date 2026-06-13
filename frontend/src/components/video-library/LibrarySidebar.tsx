@@ -67,7 +67,7 @@ export function LibrarySidebar({
   onUrlChange,
 }: LibrarySidebarProps) {
   return (
-    <aside className="self-start rounded-md border border-line bg-white p-4 shadow-soft">
+    <aside className="surface-card self-start rounded-md p-4">
       <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
         <PlusCircle size={18} aria-hidden="true" />
         解析新视频
@@ -75,7 +75,7 @@ export function LibrarySidebar({
       <form className="mt-4 grid gap-3" onSubmit={onSubmitParse}>
         <label className="grid gap-2 text-sm text-muted">
           视频链接或 BV 号
-          <span className="flex h-11 min-w-0 items-center gap-2 rounded-md border border-line px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
+          <span className="input-shell flex h-11 min-w-0 items-center gap-2 rounded-md px-3">
             <LinkIcon size={16} aria-hidden="true" />
             <input
               className="min-w-0 flex-1 bg-transparent text-ink outline-none"
@@ -86,7 +86,7 @@ export function LibrarySidebar({
           </span>
         </label>
         <button
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
+          className="btn-primary inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
           type="submit"
           disabled={isTaskBusy}
         >
@@ -111,7 +111,7 @@ export function LibrarySidebar({
         <form className="mt-4 grid gap-3" onSubmit={onSubmitSpaceArchive}>
           <label className="grid gap-2 text-sm text-muted">
             UP 主主页或 mid
-            <span className="flex h-11 min-w-0 items-center gap-2 rounded-md border border-line px-3 focus-within:border-bilibili focus-within:ring-2 focus-within:ring-pink-100">
+            <span className="input-shell flex h-11 min-w-0 items-center gap-2 rounded-md px-3">
               <LinkIcon size={16} aria-hidden="true" />
               <input
                 className="min-w-0 flex-1 bg-transparent text-ink outline-none"
@@ -122,7 +122,7 @@ export function LibrarySidebar({
             </span>
           </label>
           <button
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-bilibili px-4 text-sm font-medium text-white transition hover:bg-[#e85f89] disabled:cursor-wait disabled:opacity-70"
+            className="btn-accent inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
             type="submit"
             disabled={isSubmittingSpace}
           >
@@ -135,7 +135,7 @@ export function LibrarySidebar({
         <div className="mt-4 grid gap-3 border-t border-line pt-4">
           <label className="grid gap-2 text-sm text-muted">
             抓取延迟
-            <span className="flex h-10 items-center gap-3 rounded-md border border-line px-3">
+            <span className="input-shell flex h-10 items-center gap-3 rounded-md px-3">
               <input
                 className="min-w-0 flex-1 accent-bilibili"
                 max={2}
@@ -206,7 +206,7 @@ type DuplicateVideoNoticeProps = {
 
 function DuplicateVideoNotice({ disabled, isParsing, video, onOpen, onReparse }: DuplicateVideoNoticeProps) {
   return (
-    <div className="mt-4 grid gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-ink">
+    <div className="mt-4 grid gap-3 rounded-md border border-amber-200 bg-amber-50/88 p-3 text-sm text-ink shadow-sm">
       <div className="flex min-w-0 items-start gap-2">
         <AlertTriangle className="mt-0.5 shrink-0 text-amber-600" size={17} aria-hidden="true" />
         <div className="min-w-0">
@@ -219,7 +219,7 @@ function DuplicateVideoNotice({ disabled, isParsing, video, onOpen, onReparse }:
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <button
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-sm font-medium text-amber-900 transition hover:border-amber-500"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-sm font-medium text-amber-900 transition hover:border-amber-500 hover:shadow-sm"
           type="button"
           onClick={onOpen}
         >
@@ -227,7 +227,7 @@ function DuplicateVideoNotice({ disabled, isParsing, video, onOpen, onReparse }:
           打开已有档案
         </button>
         <button
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
+          className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
           type="button"
           disabled={disabled}
           onClick={onReparse}

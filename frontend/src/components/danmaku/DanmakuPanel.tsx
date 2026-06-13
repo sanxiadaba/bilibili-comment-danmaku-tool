@@ -20,7 +20,7 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
 
   if (!danmaku || danmaku.metadata.total_count === 0) {
     return (
-      <div className="grid min-h-44 place-items-center rounded-md border border-dashed border-line bg-[#fbfcfe] p-6 text-center text-sm text-muted">
+      <div className="surface-muted grid min-h-44 place-items-center rounded-md border-dashed p-6 text-center text-sm text-muted">
         暂无弹幕数据，点击刷新会重新抓取当前视频的弹幕。
       </div>
     );
@@ -29,7 +29,7 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
   if (compact) {
     return (
       <VirtualList
-        className="max-h-[640px] overflow-y-auto rounded-md border border-line bg-[#fbfcfe] p-2"
+        className="surface-muted max-h-[640px] overflow-y-auto rounded-md p-2"
         empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
         estimateSize={72}
         getKey={(item) => item.dmid}
@@ -47,7 +47,7 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
           <DanmakuMetric label="覆盖时间" value={formatProgress(danmaku.metadata.max_progress)} />
           <DanmakuMetric label="抓取时间" value={fetchedAt || "-"} />
         </div>
-        <div className="h-56 w-full max-w-full overflow-hidden rounded-md border border-line bg-[#fbfcfe] p-3">
+        <div className="surface-muted h-56 w-full max-w-full overflow-hidden rounded-md p-3">
           <div className="flex h-44 min-w-0 items-end gap-1 border-b border-line">
             {buckets.map((bucket) => (
               <div
@@ -70,7 +70,7 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
         </div>
       </div>
 
-      <div className="min-w-0 rounded-md border border-line bg-[#fbfcfe]">
+      <div className="surface-muted min-w-0 rounded-md">
         <div className="flex h-11 items-center justify-between border-b border-line px-3 text-sm">
           <span className="font-semibold text-ink">弹幕明细</span>
           <span className="text-muted">{formatNumber(items.length)} 条</span>
@@ -95,7 +95,7 @@ type DanmakuMetricProps = {
 
 function DanmakuMetric({ label, value }: DanmakuMetricProps) {
   return (
-    <div className="min-w-0 rounded-md border border-line bg-[#fbfcfe] px-3 py-2">
+    <div className="surface-muted min-w-0 rounded-md px-3 py-2">
       <div className="text-xs text-muted">{label}</div>
       <div className="mt-1 truncate text-sm font-semibold text-ink">{value}</div>
     </div>
@@ -108,7 +108,7 @@ type DanmakuRowProps = {
 
 function DanmakuRow({ item }: DanmakuRowProps) {
   return (
-    <div className="grid grid-cols-[58px_minmax(0,1fr)] gap-3 rounded-md px-2 py-2 text-sm hover:bg-white">
+    <div className="grid grid-cols-[58px_minmax(0,1fr)] gap-3 rounded-md px-2 py-2 text-sm hover:bg-white/80">
       <span className="inline-flex h-7 items-center justify-center rounded bg-amber-50 font-medium text-amber">
         {formatProgress(item.progress)}
       </span>

@@ -588,7 +588,7 @@ export function VideoLibraryPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f7fb] text-ink">
+    <main className="app-shell">
       <LibraryHeader
         activeDatabase={activeDatabase}
         commentCount={totals.comments}

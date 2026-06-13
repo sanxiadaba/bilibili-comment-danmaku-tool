@@ -29,7 +29,7 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
   const content = (
     <>
       {!embedded && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/80 bg-white/42 px-4 py-3">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
             <RefreshCcw className={cn(active && "animate-spin text-bilibili")} size={18} aria-hidden="true" />
             抓取队列
@@ -43,7 +43,7 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
         {active ? (
           <QueueTaskRow isControlling={isControlling} onControl={onControl} task={active} tone="active" />
         ) : (
-          <div className="rounded-md border border-dashed border-line bg-[#fbfcfe] px-3 py-3 text-sm text-muted">
+          <div className="surface-muted rounded-md border-dashed px-3 py-3 text-sm text-muted">
             暂无正在运行的抓取任务
           </div>
         )}
@@ -56,12 +56,12 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
         )}
         {queued.length === 0 && !active && recent.length === 0 && <div className="text-sm text-muted">暂无排队任务</div>}
         {recent.length > 0 && (
-          <div className="grid gap-2 border-t border-line pt-3">
+          <div className="grid gap-2 border-t border-line/80 pt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs font-medium uppercase tracking-normal text-muted">最近完成</div>
               {onControl && (
                 <button
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-muted transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+                  className="btn-quiet inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted disabled:cursor-wait disabled:opacity-60"
                   disabled={isControlling}
                   type="button"
                   onClick={() => onControl("clear")}
@@ -76,7 +76,7 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
             ))}
             {recentVisibleCount < recent.length && (
               <button
-                className="justify-self-start rounded-md border border-line bg-white px-3 py-1.5 text-xs font-medium text-muted transition hover:border-bilibili hover:text-bilibili"
+                className="btn-quiet justify-self-start rounded-md px-3 py-1.5 text-xs font-medium text-muted"
                 type="button"
                 onClick={() => setRecentPage((value) => value + 1)}
               >
@@ -93,7 +93,7 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
     return <div>{content}</div>;
   }
 
-  return <section className="rounded-md border border-line bg-white shadow-soft">{content}</section>;
+  return <section className="surface-card rounded-md">{content}</section>;
 }
 
 function QueueTaskRow({
@@ -117,8 +117,8 @@ function QueueTaskRow({
   return (
     <div
       className={cn(
-        "min-w-0 rounded-md border px-3 py-3",
-        tone === "active" ? "border-bilibili/30 bg-pink-50" : tone === "queued" ? "border-line bg-[#fbfcfe]" : "border-line bg-white",
+        "interactive-card min-w-0 rounded-md border px-3 py-3",
+        tone === "active" ? "border-bilibili/30 bg-pink-50/90 shadow-sm" : tone === "queued" ? "border-line bg-white/70" : "border-line bg-white/82",
       )}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -159,8 +159,8 @@ function QueueTaskRow({
           <TaskButton disabled={isControlling} icon={Trash2} label="清除" onClick={() => onControl?.("clear", task.id)} />
         </div>
       )}
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
-        <div className="h-full rounded-full bg-bilibili transition-all duration-300" style={{ width: `${percent}%` }} />
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white shadow-inner">
+        <div className="h-full rounded-full bg-gradient-to-r from-bilibili to-cyan transition-all duration-300" style={{ width: `${percent}%` }} />
       </div>
     </div>
   );
@@ -179,7 +179,7 @@ function TaskButton({
 }) {
   return (
     <button
-      className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line bg-white px-2.5 text-xs font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+      className="btn-quiet inline-flex h-8 items-center justify-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:cursor-wait disabled:opacity-60"
       disabled={disabled}
       type="button"
       onClick={onClick}

@@ -9,17 +9,17 @@ type StatTileProps = {
 };
 
 const toneClass = {
-  pink: "bg-pink-50 text-bilibili",
-  cyan: "bg-cyan-50 text-cyan",
-  mint: "bg-emerald-50 text-mint",
-  amber: "bg-amber-50 text-amber",
+  pink: "bg-pink-50 text-bilibili ring-pink-100",
+  cyan: "bg-cyan-50 text-cyan ring-cyan-100",
+  mint: "bg-emerald-50 text-mint ring-emerald-100",
+  amber: "bg-amber-50 text-amber ring-amber-100",
 };
 
 export function StatTile({ icon: Icon, label, value = 0, tone = "pink" }: StatTileProps) {
   return (
-    <div className="min-h-24 rounded-md border border-line bg-panel p-4 shadow-soft">
+    <div className="surface-card interactive-card min-h-24 overflow-hidden rounded-md p-4">
       <div className="flex items-center gap-3">
-        <span className={`grid h-9 w-9 place-items-center rounded-md ${toneClass[tone]}`}>
+        <span className={`grid h-9 w-9 place-items-center rounded-md ring-1 ${toneClass[tone]}`}>
           <Icon size={18} aria-hidden="true" />
         </span>
         <span className="text-sm text-muted">{label}</span>

@@ -25,11 +25,11 @@ export function LibraryHeader({
 }: LibraryHeaderProps) {
   const busy = isLoading || isLoadingDatabases;
   return (
-    <section className="border-b border-line bg-white">
-      <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6">
+    <section className="app-header">
+      <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6">
         <div>
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
-            <span className="inline-flex items-center gap-1">
+            <span className="inline-flex items-center gap-1 rounded-md bg-white/70 px-2 py-1 ring-1 ring-line">
               <Database size={15} aria-hidden="true" />
               评论视频库
             </span>
@@ -37,13 +37,13 @@ export function LibraryHeader({
             <span>{formatNumber(commentCount)} 条评论档案</span>
             {activeDatabase && <span>当前库：{activeDatabase.name}</span>}
           </div>
-          <h1 className="mt-2 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
+          <h1 className="mt-3 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
             Bilibili 评论弹幕管理
           </h1>
         </div>
         <div className="flex items-center gap-2 self-center">
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+            className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
             type="button"
             onClick={onRefresh}
             disabled={busy}
@@ -54,7 +54,7 @@ export function LibraryHeader({
           <button
             className={cn(
               "inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium transition",
-              showSettings ? "border-bilibili text-bilibili" : "text-muted hover:border-ink hover:text-ink",
+              showSettings ? "border-bilibili bg-white text-bilibili shadow-sm" : "btn-quiet text-muted",
             )}
             type="button"
             onClick={onToggleSettings}

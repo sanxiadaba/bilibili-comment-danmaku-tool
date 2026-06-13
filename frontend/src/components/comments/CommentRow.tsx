@@ -24,8 +24,8 @@ export function CommentRow({ comment, active, onSelect }: CommentRowProps) {
   return (
     <button
       className={cn(
-        "block w-full border-b border-line px-4 py-3 text-left transition hover:bg-[#fbfcfe]",
-        active && "bg-pink-50",
+        "block w-full border-b border-line/80 px-4 py-3 text-left transition hover:bg-white/70",
+        active && "bg-pink-50/90 shadow-[inset_3px_0_0_#fb7299]",
         normalized.is_deleted && "bg-red-50/45 hover:bg-red-50",
       )}
       type="button"

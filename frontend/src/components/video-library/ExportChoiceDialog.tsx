@@ -18,15 +18,15 @@ export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDi
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-lg overflow-hidden rounded-md border border-line bg-white shadow-xl">
-        <div className="flex items-start justify-between gap-3 border-b border-line p-4">
+      <div className="surface-card w-full max-w-lg overflow-hidden rounded-md shadow-xl">
+        <div className="flex items-start justify-between gap-3 border-b border-line/80 bg-white/42 p-4">
           <div className="min-w-0">
             <div className="text-base font-semibold text-ink">{title}</div>
             <div className="mt-1 line-clamp-2 text-sm text-muted">{name}</div>
             <div className="mt-1 text-xs text-muted">{summary}</div>
           </div>
           <button
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#fbfcfe] text-muted transition hover:text-ink"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/70 text-muted transition hover:text-ink hover:shadow-sm"
             type="button"
             aria-label="关闭导出选择"
             onClick={onClose}
@@ -36,7 +36,7 @@ export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDi
         </div>
         <div className="grid gap-3 p-4 sm:grid-cols-2">
           <button
-            className="grid min-h-28 gap-2 rounded-md border border-line bg-[#fbfcfe] p-4 text-left transition hover:border-bilibili hover:bg-white"
+            className="interactive-card grid min-h-28 gap-2 rounded-md border border-line bg-white/70 p-4 text-left transition hover:border-bilibili hover:bg-white"
             type="button"
             onClick={() => onChoose("sqlite")}
           >
@@ -47,7 +47,7 @@ export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDi
             <span className="text-sm leading-6 text-muted">导出为可热插拔的独立数据库，适合继续在本工具中切换查看。</span>
           </button>
           <button
-            className="grid min-h-28 gap-2 rounded-md border border-line bg-[#fbfcfe] p-4 text-left transition hover:border-bilibili hover:bg-white"
+            className="interactive-card grid min-h-28 gap-2 rounded-md border border-line bg-white/70 p-4 text-left transition hover:border-bilibili hover:bg-white"
             type="button"
             onClick={() => onChoose("json")}
           >

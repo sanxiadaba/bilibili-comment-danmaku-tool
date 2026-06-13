@@ -241,15 +241,15 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   if (error && !data) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#f4f7fb] p-6">
-        <div className="w-full max-w-lg rounded-md border border-line bg-white p-6 shadow-soft">
+      <main className="app-shell grid place-items-center p-6">
+        <div className="surface-card w-full max-w-lg rounded-md p-6">
           <div className="flex items-center gap-3 text-red-600">
             <RefreshCcw size={20} aria-hidden="true" />
             <h1 className="text-lg font-semibold">数据加载失败</h1>
           </div>
           <p className="mt-3 text-sm text-muted">{error}</p>
           <button
-            className="mt-5 inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+            className="btn-primary mt-5 inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium"
             type="button"
             onClick={refreshComments}
           >
@@ -263,8 +263,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   if (!data) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#f4f7fb]">
-        <div className="flex items-center gap-3 rounded-md border border-line bg-white px-5 py-4 text-sm text-muted shadow-soft">
+      <main className="app-shell grid place-items-center">
+        <div className="surface-card flex items-center gap-3 rounded-md px-5 py-4 text-sm text-muted">
           <RefreshCcw className="animate-spin" size={18} aria-hidden="true" />
           正在载入评论数据
         </div>
@@ -276,10 +276,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const deletedCount = data.metadata.deleted_comment_count ?? 0;
 
   return (
-    <main className="min-h-screen bg-[#f4f7fb] text-ink">
-      <section className="border-b border-line bg-white">
+    <main className="app-shell">
+      <section className="app-header">
         <div className="mx-auto grid max-w-[1800px] gap-5 px-4 py-4 lg:grid-cols-[280px_minmax(0,1fr)_auto] lg:px-6 2xl:px-8">
-          <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100">
+          <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100 shadow-sm">
             {data.video_raw.pic && (
               <img
                 className="h-full w-full object-cover"
@@ -314,7 +314,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
           </div>
           <div className="flex flex-wrap items-center gap-2 self-center lg:flex-col lg:items-stretch">
             <a
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath("/", dbId)}
               onClick={() =>
                 logClientEvent("client.user.comments.nav_library", "user opened video library from comments", {
@@ -327,7 +327,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               视频库
             </a>
             <a
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath(`/danmaku/${data.metadata.bvid}`, dbId)}
               onClick={() =>
                 logClientEvent("client.user.comments.nav_danmaku", "user opened danmaku page from comments", {
@@ -340,7 +340,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               弹幕页
             </a>
             <button
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-70"
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
               type="button"
               onClick={refreshComments}
               disabled={isRefreshing}
@@ -349,7 +349,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               {isRefreshing ? "重新抓取中" : "刷新评论"}
             </button>
             <a
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+              className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={data.metadata.source_url}
               rel="noreferrer"
               target="_blank"
@@ -392,12 +392,12 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       </section>
 
       <section className="mx-auto grid max-w-[1800px] gap-4 px-4 pb-6 lg:grid-cols-[380px_minmax(0,1fr)] lg:px-6 xl:grid-cols-[380px_minmax(0,1fr)_420px] 2xl:grid-cols-[400px_minmax(0,1fr)_460px] 2xl:px-8">
-        <aside className="flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md border border-line bg-white shadow-soft lg:sticky lg:top-4">
-          <div className="border-b border-line p-4">
+        <aside className="surface-card flex max-h-[calc(100vh-2rem)] min-w-0 flex-col self-start overflow-hidden rounded-md lg:sticky lg:top-4">
+          <div className="border-b border-line/80 bg-white/42 p-4">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={17} />
               <input
-                className="h-10 w-full rounded-md border border-line bg-white pl-10 pr-3 text-sm outline-none transition focus:border-bilibili focus:ring-2 focus:ring-pink-100"
+                className="input-shell h-10 w-full rounded-md pl-10 pr-3 text-sm outline-none"
                 placeholder="搜索评论、用户或 rpid"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -416,7 +416,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                 onChange={setLevelFilter}
               />
               <button
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-muted transition hover:border-ink hover:text-ink"
+                className="btn-quiet inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted"
                 type="button"
                 onClick={resetFilters}
               >
@@ -424,7 +424,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                 重置
               </button>
               <button
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-muted transition hover:border-ink hover:text-ink"
+                className="btn-quiet inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted"
                 type="button"
                 onClick={exportFiltered}
               >
@@ -433,7 +433,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               </button>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <label className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
+              <label className="input-shell flex h-10 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-muted">
                 <SlidersHorizontal size={15} aria-hidden="true" />
                 <select
                   className="min-w-0 flex-1 truncate bg-transparent text-ink outline-none"
@@ -447,7 +447,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                   ))}
                 </select>
               </label>
-              <label className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
+              <label className="input-shell flex h-10 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-muted">
                 <MapPin size={15} aria-hidden="true" />
                 <select
                   className="min-w-0 flex-1 truncate bg-transparent text-ink outline-none"
@@ -537,8 +537,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               {likedComments.map((comment) => (
                 <button
                   className={cn(
-                    "min-h-24 rounded-md border border-line bg-[#fbfcfe] p-3 text-left transition hover:border-bilibili hover:bg-white",
-                    selectedComment?.normalized.rpid === comment.normalized.rpid && "border-bilibili bg-pink-50",
+                    "interactive-card min-h-24 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white",
+                    selectedComment?.normalized.rpid === comment.normalized.rpid && "border-bilibili bg-pink-50/90",
                     comment.normalized.is_deleted && "border-red-100 bg-red-50/50",
                   )}
                   key={comment.normalized.rpid}
@@ -571,7 +571,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
           </Panel>
         </section>
 
-        <aside className="min-w-0 overflow-hidden rounded-md border border-line bg-white shadow-soft lg:col-span-2 lg:min-h-[720px] xl:col-span-1">
+        <aside className="surface-card min-w-0 overflow-hidden rounded-md lg:col-span-2 lg:min-h-[720px] xl:col-span-1">
           {selectedComment ? (
             <CommentDetail
               comment={selectedComment}
