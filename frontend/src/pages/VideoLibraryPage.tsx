@@ -473,11 +473,11 @@ export function VideoLibraryPage() {
         setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
       }
       setVideoTotal((current) => Math.max(0, current - deleteTargetVideoCount(target)));
-      setMessage(payload.message || `??????????${payload.task_id || "????"}`);
+      setMessage(payload.message || `删除任务已加入队列：${payload.task_id || "等待执行"}`);
       setNotice({
         kind: "success",
-        title: "???????",
-        message: "?????????????????????????????????????",
+        title: "删除任务已提交",
+        message: "本地档案会在后台删除，任务列表会显示进度；完成后数据库空间也会在后台整理。",
       });
       window.setTimeout(() => {
         void loadVideos({ quiet: true });
@@ -493,7 +493,7 @@ export function VideoLibraryPage() {
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
-      setNotice({ kind: "error", title: "????", message: text });
+      setNotice({ kind: "error", title: "删除失败", message: text });
       logClientEvent("client.user.archive_delete.error", text, {
         db_id: activeDbId,
         target: target.kind,
