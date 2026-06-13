@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { DanmakuItem } from "../../types";
 import {
   buildDanmakuBuckets,
   buildDanmakuColorStats,
@@ -11,28 +10,8 @@ import {
   getDanmakuModeGroup,
   getDanmakuModeLabel,
   sortDanmakuItems,
-} from "./danmakuUtils";
-
-function makeDanmaku(overrides: Partial<DanmakuItem> = {}): DanmakuItem {
-  return {
-    dmid: "1",
-    bvid: "BV1xx411c7mD",
-    cid: "456",
-    progress: 0,
-    mode: 1,
-    font_size: 25,
-    color: 0xffffff,
-    ctime: 1700000000,
-    pool: 0,
-    user_hash: "hash",
-    weight: 0,
-    like_count: 0,
-    is_up_owner: false,
-    content: "hello",
-    fetched_at: "2024-01-01T00:00:00+00:00",
-    ...overrides,
-  };
-}
+} from "../../../../frontend/src/components/danmaku/danmakuUtils";
+import { makeDanmaku } from "../../helpers/factories";
 
 describe("danmaku utilities", () => {
   it("formats progress and sorts by supported modes", () => {

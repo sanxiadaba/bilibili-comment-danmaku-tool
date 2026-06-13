@@ -1,0 +1,143 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  archiveSpaceVideos,
+  exportDatabaseArchive,
+  fetchCommentData,
+  fetchDanmakuData,
+  fetchProgress,
+  fetchVideos,
+  importDatabase,
+  importDatabaseFiles,
+  logClientEvent,
+  parseVideo,
+  refreshCommentData,
+  refreshDanmakuData,
+} from "../../../frontend/src/api/client";
+import { installApiBrowserStubs } from "../helpers/browser";
+
+function jsonResponse(payload: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+}
+
+describe("API client", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-13T00:00:00.000Z"));
+    installApiBrowserStubs();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("adds db ids to list requests and parses JSON", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [] }));
+    globalThis.fetch = fetchMock;
+
+    const payload = await fetchVideos("archive 1");
+
+    expect(payload.videos).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/videos?"), { cache: "no-store" });
+    expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive+1");
+  });
+
+  it("sends parse, space archive, import and export payloads", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true, videos: [] })));
+    globalThis.fetch = fetchMock;
+
+    await parseVideo("BV1xx411c7mD", 0.5, "main");
+    await archiveSpaceVideos("https://space.bilibili.com/123456", { delay: 1, dbId: "main" });
+    await importDatabase("D:/archive.json");
+    await exportDatabaseArchive({ format: "json", bvid: "BV1xx411c7mD", db_id: "main" });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
+      url: "BV1xx411c7mD",
+      delay: 0.5,
+      db_id: "main",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({
+      owner_ref: "https://space.bilibili.com/123456",
+      delay: 1,
+      db_id: "main",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ path: "D:/archive.json" });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toMatchObject({
+      format: "json",
+      bvid: "BV1xx411c7mD",
+    });
+  });
+
+  it("scopes comment and danmaku reads or refreshes by bvid and database", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true })));
+    globalThis.fetch = fetchMock;
+
+    await fetchCommentData("BV1xx411c7mD", "archive");
+    await refreshCommentData("BV1xx411c7mD", "archive");
+    await fetchDanmakuData("BV1xx411c7mD", "archive");
+    await refreshDanmakuData("BV1xx411c7mD", "archive");
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/comments?");
+    expect(fetchMock.mock.calls[0][0]).toContain("bvid=BV1xx411c7mD");
+    expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive");
+    expect(fetchMock.mock.calls[1][0]).toContain("/api/refresh?");
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[2][0]).toContain("/api/danmaku?");
+    expect(fetchMock.mock.calls[3][0]).toContain("/api/danmaku/refresh?");
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("uploads selected database files as multipart form data", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+    const file = new File(["payload"], "archive.json", { type: "application/json" });
+
+    await importDatabaseFiles([file]);
+
+    const requestInit = fetchMock.mock.calls[0][1];
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/databases/import-file?");
+    expect(requestInit.method).toBe("POST");
+    expect(requestInit.body).toBeInstanceOf(FormData);
+    const uploadedFile = Array.from((requestInit.body as FormData).getAll("files"))[0] as File;
+    expect(uploadedFile.name).toBe(file.name);
+    expect(uploadedFile.type).toBe(file.type);
+    expect(uploadedFile.size).toBe(file.size);
+  });
+
+  it("reports JSON API errors and HTML fallback responses clearly", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(jsonResponse({ error: "bad request" }, { status: 400 }));
+    await expect(fetchProgress()).rejects.toThrow("bad request");
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response("<!doctype html><html></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    await expect(fetchProgress()).rejects.toThrow(/API/);
+  });
+
+  it("uses sendBeacon for client logs and ignores failures", () => {
+    logClientEvent("client.test", "hello", { bvid: "BV1xx411c7mD" });
+    expect(navigator.sendBeacon).toHaveBeenCalledWith("/api/logs/client", expect.any(Blob));
+
+    vi.stubGlobal("navigator", {
+      sendBeacon: vi.fn(() => {
+        throw new Error("blocked");
+      }),
+    });
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("network down");
+    }) as typeof fetch;
+
+    expect(() => logClientEvent("client.test", "ignored")).not.toThrow();
+  });
+});

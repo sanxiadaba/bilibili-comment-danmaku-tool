@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { CommentNode } from "../types";
 import {
   filterComments,
   flattenThread,
@@ -9,38 +8,8 @@ import {
   sortComments,
   topAuthors,
   topLiked,
-} from "./utils";
-
-function makeComment(overrides: Partial<CommentNode["normalized"]> = {}, replies: CommentNode[] = []): CommentNode {
-  return {
-    raw: {},
-    replies,
-    normalized: {
-      level: 1,
-      rpid: "1",
-      oid: "100",
-      type: 1,
-      mid: "42",
-      root: "0",
-      parent: "0",
-      dialog: "0",
-      ctime: 1700000000,
-      time_iso: "2024-01-01T00:00:00+08:00",
-      time_iso_utc: "2023-12-31T16:00:00+00:00",
-      like: 0,
-      rcount: 0,
-      count: 0,
-      state: 0,
-      attr: 0,
-      message: "hello",
-      user: {
-        mid: "42",
-        uname: "alice",
-      },
-      ...overrides,
-    },
-  };
-}
+} from "../../../frontend/src/lib/utils";
+import { makeComment } from "../helpers/factories";
 
 describe("comment utilities", () => {
   it("sorts comments by likes, replies and time with stable tie-breakers", () => {
@@ -62,7 +31,7 @@ describe("comment utilities", () => {
         level: 1,
         message: "first message",
         like: 10,
-        ip_location: "上海",
+        ip_location: "Shanghai",
         is_up_owner: true,
         user: { mid: "42", uname: "owner" },
       }),
@@ -71,7 +40,7 @@ describe("comment utilities", () => {
         level: 2,
         message: "nested reply",
         like: 2,
-        ip_location: "北京",
+        ip_location: "Beijing",
         user: { mid: "7", uname: "bob" },
       }),
     ];
@@ -79,7 +48,7 @@ describe("comment utilities", () => {
     expect(filterComments(comments, "owner", "all", "all", 0).map((item) => item.normalized.rpid)).toEqual(["1"]);
     expect(filterComments(comments, "", "reply", "all", 0).map((item) => item.normalized.rpid)).toEqual(["2"]);
     expect(filterComments(comments, "", "owner", "all", 0).map((item) => item.normalized.rpid)).toEqual(["1"]);
-    expect(filterComments(comments, "", "all", "上海", 0).map((item) => item.normalized.rpid)).toEqual(["1"]);
+    expect(filterComments(comments, "", "all", "Shanghai", 0).map((item) => item.normalized.rpid)).toEqual(["1"]);
     expect(filterComments(comments, "", "all", "all", 5).map((item) => item.normalized.rpid)).toEqual(["1"]);
   });
 
