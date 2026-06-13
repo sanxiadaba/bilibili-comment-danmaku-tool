@@ -1,4 +1,6 @@
 import type {
+  AuthQrPollResponse,
+  AuthQrSession,
   CommentData,
   CookieStatus,
   DatabaseImportResponse,
@@ -20,6 +22,56 @@ export async function fetchDatabases(activeId = "main") {
 
 export async function fetchCookieStatus() {
   return requestJson<CookieStatus>("cookie.status", `/api/cookie/status?ts=${Date.now()}`, { cache: "no-store" });
+}
+
+export async function saveCookie(cookie: string) {
+  return requestJson<CookieStatus>(
+    "cookie.save",
+    `/api/cookie/save?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cookie }),
+    },
+    { length: cookie.length },
+  );
+}
+
+export async function clearCookie() {
+  return requestJson<CookieStatus>(
+    "cookie.clear",
+    `/api/cookie/clear?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+    },
+  );
+}
+
+export async function createAuthQrCode() {
+  return requestJson<AuthQrSession>(
+    "auth.qrcode",
+    `/api/auth/qrcode?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+    },
+  );
+}
+
+export async function pollAuthQrCode(sessionId: string) {
+  return requestJson<AuthQrPollResponse>(
+    "auth.qrcode_poll",
+    `/api/auth/qrcode/poll?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    },
+    { session_id: sessionId.slice(0, 12) },
+  );
 }
 
 export async function importDatabase(path: string) {

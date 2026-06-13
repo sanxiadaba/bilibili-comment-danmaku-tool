@@ -82,6 +82,7 @@ tests/
 - pause / stop 标记必须能被长时间抓取循环看到。
 - `/api/videos` 必须分页；首页不要恢复全库聚合查询。
 - 导出格式互斥：JSON 只写 JSON，SQLite 只写数据库。
+- 登录态由 `backend/auth_store.py` 管理；`data/cookie.txt` 仍是本地存储文件，但 UI/API 应走登录态管理接口。
 - `user_hash` 是内部字段，不在 UI 展示。
 - 弹幕颜色用中文名和色块展示，不展示裸 hash。
 

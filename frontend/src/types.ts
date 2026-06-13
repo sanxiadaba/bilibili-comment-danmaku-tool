@@ -245,6 +245,7 @@ export type CookieStatus = {
   exists: boolean;
   path: string;
   length: number;
+  source?: string;
   status: "missing" | "empty" | "unchecked" | "valid" | "invalid" | "error" | string;
   message: string;
   has_sessdata: boolean;
@@ -260,6 +261,26 @@ export type CookieStatus = {
   mid_present: boolean;
   uname_present: boolean;
   wbi_present: boolean;
+};
+
+export type AuthQrSession = {
+  session_id: string;
+  qrcode_key: string;
+  url: string;
+  expires_at: number;
+  ttl_seconds: number;
+};
+
+export type AuthQrPollResponse = {
+  ok: boolean;
+  status: "waiting" | "scanned" | "confirmed" | "expired" | "error" | string;
+  code: number;
+  message: string;
+  login_url: string;
+  expires_at?: number;
+  ttl_seconds?: number;
+  cookie_status?: CookieStatus;
+  error?: string;
 };
 
 export type DatabaseExportResponse = {

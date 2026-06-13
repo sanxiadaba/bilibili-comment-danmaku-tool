@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   archiveSpaceVideos,
+  clearCookie,
   controlSpaceTasks,
+  createAuthQrCode,
   exportDatabaseArchive,
   fetchCommentData,
   fetchDanmakuData,
@@ -11,8 +13,10 @@ import {
   importDatabaseFiles,
   logClientEvent,
   parseVideo,
+  pollAuthQrCode,
   refreshCommentData,
   refreshDanmakuData,
+  saveCookie,
 } from "../../../frontend/src/api/client";
 import { installApiBrowserStubs } from "../helpers/browser";
 
@@ -115,6 +119,25 @@ describe("API client", () => {
     expect(uploadedFile.name).toBe(file.name);
     expect(uploadedFile.type).toBe(file.type);
     expect(uploadedFile.size).toBe(file.size);
+  });
+
+  it("sends local auth management requests", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true })));
+    globalThis.fetch = fetchMock;
+
+    await saveCookie("SESSDATA=session; bili_jct=csrf");
+    await clearCookie();
+    await createAuthQrCode();
+    await pollAuthQrCode("session-1234567890");
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/cookie/save?");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ cookie: "SESSDATA=session; bili_jct=csrf" });
+    expect(fetchMock.mock.calls[1][0]).toContain("/api/cookie/clear?");
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[2][0]).toContain("/api/auth/qrcode?");
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[3][0]).toContain("/api/auth/qrcode/poll?");
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({ session_id: "session-1234567890" });
   });
 
   it("reports JSON API errors and HTML fallback responses clearly", async () => {

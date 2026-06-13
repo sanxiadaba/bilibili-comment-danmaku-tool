@@ -5,11 +5,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, shutdown_logging
+from auth_store import BilibiliQrLoginService, CookieStore
 from bilibili_comment_danmaku import (
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
-    inspect_cookie_status,
     list_video_summaries_page,
     load_comment_data,
     load_danmaku_data,
@@ -63,12 +63,16 @@ DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
+auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
+qr_login_service = BilibiliQrLoginService(auth_cookie_store)
 space_archive_service = None
 video_parse_service = None
 
 
 def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEFAULT_SPACE_CACHE_DIR, persist=False):
-    global space_archive_service, video_parse_service
+    global auth_cookie_store, qr_login_service, space_archive_service, video_parse_service
+    auth_cookie_store = CookieStore(cookie_file)
+    qr_login_service = BilibiliQrLoginService(auth_cookie_store)
     space_state_path = space_cache_dir / "space_queue.json" if persist else None
     video_state_path = space_cache_dir / "video_parse_queue.json" if persist else None
     space_archive_service = SpaceArchiveService(
@@ -180,6 +184,18 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             if parsed.path == "/api/logs/client":
                 self.handle_client_log_api()
                 return
+            if parsed.path == "/api/cookie/save":
+                self.handle_cookie_save_api()
+                return
+            if parsed.path == "/api/cookie/clear":
+                self.handle_cookie_clear_api()
+                return
+            if parsed.path == "/api/auth/qrcode":
+                self.handle_auth_qrcode_api()
+                return
+            if parsed.path == "/api/auth/qrcode/poll":
+                self.handle_auth_qrcode_poll_api()
+                return
             if parsed.path == "/api/databases/import":
                 self.handle_database_import_api()
                 return
@@ -268,7 +284,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.send_json({"ok": True, "db": str(self.db_path), "database_dir": str(self.database_dir), "logging": logging})
 
     def handle_cookie_status_api(self):
-        payload = inspect_cookie_status(DEFAULT_COOKIE_FILE)
+        payload = auth_cookie_store.status()
         log_event(
             "api.cookie.status",
             "cookie status checked",
@@ -280,6 +296,67 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             has_sessdata=payload.get("has_sessdata"),
             has_dede_user_id=payload.get("has_dede_user_id"),
             bili_ticket_expired=payload.get("bili_ticket_expired"),
+        )
+        self.send_json(payload)
+
+    def handle_cookie_save_api(self):
+        body = self.read_json_body()
+        try:
+            payload = auth_cookie_store.save(body.get("cookie") or "")
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        log_event(
+            "api.cookie.save",
+            "cookie saved through local auth store",
+            request_id=getattr(self, "request_id", ""),
+            status=payload.get("status"),
+            is_login=payload.get("is_login"),
+            has_sessdata=payload.get("has_sessdata"),
+            has_dede_user_id=payload.get("has_dede_user_id"),
+        )
+        self.send_json(payload)
+
+    def handle_cookie_clear_api(self):
+        payload = auth_cookie_store.clear()
+        log_event(
+            "api.cookie.clear",
+            "cookie cleared from local auth store",
+            request_id=getattr(self, "request_id", ""),
+            status=payload.get("status"),
+        )
+        self.send_json(payload)
+
+    def handle_auth_qrcode_api(self):
+        try:
+            payload = qr_login_service.create_session()
+        except Exception as exc:
+            log_exception("api.auth.qrcode_error", str(exc), request_id=getattr(self, "request_id", ""))
+            self.send_json({"error": str(exc)}, status=502)
+            return
+        log_event(
+            "api.auth.qrcode",
+            "created bilibili QR login session",
+            request_id=getattr(self, "request_id", ""),
+            session_id=payload.get("session_id"),
+            ttl_seconds=payload.get("ttl_seconds"),
+        )
+        self.send_json(payload)
+
+    def handle_auth_qrcode_poll_api(self):
+        body = self.read_json_body()
+        session_id = str(body.get("session_id") or "")
+        if not session_id:
+            self.send_json({"error": "缺少二维码登录会话 ID"}, status=400)
+            return
+        payload = qr_login_service.poll(session_id)
+        log_event(
+            "api.auth.qrcode_poll",
+            "polled bilibili QR login session",
+            request_id=getattr(self, "request_id", ""),
+            status=payload.get("status"),
+            code=payload.get("code"),
+            ok=payload.get("ok"),
         )
         self.send_json(payload)
 
