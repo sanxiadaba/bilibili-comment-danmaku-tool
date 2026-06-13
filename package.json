@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config frontend/vite.config.ts --host 127.0.0.1",
-    "server": "python backend/server.py --host 127.0.0.1 --port 8000",
+    "server": "powershell -ExecutionPolicy Bypass -File scripts/start_server_8000.ps1",
     "fetch": "python backend/fetch_bilibili_comment_danmaku.py",
-    "test": "pnpm test:backend && pnpm test:frontend",
+    "test": "pnpm test:encoding && pnpm test:backend && pnpm test:frontend",
+    "test:encoding": "python scripts/check_encoding.py",
     "test:backend": "python -B -m unittest discover -s tests/backend -p \"test_*.py\"",
     "test:frontend": "vitest run --config frontend/vite.config.ts",
     "build": "pnpm test && tsc -p frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",

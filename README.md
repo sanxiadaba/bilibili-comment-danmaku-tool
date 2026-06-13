@@ -31,6 +31,8 @@ pnpm build
 pnpm server
 ```
 
+`pnpm server` 会先停止本机 `127.0.0.1:8000` 上的旧进程，再用同一个端口启动当前版本。
+
 访问：
 
 ```text
@@ -63,6 +65,7 @@ dist/                         前端构建产物
 
 ```powershell
 pnpm test            # 后端 + 前端测试
+pnpm test:encoding
 pnpm test:backend
 pnpm test:frontend
 pnpm build           # 测试、类型检查、Vite 构建
@@ -120,3 +123,4 @@ AGENTS.md      agent 开发规则
 - 单一路径：有维护良好的主路径时，删除旧脚本和重复抽象。
 - 任务可观测：长任务必须能通过进度和队列 API 查看。
 - 不漂移秘密：cookie、数据库、日志、构建产物永不提交。
+- 编码统一：源码必须是 UTF-8 无 BOM，`pnpm test:encoding` 会拦截 BOM 和典型 mojibake 乱码。

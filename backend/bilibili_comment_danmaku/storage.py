@@ -1,4 +1,4 @@
-﻿from collections import defaultdict
+from collections import defaultdict
 import binascii
 from pathlib import Path
 import shutil

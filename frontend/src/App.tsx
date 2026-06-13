@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { DanmakuPage } from "./pages/DanmakuPage";
 import { VideoDetailPage } from "./pages/VideoDetailPage";
 import { VideoLibraryPage } from "./pages/VideoLibraryPage";

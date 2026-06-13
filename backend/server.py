@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
