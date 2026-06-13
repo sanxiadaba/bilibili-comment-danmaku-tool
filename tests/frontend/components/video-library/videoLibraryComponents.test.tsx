@@ -1,9 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { LibraryStats } from "../../../../frontend/src/components/video-library/LibraryStats";
+import { LibrarySidebar } from "../../../../frontend/src/components/video-library/LibrarySidebar";
 import { StatusStrips } from "../../../../frontend/src/components/video-library/StatusStrips";
 import { VideoListPanel } from "../../../../frontend/src/components/video-library/VideoListPanel";
-import { makeProgress, makeVideo } from "../../helpers/factories";
+import { makeCookieStatus, makeProgress, makeVideo } from "../../helpers/factories";
 
 describe("video library components", () => {
   it("renders library totals without mutating values", () => {
@@ -95,5 +96,49 @@ describe("video library components", () => {
     expect(html).toContain("Test video");
     expect(html).toContain("BV1xx411c7mD");
     expect(html).toContain("1 / 1");
+  });
+
+  it("renders cookie login diagnostics in settings", () => {
+    const html = renderToStaticMarkup(
+      <LibrarySidebar
+        cookieStatus={makeCookieStatus({
+          status: "invalid",
+          message: "Bilibili 返回账号未登录",
+          is_login: false,
+          nav_code: -101,
+          nav_message: "账号未登录",
+          bili_ticket_expired: true,
+        })}
+        duplicateVideo={null}
+        exportingKey=""
+        hasSpaceQueueWork={false}
+        hotplugDir="data/databases"
+        isParsing={false}
+        isSubmittingSpace={false}
+        isTaskBusy={false}
+        ownerFilter="all"
+        ownerGroups={[]}
+        ownerRef=""
+        parseDelay={1}
+        showSettings
+        totals={{ comments: 0, danmaku: 0 }}
+        url=""
+        videoCount={0}
+        onDuplicateOpen={() => undefined}
+        onDuplicateReparse={() => undefined}
+        onOwnerExport={() => undefined}
+        onOwnerFilterChange={() => undefined}
+        onOwnerRefChange={() => undefined}
+        onParseDelayChange={() => undefined}
+        onSubmitParse={(event) => event.preventDefault()}
+        onSubmitSpaceArchive={(event) => event.preventDefault()}
+        onUrlChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("未登录");
+    expect(html).toContain("SESSDATA");
+    expect(html).toContain("DedeUserID");
+    expect(html).toContain("短期票据过期");
   });
 });

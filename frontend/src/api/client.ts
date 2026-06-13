@@ -1,5 +1,6 @@
 import type {
   CommentData,
+  CookieStatus,
   DatabaseImportResponse,
   DatabaseListResponse,
   DatabaseExportResponse,
@@ -15,6 +16,10 @@ type LogFields = Record<string, string | number | boolean | null | undefined>;
 export async function fetchDatabases(activeId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
   return requestJson<DatabaseListResponse>("databases.list", `/api/databases?${query.toString()}`, { cache: "no-store" });
+}
+
+export async function fetchCookieStatus() {
+  return requestJson<CookieStatus>("cookie.status", `/api/cookie/status?ts=${Date.now()}`, { cache: "no-store" });
 }
 
 export async function importDatabase(path: string) {

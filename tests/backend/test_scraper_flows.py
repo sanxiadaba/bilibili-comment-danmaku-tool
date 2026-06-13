@@ -333,6 +333,46 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertTrue(scraper.cookie_has_browser_identifiers("SESSDATA=a; buvid3=b; bili_jct=c"))
         self.assertFalse(scraper.cookie_has_browser_identifiers("SESSDATA=a; bili_jct=c"))
 
+    def test_cookie_status_checks_nav_without_exposing_cookie_values(self):
+        original_client = scraper.BilibiliClient
+
+        class FakeClient:
+            def __init__(self, headers, use_proxy=False):
+                self.headers = headers
+                self.use_proxy = use_proxy
+
+            def request_json(self, url, **kwargs):
+                return {
+                    "code": -101,
+                    "message": "账号未登录",
+                    "data": {
+                        "isLogin": False,
+                        "wbi_img": {"img_url": "https://i0.hdslb.com/a.png", "sub_url": "https://i0.hdslb.com/b.png"},
+                    },
+                }
+
+        try:
+            scraper.BilibiliClient = FakeClient
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cookie_path = Path(tmpdir) / "cookie.txt"
+                cookie_path.write_text(
+                    "SESSDATA=secret-session; bili_jct=secret-csrf; DedeUserID=123; bili_ticket_expires=1; buvid3=browser",
+                    encoding="utf-8",
+                )
+                status = scraper.inspect_cookie_status(cookie_path)
+        finally:
+            scraper.BilibiliClient = original_client
+
+        self.assertEqual(status["status"], "invalid")
+        self.assertTrue(status["has_sessdata"])
+        self.assertTrue(status["has_bili_jct"])
+        self.assertTrue(status["has_dede_user_id"])
+        self.assertTrue(status["has_browser_id"])
+        self.assertTrue(status["bili_ticket_expired"])
+        self.assertFalse(status["is_login"])
+        self.assertNotIn("secret-session", json.dumps(status, ensure_ascii=False))
+        self.assertNotIn("secret-csrf", json.dumps(status, ensure_ascii=False))
+
     def test_api_block_code_is_treated_as_blocked_request(self):
         exc = scraper.BilibiliRequestError("blocked", api_code=-352, url="https://example.test")
 

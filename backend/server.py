@@ -12,6 +12,7 @@ from bilibili_comment_danmaku import (
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
+    inspect_cookie_status,
     list_video_summaries,
     load_comment_data,
     load_danmaku_data,
@@ -143,6 +144,9 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/health":
                 self.handle_health_api()
+                return
+            if parsed.path == "/api/cookie/status":
+                self.handle_cookie_status_api()
                 return
             if parsed.path.startswith("/api/"):
                 self.send_json({"error": f"未知 API：{parsed.path}"}, status=404)
@@ -291,6 +295,22 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
             logging=logging,
         )
         self.send_json({"ok": True, "db": str(self.db_path), "database_dir": str(self.database_dir), "logging": logging})
+
+    def handle_cookie_status_api(self):
+        payload = inspect_cookie_status(DEFAULT_COOKIE_FILE)
+        log_event(
+            "api.cookie.status",
+            "cookie status checked",
+            request_id=getattr(self, "request_id", ""),
+            exists=payload.get("exists"),
+            status=payload.get("status"),
+            nav_code=payload.get("nav_code"),
+            is_login=payload.get("is_login"),
+            has_sessdata=payload.get("has_sessdata"),
+            has_dede_user_id=payload.get("has_dede_user_id"),
+            bili_ticket_expired=payload.get("bili_ticket_expired"),
+        )
+        self.send_json(payload)
 
     def handle_client_log_api(self):
         body = self.read_json_body()

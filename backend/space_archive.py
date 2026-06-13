@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from app_logging import log_event, log_exception
 from bilibili_comment_danmaku import save_comments_to_sqlite, save_danmaku_to_sqlite, scrape_comments, scrape_danmaku
 from bilibili_comment_danmaku import scraper
+from bilibili_comment_danmaku.scraper import inspect_cookie_status
 from bilibili_comment_danmaku.scraper import BilibiliRequestError
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from progress_state import clamp_float, first_int, parse_float, start_progress, update_progress, finish_progress, fail_progress
@@ -286,6 +287,7 @@ class SpaceArchiveService:
         request_id = task.get("request_id", "")
         cache_path = self.cache_dir / f"space_{mid}_videos.json"
         cookie = scraper.load_cookie_file(self.cookie_file) if self.cookie_file.exists() else ""
+        cookie_status = None
         total = 0
         complete = 0
         archived = 0
@@ -303,6 +305,7 @@ class SpaceArchiveService:
             )
             update_progress("space", mid, f"正在读取 UP {mid} 的视频列表")
             self.update_task(task, message="正在读取视频列表", progress=5)
+            cookie_status = inspect_cookie_status(self.cookie_file)
             items = fetch_space_videos(
                 mid,
                 cookie,
@@ -444,7 +447,7 @@ class SpaceArchiveService:
                     if should_abort_space_archive(exc):
                         raise
                     failed += 1
-                    payload, status_code = api_error_response(exc)
+                    payload, status_code = api_error_response_with_context(exc, cookie_status)
                     self.update_task(
                         task,
                         failed=failed,
@@ -510,7 +513,7 @@ class SpaceArchiveService:
                 stop_requested=False,
             )
         except Exception as exc:
-            payload, status_code = api_error_response(exc)
+            payload, status_code = api_error_response_with_context(exc, cookie_status)
             self.update_task(
                 task,
                 status="failed",
@@ -567,6 +570,10 @@ def log_space_video_progress(bvid, message):
 
 
 def api_error_response(exc):
+    return api_error_response_with_context(exc)
+
+
+def api_error_response_with_context(exc, cookie_status=None):
     message = str(exc)
     lower_message = message.lower()
 
@@ -593,6 +600,17 @@ def api_error_response(exc):
         or "api code=-352" in lower_message
         or "api code -352" in lower_message
     ):
+        if cookie_status and cookie_status.get("nav_checked") and not cookie_status.get("is_login"):
+            reason = "当前 data/cookie.txt 已读取，但 Bilibili nav 接口返回账号未登录"
+            if cookie_status.get("bili_ticket_expired"):
+                reason += "，短期票据也已过期"
+            return (
+                {
+                    "error": f"{reason}。请从已登录浏览器重新导出 Cookie 后再抓取 UP 主列表。",
+                    "detail": message,
+                },
+                502,
+            )
         return (
             {
                 "error": "Bilibili 接口返回风控校验失败，通常与请求频率、Cookie 状态或访问环境有关。工具已自动进入长冷却退避；请暂停一段时间后再试。",

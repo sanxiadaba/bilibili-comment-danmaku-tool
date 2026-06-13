@@ -2,12 +2,13 @@ import { AlertTriangle, FolderOpen, LinkIcon, PlusCircle, RefreshCcw, Users } fr
 import type React from "react";
 import { InfoRow } from "../common";
 import { cn, formatNumber } from "../../lib/utils";
-import type { DatabaseInfo, VideoSummary } from "../../types";
+import type { CookieStatus, DatabaseInfo, VideoSummary } from "../../types";
 import { OwnerFilterButton } from "./OwnerFilterButton";
 import type { OwnerGroup } from "./types";
 
 type LibrarySidebarProps = {
   activeDatabase?: DatabaseInfo;
+  cookieStatus?: CookieStatus | null;
   duplicateVideo: VideoSummary | null;
   exportingKey: string;
   hasSpaceQueueWork: boolean;
@@ -39,6 +40,7 @@ type LibrarySidebarProps = {
 
 export function LibrarySidebar({
   activeDatabase,
+  cookieStatus,
   duplicateVideo,
   exportingKey,
   hasSpaceQueueWork,
@@ -147,7 +149,7 @@ export function LibrarySidebar({
             </span>
           </label>
           <div className="grid gap-2 text-sm">
-            <InfoRow label="Cookie" value="data/cookie.txt" />
+            <CookieStatusRow status={cookieStatus} />
             <InfoRow label="当前数据库" value={activeDatabase?.relative_path || "data/comment_danmaku.db"} />
             <InfoRow label="热插拔目录" value={hotplugDir} />
           </div>
@@ -163,6 +165,34 @@ export function LibrarySidebar({
         onSelect={onOwnerFilterChange}
       />
     </aside>
+  );
+}
+
+function CookieStatusRow({ status }: { status?: CookieStatus | null }) {
+  const tone =
+    status?.status === "valid"
+      ? "text-emerald-700"
+      : status?.status === "invalid" || status?.status === "error"
+        ? "text-red-700"
+        : "text-muted";
+  const label = status
+    ? [
+        status.is_login ? "登录有效" : status.exists ? "未登录" : "未找到",
+        status.has_sessdata ? "SESSDATA" : "",
+        status.has_dede_user_id ? "DedeUserID" : "",
+        status.bili_ticket_expired ? "短期票据过期" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "检测中";
+
+  return (
+    <div className="flex min-w-0 items-start justify-between gap-3">
+      <span className="shrink-0 text-muted">Cookie</span>
+      <span className={cn("min-w-0 text-right", tone)} title={status?.message || "data/cookie.txt"}>
+        {label}
+      </span>
+    </div>
   );
 }
 

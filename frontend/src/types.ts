@@ -237,6 +237,27 @@ export type SpaceArchiveResponse = {
   no_cache: boolean;
 };
 
+export type CookieStatus = {
+  exists: boolean;
+  path: string;
+  length: number;
+  status: "missing" | "empty" | "unchecked" | "valid" | "invalid" | "error" | string;
+  message: string;
+  has_sessdata: boolean;
+  has_bili_jct: boolean;
+  has_dede_user_id: boolean;
+  has_browser_id: boolean;
+  bili_ticket_expires_at: string;
+  bili_ticket_expired: boolean;
+  nav_checked: boolean;
+  nav_code: number | null;
+  nav_message: string;
+  is_login: boolean;
+  mid_present: boolean;
+  uname_present: boolean;
+  wbi_present: boolean;
+};
+
 export type DatabaseExportResponse = {
   ok: boolean;
   path: string;

@@ -561,6 +561,107 @@ def load_cookie_file(path):
     return text.replace("\r", "").replace("\n", "; ")
 
 
+def inspect_cookie_status(path, *, check_remote=True):
+    cookie_path = Path(path)
+    status = {
+        "exists": cookie_path.exists(),
+        "path": str(cookie_path),
+        "length": 0,
+        "status": "missing",
+        "message": "未找到 cookie 文件",
+        "has_sessdata": False,
+        "has_bili_jct": False,
+        "has_dede_user_id": False,
+        "has_browser_id": False,
+        "bili_ticket_expires_at": "",
+        "bili_ticket_expired": False,
+        "nav_checked": False,
+        "nav_code": None,
+        "nav_message": "",
+        "is_login": False,
+        "mid_present": False,
+        "uname_present": False,
+        "wbi_present": False,
+    }
+    if not cookie_path.exists():
+        return status
+
+    cookie = load_cookie_file(cookie_path)
+    status["length"] = len(cookie)
+    if not cookie:
+        status.update(status="empty", message="cookie 文件为空")
+        return status
+
+    values = parse_cookie_header(cookie)
+    status.update(
+        status="unchecked",
+        message="cookie 文件已读取，尚未验证登录态",
+        has_sessdata=bool(values.get("SESSDATA")),
+        has_bili_jct=bool(values.get("bili_jct")),
+        has_dede_user_id=bool(values.get("DedeUserID")),
+        has_browser_id=bool(set(values) & BROWSER_ID_COOKIE_NAMES),
+    )
+    ticket_expires_at, ticket_expired = cookie_expiry_info(values.get("bili_ticket_expires"))
+    status["bili_ticket_expires_at"] = ticket_expires_at
+    status["bili_ticket_expired"] = ticket_expired
+
+    if not check_remote:
+        return status
+
+    try:
+        client = BilibiliClient(make_headers(DEFAULT_BVID, cookie), use_proxy=False)
+        nav = client.request_json(
+            "https://api.bilibili.com/x/web-interface/nav",
+            timeout=8,
+            retries=1,
+            allow_api_error=True,
+            wait_for_backoff=False,
+        )
+        data = nav.get("data") or {}
+        wbi_img = data.get("wbi_img") or {}
+        is_login = bool(data.get("isLogin"))
+        status.update(
+            nav_checked=True,
+            nav_code=nav.get("code"),
+            nav_message=nav.get("message") or "",
+            is_login=is_login,
+            mid_present=bool(data.get("mid")),
+            uname_present=bool(data.get("uname")),
+            wbi_present=bool(wbi_img.get("img_url") and wbi_img.get("sub_url")),
+            status="valid" if is_login else "invalid",
+            message="Bilibili 已识别登录态" if is_login else "Bilibili 返回账号未登录，请更新 data/cookie.txt",
+        )
+    except Exception as exc:
+        status.update(
+            status="error",
+            message=f"cookie 登录态验证失败：{type(exc).__name__}",
+            nav_message=str(exc),
+        )
+    return status
+
+
+def parse_cookie_header(cookie_header):
+    values = {}
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        if name:
+            values[name.strip()] = value.strip()
+    return values
+
+
+def cookie_expiry_info(raw_value):
+    if not raw_value:
+        return "", False
+    try:
+        expires_at = datetime.fromtimestamp(int(raw_value), timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return "", False
+    return expires_at.isoformat(), expires_at <= datetime.now(timezone.utc)
+
+
 def make_headers(bvid, cookie=""):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",

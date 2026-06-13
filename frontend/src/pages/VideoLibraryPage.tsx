@@ -4,6 +4,7 @@ import {
   archiveSpaceVideos,
   controlSpaceTasks,
   exportDatabaseArchive,
+  fetchCookieStatus,
   fetchDatabases,
   fetchVideos,
   importDatabase,
@@ -25,11 +26,12 @@ import type { ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeSta
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
-import type { DatabaseInfo, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
+import type { CookieStatus, DatabaseInfo, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
 
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [cookieStatus, setCookieStatus] = useState<CookieStatus | null>(null);
   const [activeDbId, setActiveDbId] = useState(() => initialDatabaseId());
   const [hotplugDir, setHotplugDir] = useState("data/databases");
   const [legacyExportDir, setLegacyExportDir] = useState("data/exports");
@@ -117,6 +119,12 @@ export function VideoLibraryPage() {
   useEffect(() => {
     void loadDatabases();
   }, [loadDatabases]);
+
+  useEffect(() => {
+    fetchCookieStatus()
+      .then(setCookieStatus)
+      .catch(() => setCookieStatus(null));
+  }, []);
 
   useEffect(() => {
     setOwnerFilter("all");
@@ -590,6 +598,7 @@ export function VideoLibraryPage() {
         <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
           <LibrarySidebar
             activeDatabase={activeDatabase}
+            cookieStatus={cookieStatus}
             duplicateVideo={duplicateVideo}
             exportingKey={exportingKey}
             hasSpaceQueueWork={hasSpaceQueueWork}

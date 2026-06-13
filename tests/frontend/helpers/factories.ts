@@ -1,5 +1,6 @@
 import type {
   CommentNode,
+  CookieStatus,
   DanmakuItem,
   DatabaseInfo,
   ProgressState,
@@ -119,6 +120,30 @@ export function makeProgressTask(overrides: Partial<ProgressTask> = {}): Progres
     archived: 4,
     skipped: 1,
     failed: 0,
+    ...overrides,
+  };
+}
+
+export function makeCookieStatus(overrides: Partial<CookieStatus> = {}): CookieStatus {
+  return {
+    exists: true,
+    path: "D:/data/cookie.txt",
+    length: 1200,
+    status: "valid",
+    message: "Bilibili 已识别登录态",
+    has_sessdata: true,
+    has_bili_jct: true,
+    has_dede_user_id: true,
+    has_browser_id: true,
+    bili_ticket_expires_at: "",
+    bili_ticket_expired: false,
+    nav_checked: true,
+    nav_code: 0,
+    nav_message: "0",
+    is_login: true,
+    mid_present: true,
+    uname_present: true,
+    wbi_present: true,
     ...overrides,
   };
 }
