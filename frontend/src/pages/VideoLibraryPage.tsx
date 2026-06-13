@@ -702,6 +702,7 @@ export function VideoLibraryPage() {
         <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
           <ManagementPanel
             activeDbId={activeDbId}
+            cookieStatus={cookieStatus}
             databases={databases}
             hotplugDir={hotplugDir}
             importPath={importPath}
@@ -709,7 +710,8 @@ export function VideoLibraryPage() {
             isLoading={isLoadingDatabases}
             legacyExportDir={legacyExportDir}
             queue={spaceQueue}
-            view="database"
+            view={managementView === "queue" ? "database" : managementView}
+            onCookieStatusChange={setCookieStatus}
             onImportPathChange={setImportPath}
             onPickFiles={() => fileInputRef.current?.click()}
             onPickFolder={() => folderInputRef.current?.click()}

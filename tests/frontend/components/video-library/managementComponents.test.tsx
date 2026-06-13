@@ -7,7 +7,7 @@ import { ProgressQueuePanel } from "../../../../frontend/src/components/video-li
 import { TaskManagementPanel } from "../../../../frontend/src/components/video-library/TaskManagementPanel";
 import { mergeProgressIntoQueue } from "../../../../frontend/src/pages/VideoLibraryPage";
 import type { OwnerGroup } from "../../../../frontend/src/components/video-library/types";
-import { makeDatabase, makeProgress, makeProgressTask, makeVideo } from "../../helpers/factories";
+import { makeCookieStatus, makeDatabase, makeProgress, makeProgressTask, makeVideo } from "../../helpers/factories";
 
 describe("video library management components", () => {
   it("renders queue progress across active, queued and recent tasks", () => {
@@ -172,6 +172,36 @@ describe("video library management components", () => {
     expect(html).toContain("Archive");
     expect(html).toContain("D:/data/hotplug");
     expect(html).toContain("D:/backup/archive.json");
+  });
+
+  it("renders auth management controls inside management panel", () => {
+    const html = renderToStaticMarkup(
+      <ManagementPanel
+        activeDbId="main"
+        cookieStatus={makeCookieStatus({ is_login: true })}
+        databases={[makeDatabase()]}
+        hotplugDir="D:/data/hotplug"
+        importPath=""
+        isImporting={false}
+        isLoading={false}
+        legacyExportDir="D:/data/exports"
+        queue={{ active: null, queued: [], recent: [] }}
+        view="auth"
+        onCookieStatusChange={() => undefined}
+        onImportPathChange={() => undefined}
+        onPickFiles={() => undefined}
+        onPickFolder={() => undefined}
+        onRefresh={() => undefined}
+        onSelect={() => undefined}
+        onSubmitImport={(event) => event.preventDefault()}
+        onViewChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("登录态");
+    expect(html).toContain("扫码登录");
+    expect(html).toContain("手动 Cookie");
+    expect(html).toContain("保存并检测");
   });
 
   it("renders owner export affordance and export format choices", () => {

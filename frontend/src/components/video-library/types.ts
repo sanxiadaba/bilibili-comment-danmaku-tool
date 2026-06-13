@@ -1,6 +1,6 @@
 import type { DatabaseInfo, VideoSummary } from "../../types";
 
-export type ManagementView = "queue" | "database";
+export type ManagementView = "queue" | "database" | "auth";
 export type LibraryView = "videos" | "tasks" | "databases";
 export type ExportFormat = "sqlite" | "json";
 

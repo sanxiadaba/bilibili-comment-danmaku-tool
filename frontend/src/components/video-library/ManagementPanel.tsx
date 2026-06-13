@@ -1,15 +1,22 @@
-import { Database, Download, FolderOpen, RefreshCcw, Settings, Upload } from "lucide-react";
+import { Database, Download, FolderOpen, KeyRound, RefreshCcw, Settings, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type React from "react";
 import { InfoRow } from "../common";
 import { cn, formatNumber } from "../../lib/utils";
 import { formatBytes } from "../../lib/videoLibrary";
-import type { DatabaseInfo, ProgressQueue } from "../../types";
+import type { CookieStatus, DatabaseInfo, ProgressQueue } from "../../types";
+import { AuthPanel } from "./AuthPanel";
 import { ProgressQueuePanel } from "./ProgressQueuePanel";
 import type { ManagementView } from "./types";
 
+const AUTH_TAB_LABEL = "\u767b\u5f55\u6001";
+const AUTH_LABEL_VALID = "\u5df2\u767b\u5f55";
+const AUTH_LABEL_STALE = "\u5f85\u66f4\u65b0";
+const AUTH_LABEL_MISSING = "\u672a\u914d\u7f6e";
+
 type ManagementPanelProps = {
   activeDbId: string;
+  cookieStatus?: CookieStatus | null;
   databases: DatabaseInfo[];
   hotplugDir: string;
   importPath: string;
@@ -18,6 +25,7 @@ type ManagementPanelProps = {
   legacyExportDir: string;
   queue?: ProgressQueue;
   view: ManagementView;
+  onCookieStatusChange?: (status: CookieStatus | null) => void;
   onImportPathChange: (value: string) => void;
   onPickFiles: () => void;
   onPickFolder: () => void;
@@ -29,6 +37,7 @@ type ManagementPanelProps = {
 
 export function ManagementPanel({
   activeDbId,
+  cookieStatus,
   databases,
   hotplugDir,
   importPath,
@@ -37,6 +46,7 @@ export function ManagementPanel({
   legacyExportDir,
   queue,
   view,
+  onCookieStatusChange,
   onImportPathChange,
   onPickFiles,
   onPickFolder,
@@ -49,6 +59,7 @@ export function ManagementPanel({
   const hasActiveTask = Boolean(queue?.active);
   const activeDatabase = databases.find((database) => database.id === activeDbId);
   const healthyCount = databases.filter((database) => database.ok).length;
+  const authLabel = cookieStatus?.is_login ? AUTH_LABEL_VALID : cookieStatus?.exists ? AUTH_LABEL_STALE : AUTH_LABEL_MISSING;
 
   return (
     <section className="rounded-md border border-line bg-white shadow-soft">
@@ -71,10 +82,15 @@ export function ManagementPanel({
             onClick={() => onViewChange("queue")}
           />
           <ManagementTab active={view === "database"} icon={Database} label="数据库" meta={`${databases.length} 个`} onClick={() => onViewChange("database")} />
+          <ManagementTab active={view === "auth"} icon={KeyRound} label={AUTH_TAB_LABEL} meta={authLabel} onClick={() => onViewChange("auth")} />
         </div>
       </div>
       {view === "queue" ? (
         <ProgressQueuePanel queue={queue} embedded />
+      ) : view === "auth" ? (
+        <div className="p-4">
+          <AuthPanel cookieStatus={cookieStatus} onStatusChange={onCookieStatusChange || (() => undefined)} />
+        </div>
       ) : (
         <DatabaseManagerPanel
           activeDatabaseName={activeDatabase?.name || activeDbId}
