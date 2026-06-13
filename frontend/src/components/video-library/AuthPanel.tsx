@@ -126,8 +126,8 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
   const statusTone = cookieStatus?.status === "valid" ? "text-emerald-700" : cookieStatus?.exists ? "text-amber-700" : "text-muted";
 
   return (
-    <section className="rounded-md border border-line bg-white shadow-soft">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+    <section className="surface-card rounded-md">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/80 bg-white/42 px-4 py-3">
         <div className="min-w-0">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
             <KeyRound size={18} aria-hidden="true" />
@@ -136,7 +136,7 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
           <div className={cn("mt-1 text-sm", statusTone)}>{cookieStatus?.message || "正在检测本地登录态"}</div>
         </div>
         <button
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-red-300 hover:text-red-700 disabled:cursor-wait disabled:opacity-70"
+          className="btn-quiet inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-70 hover:border-red-300 hover:text-red-700"
           type="button"
           disabled={isClearing}
           onClick={clearLogin}
@@ -147,10 +147,10 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
       </div>
 
       <div className="grid gap-4 p-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <div className="grid content-start gap-3 rounded-md border border-line bg-[#fbfcfe] p-3">
+        <div className="surface-muted grid content-start gap-3 rounded-md p-3">
           <div className="text-sm font-semibold text-ink">扫码登录</div>
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f] disabled:cursor-wait disabled:opacity-70"
+            className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
             type="button"
             disabled={isCreatingQr}
             onClick={startQrLogin}
@@ -159,7 +159,7 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
             生成二维码
           </button>
           {qrImageUrl && (
-            <div className="grid justify-items-center gap-2 rounded-md border border-line bg-white p-3">
+            <div className="grid justify-items-center gap-2 rounded-md border border-line bg-white/88 p-3 shadow-sm">
               <img className="h-[180px] w-[180px]" src={qrImageUrl} alt="Bilibili 登录二维码" />
               <div className="text-center text-sm text-muted">{qrState?.message || "等待扫码"}</div>
               <div className="text-xs text-muted">剩余 {qrTtl}s</div>
@@ -167,14 +167,14 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
           )}
         </div>
 
-        <form className="grid content-start gap-3 rounded-md border border-line bg-[#fbfcfe] p-3" onSubmit={submitCookie}>
+        <form className="surface-muted grid content-start gap-3 rounded-md p-3" onSubmit={submitCookie}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-semibold text-ink">手动 Cookie</div>
               <div className="mt-1 text-xs text-muted">支持普通 Cookie 字符串或 Netscape cookie 文件内容。</div>
             </div>
             <button
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+              className="btn-quiet inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium"
               type="button"
               onClick={() => fileRef.current?.click()}
             >
@@ -183,13 +183,13 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
             </button>
           </div>
           <textarea
-            className="min-h-28 rounded-md border border-line bg-white p-3 text-sm text-ink outline-none focus:border-bilibili focus:ring-2 focus:ring-pink-100"
+            className="input-shell min-h-28 rounded-md p-3 text-sm text-ink outline-none"
             placeholder="SESSDATA=...; bili_jct=...; DedeUserID=..."
             value={cookieText}
             onChange={(event) => setCookieText(event.target.value)}
           />
           <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-bilibili px-4 text-sm font-medium text-white transition hover:bg-[#e85f89] disabled:cursor-wait disabled:opacity-70"
+            className="btn-accent inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
             type="submit"
             disabled={isSaving}
           >

@@ -16,7 +16,7 @@ export function TimeChart({ allBuckets, filteredBuckets }: TimeChartProps) {
 
   if (!allBuckets.length) {
     return (
-      <div className="grid min-h-56 place-items-center rounded-md border border-dashed border-line bg-[#fbfcfe] p-6 text-center text-sm text-muted">
+      <div className="surface-muted grid min-h-56 place-items-center rounded-md border-dashed p-6 text-center text-sm text-muted">
         暂无可绘制的评论时间数据
       </div>
     );

@@ -14,7 +14,7 @@ type LibraryTabsProps = {
 
 export function LibraryTabs({ active, databaseCount, hasTaskWork, queuedCount, videoCount, onChange }: LibraryTabsProps) {
   return (
-    <nav className="mx-auto flex max-w-[1540px] gap-2 px-4 py-3 lg:px-6" aria-label="主视图">
+    <nav className="mx-auto flex max-w-[1540px] gap-2 overflow-x-auto px-4 py-4 lg:px-6" aria-label="主视图">
       <TabButton active={active === "videos"} icon={ListVideo} label="视频列表" meta={`${videoCount} 个`} onClick={() => onChange("videos")} />
       <TabButton
         active={active === "tasks"}
@@ -45,15 +45,17 @@ function TabButton({
   return (
     <button
       className={cn(
-        "inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
-        active ? "border-ink bg-ink text-white" : "border-line bg-white text-ink hover:border-bilibili hover:text-bilibili",
+        "inline-flex h-11 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium transition",
+        active
+          ? "border-transparent bg-ink text-white shadow-[0_12px_28px_rgba(23,32,51,0.18)]"
+          : "border-line bg-white/76 text-ink shadow-sm hover:border-bilibili hover:bg-white hover:text-bilibili",
       )}
       type="button"
       onClick={onClick}
     >
       <Icon size={16} aria-hidden="true" />
       <span>{label}</span>
-      <span className={cn("rounded px-1.5 py-0.5 text-xs", active ? "bg-white/15 text-white/80" : "bg-[#f4f7fb] text-muted")}>{meta}</span>
+      <span className={cn("rounded px-1.5 py-0.5 text-xs", active ? "bg-white/15 text-white/80" : "bg-[#eef3f8] text-muted")}>{meta}</span>
     </button>
   );
 }

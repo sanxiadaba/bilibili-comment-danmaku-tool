@@ -15,14 +15,14 @@ export function DanmakuListRow({ item, active, onSelect }: DanmakuListRowProps) 
   return (
     <button
       className={cn(
-        "block w-full border-b border-line px-4 py-3 text-left transition hover:bg-[#fbfcfe]",
-        active && "bg-amber-50",
+        "block w-full border-b border-line/80 px-4 py-3 text-left transition hover:bg-white/70",
+        active && "bg-amber-50/90 shadow-[inset_3px_0_0_#c98512]",
       )}
       type="button"
       onClick={onSelect}
     >
       <div className="flex items-start gap-3">
-        <span className="inline-flex h-8 w-16 shrink-0 items-center justify-center rounded bg-amber-50 text-sm font-semibold text-amber">
+        <span className="inline-flex h-8 w-16 shrink-0 items-center justify-center rounded bg-amber-50 text-sm font-semibold text-amber ring-1 ring-amber-100">
           {formatProgress(item.progress)}
         </span>
         <div className="min-w-0 flex-1">

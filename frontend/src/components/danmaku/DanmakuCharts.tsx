@@ -19,7 +19,7 @@ export function DanmakuTimelineChart({ allBuckets, filteredBuckets }: DanmakuTim
 
   if (!allBuckets.length) {
     return (
-      <div className="grid min-h-44 place-items-center rounded-md border border-dashed border-line bg-[#fbfcfe] p-6 text-center text-sm text-muted">
+      <div className="surface-muted grid min-h-44 place-items-center rounded-md border-dashed p-6 text-center text-sm text-muted">
         暂无可绘制的弹幕分布
       </div>
     );
@@ -111,7 +111,7 @@ export function DanmakuColorList({ colors }: DanmakuColorListProps) {
               <div className="text-xs text-muted">{formatNumber(item.count)} 条</div>
             </div>
           </div>
-          <span className="rounded bg-[#fbfcfe] px-2 py-1 text-sm font-medium text-muted">
+          <span className="rounded bg-white/72 px-2 py-1 text-sm font-medium text-muted shadow-sm">
             {Math.round((item.count / total) * 100)}%
           </span>
         </div>
@@ -134,7 +134,7 @@ export function RepeatedDanmakuList({ items, onSelect }: RepeatedDanmakuListProp
     <div className="grid gap-2 md:grid-cols-2">
       {items.slice(0, 8).map((item) => (
         <button
-          className="min-h-20 rounded-md border border-line bg-[#fbfcfe] p-3 text-left transition hover:border-bilibili hover:bg-white"
+          className="interactive-card min-h-20 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white"
           key={`${item.content}-${item.sample.dmid}`}
           type="button"
           onClick={() => onSelect(item)}

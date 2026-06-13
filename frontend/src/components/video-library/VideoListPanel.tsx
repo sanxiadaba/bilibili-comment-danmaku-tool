@@ -32,8 +32,8 @@ export function VideoListPanel({
   onQueryChange,
 }: VideoListPanelProps) {
   return (
-    <section className="flex min-h-[560px] min-w-0 flex-col rounded-md border border-line bg-white shadow-soft">
-      <div className="border-b border-line p-4">
+    <section className="surface-card flex min-h-[560px] min-w-0 flex-col rounded-md">
+      <div className="border-b border-line/80 bg-white/45 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
             <ListTree size={18} aria-hidden="true" />
@@ -42,7 +42,7 @@ export function VideoListPanel({
           <span className="text-sm text-muted">
             {videos.length} / {backendTotalVideoCount || totalVideoCount}
           </span>
-          <label className="flex h-10 min-w-0 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted">
+          <label className="input-shell flex h-10 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-muted">
             <Search size={16} aria-hidden="true" />
             <input
               className="min-w-0 bg-transparent text-ink outline-none"
@@ -69,7 +69,7 @@ export function VideoListPanel({
           ))}
         {!isLoading && hasMore && !query && !selectedOwnerName && (
           <button
-            className="mx-auto inline-flex h-10 items-center justify-center rounded-md border border-line bg-white px-4 text-sm font-medium text-ink transition hover:border-bilibili hover:text-bilibili"
+            className="btn-quiet mx-auto inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-medium"
             type="button"
             onClick={onLoadMore}
           >

@@ -27,8 +27,8 @@ export function OwnerFilterButton({
   return (
     <div
       className={cn(
-        "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-md border transition",
-        active ? "border-bilibili bg-pink-50 text-bilibili" : "border-line bg-[#fbfcfe] text-ink hover:border-bilibili hover:bg-white",
+        "interactive-card grid min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-md border transition",
+        active ? "border-bilibili bg-pink-50/90 text-bilibili shadow-sm" : "border-line bg-white/66 text-ink hover:border-bilibili hover:bg-white",
       )}
     >
       <button className="grid min-w-0 gap-1 px-3 py-2 text-left" type="button" onClick={onClick}>

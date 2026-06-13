@@ -28,7 +28,7 @@ export function CommentDetail({ comment, threadItems, onSelect }: CommentDetailP
 
   return (
     <div>
-      <div className="border-b border-line p-4">
+      <div className="border-b border-line/80 bg-white/42 p-4">
         <div className="flex items-start gap-3">
           <Avatar name={getCommentAuthor(comment)} size="lg" src={getCommentAvatar(comment)} href={profileUrl} />
           <div className="min-w-0 flex-1">
@@ -60,7 +60,7 @@ export function CommentDetail({ comment, threadItems, onSelect }: CommentDetailP
         )}
       </div>
 
-      <div className="border-b border-line p-4">
+      <div className="border-b border-line/80 p-4">
         <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-ink">
           <ListTree size={16} aria-hidden="true" />
           当前线程
@@ -103,8 +103,8 @@ function ThreadButton({ item, active, onSelect }: ThreadButtonProps) {
   return (
     <button
       className={cn(
-        "w-full rounded-md border border-line bg-[#fbfcfe] p-3 text-left transition hover:border-bilibili hover:bg-white",
-        active && "border-bilibili bg-pink-50",
+        "interactive-card w-full rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white",
+        active && "border-bilibili bg-pink-50/90",
       )}
       type="button"
       onClick={onSelect}

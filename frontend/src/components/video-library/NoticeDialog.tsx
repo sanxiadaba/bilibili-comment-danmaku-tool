@@ -13,7 +13,7 @@ export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-md border border-line bg-white shadow-xl">
+      <div className="surface-card w-full max-w-md rounded-md shadow-xl">
         <div className={cn("flex items-start gap-3 border-b p-4", tone)}>
           <Icon className="mt-0.5 shrink-0" size={20} aria-hidden="true" />
           <div className="min-w-0 flex-1">
@@ -21,7 +21,7 @@ export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose
             <div className="mt-1 break-words text-sm leading-6">{notice.message}</div>
           </div>
           <button
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/80 text-muted transition hover:text-ink"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/80 text-muted transition hover:text-ink hover:shadow-sm"
             type="button"
             aria-label="关闭提示"
             onClick={onClose}
@@ -31,7 +31,7 @@ export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose
         </div>
         <div className="flex justify-end p-4">
           <button
-            className="inline-flex h-10 items-center justify-center rounded-md bg-ink px-4 text-sm font-medium text-white transition hover:bg-[#26344f]"
+            className="btn-primary inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-medium"
             type="button"
             onClick={onClose}
           >

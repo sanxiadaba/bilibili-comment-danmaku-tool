@@ -7,13 +7,15 @@
 }
 
 html {
-  background: #f4f7fb;
+  background: #eef3f8;
 }
 
 body {
   min-width: 320px;
   margin: 0;
-  background: #f4f7fb;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86) 0%, rgba(244, 248, 252, 0.7) 36%, rgba(238, 243, 248, 1) 100%),
+    linear-gradient(90deg, rgba(251, 114, 153, 0.08), rgba(22, 163, 184, 0.06) 42%, rgba(47, 157, 120, 0.05));
   color: #172033;
   font-family:
     Inter,
@@ -24,6 +26,19 @@ body {
     "Segoe UI",
     sans-serif;
   letter-spacing: 0;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  background-image:
+    linear-gradient(rgba(23, 32, 51, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 32, 51, 0.025) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent 72%);
 }
 
 button,
@@ -54,6 +69,113 @@ img {
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@layer components {
+  .app-shell {
+    min-height: 100vh;
+    background: transparent;
+    color: #172033;
+  }
+
+  .app-header {
+    border-bottom: 1px solid rgba(197, 208, 222, 0.78);
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: 0 18px 60px rgba(23, 32, 51, 0.08);
+    backdrop-filter: blur(18px);
+  }
+
+  .surface-card {
+    border: 1px solid rgba(197, 208, 222, 0.86);
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 16px 44px rgba(23, 32, 51, 0.09);
+    backdrop-filter: blur(12px);
+  }
+
+  .surface-muted {
+    border: 1px solid rgba(213, 222, 233, 0.86);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(248, 251, 253, 0.9));
+  }
+
+  .input-shell {
+    border: 1px solid rgba(197, 208, 222, 0.95);
+    background: rgba(255, 255, 255, 0.86);
+    transition:
+      border-color 160ms ease,
+      box-shadow 160ms ease,
+      background 160ms ease;
+  }
+
+  .input-shell:focus-within {
+    border-color: rgba(251, 114, 153, 0.78);
+    background: #ffffff;
+    box-shadow: 0 0 0 3px rgba(251, 114, 153, 0.14);
+  }
+
+  .btn-quiet {
+    border: 1px solid rgba(197, 208, 222, 0.95);
+    background: rgba(255, 255, 255, 0.82);
+    color: #172033;
+    transition:
+      transform 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease,
+      color 160ms ease,
+      background 160ms ease;
+  }
+
+  .btn-quiet:hover:not(:disabled) {
+    border-color: rgba(251, 114, 153, 0.68);
+    background: #ffffff;
+    color: #fb7299;
+    box-shadow: 0 10px 24px rgba(23, 32, 51, 0.08);
+    transform: translateY(-1px);
+  }
+
+  .btn-primary {
+    background: linear-gradient(135deg, #172033, #263653);
+    color: #ffffff;
+    box-shadow: 0 12px 30px rgba(23, 32, 51, 0.18);
+    transition:
+      transform 160ms ease,
+      box-shadow 160ms ease,
+      filter 160ms ease;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.06);
+    box-shadow: 0 16px 36px rgba(23, 32, 51, 0.22);
+    transform: translateY(-1px);
+  }
+
+  .btn-accent {
+    background: linear-gradient(135deg, #fb7299, #16a3b8);
+    color: #ffffff;
+    box-shadow: 0 14px 32px rgba(251, 114, 153, 0.24);
+    transition:
+      transform 160ms ease,
+      box-shadow 160ms ease,
+      filter 160ms ease;
+  }
+
+  .btn-accent:hover:not(:disabled) {
+    filter: brightness(1.04);
+    box-shadow: 0 18px 38px rgba(22, 163, 184, 0.2);
+    transform: translateY(-1px);
+  }
+
+  .interactive-card {
+    transition:
+      transform 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease,
+      background 160ms ease;
+  }
+
+  .interactive-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 18px 42px rgba(23, 32, 51, 0.1);
+  }
 }
 
 .line-clamp-2 {
