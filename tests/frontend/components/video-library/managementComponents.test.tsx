@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { ExportChoiceDialog } from "../../../../frontend/src/components/video-library/ExportChoiceDialog";
+import { BatchManagementPanel } from "../../../../frontend/src/components/video-library/BatchManagementPanel";
 import { ManagementPanel } from "../../../../frontend/src/components/video-library/ManagementPanel";
 import { OwnerFilterButton } from "../../../../frontend/src/components/video-library/OwnerFilterButton";
 import { ProgressQueuePanel } from "../../../../frontend/src/components/video-library/ProgressQueuePanel";
@@ -172,6 +173,9 @@ describe("video library management components", () => {
     expect(html).toContain("Archive");
     expect(html).toContain("D:/data/hotplug");
     expect(html).toContain("D:/backup/archive.json");
+    expect(html).toContain("可回收");
+    expect(html).toContain("数据库已整理");
+    expect(html).toContain("20 评论");
   });
 
   it("renders auth management controls inside management panel", () => {
@@ -214,6 +218,7 @@ describe("video library management components", () => {
       videoCount: 2,
       commentCount: 20,
       danmakuCount: 8,
+      storageBytes: 1024 * 1024 * 12,
     };
 
     const ownerHtml = renderToStaticMarkup(
@@ -222,14 +227,22 @@ describe("video library management components", () => {
         commentCount={owner.commentCount}
         danmakuCount={owner.danmakuCount}
         name={owner.name}
+        storageBytes={owner.storageBytes}
         videoCount={owner.videoCount}
         onClick={onClick}
-        onExport={() => undefined}
+        onDelete={() => undefined}
+        onExportJson={() => undefined}
+        onExportSqlite={() => undefined}
       />,
     );
     expect(ownerHtml).toContain("Owner");
     expect(ownerHtml).toContain("20");
     expect(ownerHtml).toContain("8");
+    expect(ownerHtml).toContain("估算占用");
+    expect(ownerHtml).toContain("12 MB");
+    expect(ownerHtml).toContain("DB");
+    expect(ownerHtml).toContain("JSON");
+    expect(ownerHtml).toContain("删除");
 
     const dialogHtml = renderToStaticMarkup(
       <ExportChoiceDialog target={{ kind: "video", video: makeVideo({ title: "Video A" }) }} onChoose={() => undefined} onClose={() => undefined} />,
@@ -237,5 +250,47 @@ describe("video library management components", () => {
     expect(dialogHtml).toContain("Video A");
     expect(dialogHtml).toContain("SQLite");
     expect(dialogHtml).toContain("JSON");
+  });
+
+  it("shows full database owner totals separately from loaded video rows", () => {
+    const ownerGroups: OwnerGroup[] = [
+      {
+        bvids: [],
+        key: "mid:42",
+        name: "Owner",
+        ownerMid: "42",
+        videoCount: 97,
+        commentCount: 200,
+        danmakuCount: 300,
+      },
+      {
+        bvids: [],
+        key: "mid:99",
+        name: "Other",
+        ownerMid: "99",
+        videoCount: 4,
+        commentCount: 20,
+        danmakuCount: 30,
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <BatchManagementPanel
+        backendTotalVideoCount={101}
+        disabled={false}
+        hasMoreVideos
+        isLoadingVideos={false}
+        ownerGroups={ownerGroups}
+        videos={[makeVideo()]}
+        onDeleteOwners={() => undefined}
+        onDeleteVideos={() => undefined}
+        onExportOwners={() => undefined}
+        onExportVideos={() => undefined}
+        onLoadMoreVideos={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("UP 共 2 位 / 101 个视频");
+    expect(html).toContain("视频已加载 1 / 101");
+    expect(html).toContain("Owner");
   });
 });

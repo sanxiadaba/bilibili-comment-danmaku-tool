@@ -46,6 +46,7 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     save_danmaku_to_sqlite,
 )
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
+from server import ensure_openable_local_path  # noqa: E402
 class RequestParsingTests(unittest.TestCase):
     def test_control_capabilities_describe_machine_callable_actions(self):
         payload = control_capabilities()
@@ -100,4 +101,17 @@ class RequestParsingTests(unittest.TestCase):
         with self.assertRaises(BadRequestError):
             parse_json_object_body("{}".encode("utf-16"))
 
+    def test_openable_local_path_accepts_allowed_file_or_directory_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            allowed = Path(tmp) / "data"
+            allowed.mkdir()
+            exported = allowed / "archive.db"
+            exported.write_text("sqlite", encoding="utf-8")
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+
+            self.assertEqual(ensure_openable_local_path(exported, [allowed]), allowed.resolve())
+            self.assertEqual(ensure_openable_local_path(allowed, [allowed]), allowed.resolve())
+            with self.assertRaises(ValueError):
+                ensure_openable_local_path(outside, [allowed])
 

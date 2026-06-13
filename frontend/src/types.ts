@@ -204,8 +204,19 @@ export type VideoSummary = {
   latest_danmaku_fetched_at?: string;
 };
 
+export type OwnerSummary = {
+  key: string;
+  name: string;
+  owner_mid: string;
+  video_count: number;
+  comment_count: number;
+  danmaku_count: number;
+  storage_bytes?: number;
+};
+
 export type VideoListResponse = {
   videos: VideoSummary[];
+  owners?: OwnerSummary[];
   database?: DatabaseInfo;
   total?: number;
   limit?: number;
@@ -288,6 +299,8 @@ export type DatabaseExportResponse = {
   path: string;
   relative_path: string;
   file_name: string;
+  directory_path?: string;
+  directory_relative_path?: string;
   format: "sqlite" | "json" | string;
   json_path?: string;
   json_relative_path?: string;
@@ -300,6 +313,28 @@ export type DatabaseExportResponse = {
   size_bytes: number;
 };
 
+export type ArchiveDeleteResponse = {
+  ok: boolean;
+  database?: DatabaseInfo;
+  task_id?: string;
+  queue_position?: number;
+  message?: string;
+  deleted_bvids: string[];
+  deleted_videos: number;
+  missing_bvids?: string[];
+  videos: Array<{
+    bvid: string;
+    title: string;
+    owner_mid: string;
+    owner_name: string;
+  }>;
+  counts: Record<string, number>;
+  size_before: number;
+  size_after: number;
+  bytes_reclaimed: number;
+  vacuum_deferred?: boolean;
+};
+
 export type DatabaseInfo = {
   id: string;
   role: "main" | "hotplug" | "legacy_export" | string;
@@ -309,10 +344,24 @@ export type DatabaseInfo = {
   relative_path: string;
   exists: boolean;
   size_bytes: number;
+  page_count: number;
+  page_size: number;
+  freelist_count: number;
+  reclaimable_bytes: number;
+  used_bytes: number;
+  wal_bytes: number;
+  storage_message: string;
   video_count: number;
   comment_count: number;
   danmaku_count: number;
   owner_count: number;
+  top_owners: Array<{
+    owner_mid: string;
+    owner_name: string;
+    video_count: number;
+    comment_count: number;
+    danmaku_count: number;
+  }>;
   archive_kind: "main" | "up" | "video" | "collection" | "unknown" | string;
   archive_label: string;
   owner_mid: string;
@@ -393,4 +442,3 @@ export type ProgressState = {
 export type SortMode = "time_asc" | "time_desc" | "like_desc" | "reply_desc";
 
 export type LevelFilter = "all" | "top" | "reply" | "owner";
-

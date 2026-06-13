@@ -3,6 +3,7 @@ import type React from "react";
 import {
   archiveSpaceVideos,
   controlSpaceTasks,
+  deleteArchiveData,
   exportDatabaseArchive,
   fetchCookieStatus,
   fetchDatabases,
@@ -10,11 +11,14 @@ import {
   importDatabase,
   importDatabaseFiles,
   logClientEvent,
+  openLocalPath,
   parseVideo,
   type TaskControlAction,
 } from "../api/client";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
 import { AuthPanel } from "../components/video-library/AuthPanel";
+import { BatchManagementPanel } from "../components/video-library/BatchManagementPanel";
+import { DeleteConfirmDialog } from "../components/video-library/DeleteConfirmDialog";
 import { LibraryHeader } from "../components/video-library/LibraryHeader";
 import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
 import { LibraryStats } from "../components/video-library/LibraryStats";
@@ -23,16 +27,17 @@ import { ManagementPanel } from "../components/video-library/ManagementPanel";
 import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
 import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
-import type { ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
+import type { DeleteTarget, ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
-import type { CookieStatus, DatabaseInfo, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
+import type { CookieStatus, DatabaseInfo, OwnerSummary, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
 
 const VIDEO_PAGE_SIZE = 40;
 
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
+  const [ownerSummaries, setOwnerSummaries] = useState<OwnerSummary[]>([]);
   const [videoTotal, setVideoTotal] = useState(0);
   const [hasMoreVideos, setHasMoreVideos] = useState(false);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
@@ -59,7 +64,9 @@ export function VideoLibraryPage() {
   const [isArchivingSpace, setIsArchivingSpace] = useState(false);
   const [isSubmittingSpace, setIsSubmittingSpace] = useState(false);
   const [exportingKey, setExportingKey] = useState("");
+  const [deletingKey, setDeletingKey] = useState("");
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const [hiddenTaskKeys, setHiddenTaskKeys] = useState<Set<string>>(() => new Set());
@@ -116,6 +123,7 @@ export function VideoLibraryPage() {
       const offset = options?.offset || 0;
       const payload = await fetchVideos(activeDbId, { limit: VIDEO_PAGE_SIZE, offset });
       setVideos((current) => (options?.append ? mergeVideosByBvid(current, payload.videos) : payload.videos));
+      setOwnerSummaries(payload.owners || []);
       setVideoTotal(payload.total ?? payload.videos.length);
       setHasMoreVideos(Boolean(payload.has_more));
     } catch (reason: unknown) {
@@ -160,8 +168,20 @@ export function VideoLibraryPage() {
   }, [hasSpaceQueueWork, loadDatabases, loadVideos]);
 
   const ownerGroups = useMemo(() => {
-    const groups = new Map<string, OwnerGroup>();
+    if (ownerSummaries.length) {
+      return ownerSummaries.map((owner) => ({
+        bvids: owner.owner_mid ? [] : videos.filter((video) => ownerKey(video) === owner.key).map((video) => video.bvid),
+        key: owner.key,
+        name: owner.name,
+        ownerMid: owner.owner_mid,
+        videoCount: owner.video_count,
+        commentCount: owner.comment_count,
+        danmakuCount: owner.danmaku_count,
+        storageBytes: owner.storage_bytes,
+      }));
+    }
 
+    const groups = new Map<string, OwnerGroup>();
     for (const video of videos) {
       const key = ownerKey(video);
       const existing = groups.get(key);
@@ -170,6 +190,7 @@ export function VideoLibraryPage() {
         existing.videoCount += 1;
         existing.commentCount += video.comment_total_count || 0;
         existing.danmakuCount += video.danmaku_count || 0;
+        existing.storageBytes = estimateOwnerStorageBytes(existing.commentCount, existing.danmakuCount, existing.videoCount);
       } else {
         groups.set(key, {
           bvids: [video.bvid],
@@ -179,6 +200,7 @@ export function VideoLibraryPage() {
           videoCount: 1,
           commentCount: video.comment_total_count || 0,
           danmakuCount: video.danmaku_count || 0,
+          storageBytes: estimateOwnerStorageBytes(video.comment_total_count || 0, video.danmaku_count || 0, 1),
         });
       }
     }
@@ -188,7 +210,7 @@ export function VideoLibraryPage() {
       if (second.commentCount !== first.commentCount) return second.commentCount - first.commentCount;
       return first.name.localeCompare(second.name, "zh-Hans-CN");
     });
-  }, [videos]);
+  }, [ownerSummaries, videos]);
 
   useEffect(() => {
     if (ownerFilter === "all") return;
@@ -259,8 +281,48 @@ export function VideoLibraryPage() {
     await runParse(target);
   }
 
+  function exportSuccessNotice(
+    payload: { directory_path?: string; format: string; relative_path: string },
+    title: string,
+  ): NoticeState {
+    const isJson = payload.format === "json";
+    const directory = payload.directory_path;
+    return {
+      kind: "success",
+      title,
+      message: isJson
+        ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
+        : `${payload.relative_path} 已导出为独立数据库，可在数据库页面切换查看`,
+      actionLabel: "打开所在文件夹",
+      onAction: directory ? () => void openExportDirectory(directory) : undefined,
+    };
+  }
+
+  async function openExportDirectory(path: string) {
+    try {
+      await openLocalPath(path);
+      logClientEvent("client.user.export.open_folder", "opened export folder", { path });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setNotice({ kind: "error", title: "打开文件夹失败", message: text });
+    }
+  }
+
+  function videoExportLabel(video: VideoSummary) {
+    return video.title || "未命名视频";
+  }
+
+  function batchExportLabel(prefix: string, names: string[], count: number) {
+    const readable = names.slice(0, 2).filter(Boolean).join("_");
+    const suffix = names.length > 2 ? `_等${names.length}项` : "";
+    return `${prefix}_${readable || `${count}项`}${suffix}`;
+  }
+
   async function exportOwnerDatabase(owner = selectedOwner, format: ExportFormat) {
-    if (!owner || !owner.bvids.length) return;
+    if (!owner || (!owner.ownerMid && !owner.bvids.length)) {
+      setNotice({ kind: "error", title: "UP 主导出失败", message: "这个 UP 主缺少 mid，且当前未加载到可导出的视频列表。" });
+      return;
+    }
     setExportingKey(`owner:${owner.key}`);
     setExportTarget(null);
     setError("");
@@ -270,20 +332,13 @@ export function VideoLibraryPage() {
         bvids: owner.ownerMid ? undefined : owner.bvids,
         db_id: activeDbId,
         format,
-        label: owner.name,
+        label: owner.name || owner.ownerMid || "未命名UP主",
         owner_mid: owner.ownerMid || undefined,
       });
       setMessage(
         `导出完成：${payload.relative_path}，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
       );
-      setNotice({
-        kind: "success",
-        title: format === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成",
-        message:
-          format === "json"
-            ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录`,
-      });
+      setNotice(exportSuccessNotice(payload, format === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
         db_id: activeDbId,
@@ -299,7 +354,7 @@ export function VideoLibraryPage() {
       logClientEvent("client.user.database_export.owner_error", text, {
         owner: owner.name,
         owner_mid: owner.ownerMid,
-        video_count: owner.bvids.length,
+        video_count: owner.videoCount,
       });
     } finally {
       setExportingKey("");
@@ -316,17 +371,10 @@ export function VideoLibraryPage() {
         bvid: video.bvid,
         db_id: activeDbId,
         format,
-        label: `${video.bvid}_${video.title}`,
+        label: videoExportLabel(video),
       });
       setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
-      setNotice({
-        kind: "success",
-        title: format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成",
-        message:
-          format === "json"
-            ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录`,
-      });
+      setNotice(exportSuccessNotice(payload, format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
         db_id: activeDbId,
@@ -342,6 +390,161 @@ export function VideoLibraryPage() {
       });
     } finally {
       setExportingKey("");
+    }
+  }
+
+  async function exportBatchVideos(selectedVideos: VideoSummary[], format: ExportFormat) {
+    const bvids = selectedVideos.map((video) => video.bvid);
+    if (!bvids.length) return;
+    setExportingKey("batch:videos");
+    setError("");
+    setMessage(`正在导出 ${bvids.length} 个视频`);
+    try {
+      const payload = await exportDatabaseArchive({
+        bvids,
+        db_id: activeDbId,
+        format,
+        label: batchExportLabel("批量视频", selectedVideos.map((video) => video.title || video.bvid), bvids.length),
+      });
+      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      setNotice(exportSuccessNotice(payload, format === "json" ? "批量视频 JSON 导出完成" : "批量视频数据库导出完成"));
+      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setNotice({ kind: "error", title: "批量导出失败", message: text });
+    } finally {
+      setExportingKey("");
+    }
+  }
+
+  async function exportBatchOwners(owners: OwnerGroup[], format: ExportFormat) {
+    if (!owners.length) return;
+    if (owners.length === 1 && owners[0].ownerMid) {
+      await exportOwnerDatabase(owners[0], format);
+      return;
+    }
+    if (owners.some((owner) => owner.ownerMid)) {
+      setNotice({
+        kind: "warning",
+        title: "批量 UP 导出需要逐个执行",
+        message: "带 mid 的 UP 主可以完整导出，但多个 UP 合并导出需要展开为视频列表。请一次导出一个 UP，或先加载更多视频后再合并导出。",
+      });
+      return;
+    }
+    const bvids = Array.from(new Set(owners.flatMap((owner) => owner.bvids)));
+    if (!bvids.length || bvids.length < owners.reduce((sum, owner) => sum + owner.videoCount, 0)) {
+      setNotice({ kind: "warning", title: "批量导出需要完整视频列表", message: "多个 UP 合并导出依赖已加载的视频；请先加载更多视频，或一次导出一个 UP。" });
+      return;
+    }
+    setExportingKey("batch:owners");
+    setError("");
+    setMessage(`正在导出 ${owners.length} 个 UP`);
+    try {
+      const payload = await exportDatabaseArchive({
+        bvids,
+        db_id: activeDbId,
+        format,
+        label: batchExportLabel("批量UP", owners.map((owner) => owner.name || owner.ownerMid), owners.length),
+      });
+      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      setNotice(exportSuccessNotice(payload, format === "json" ? "批量 UP JSON 导出完成" : "批量 UP 数据库导出完成"));
+      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setNotice({ kind: "error", title: "批量导出失败", message: text });
+    } finally {
+      setExportingKey("");
+    }
+  }
+
+  function queueBatchVideoDelete(selectedVideos: VideoSummary[]) {
+    if (!selectedVideos.length) return;
+    setDeleteTarget({ kind: "videos", videos: selectedVideos });
+  }
+
+  function queueBatchOwnerDelete(owners: OwnerGroup[]) {
+    if (!owners.length) return;
+    if (owners.length > 1 && owners.some((owner) => owner.ownerMid)) {
+      setNotice({
+        kind: "warning",
+        title: "批量删除请逐个 UP 执行",
+        message: "为避免误删过大范围的数据，带 mid 的 UP 主请一次删除一个；不需要先加载完整视频列表。",
+      });
+      return;
+    }
+    if (owners.length > 1 && owners.some((owner) => owner.bvids.length < owner.videoCount)) {
+      setNotice({ kind: "warning", title: "批量删除需要完整视频列表", message: "多个 UP 同时删除依赖已加载的视频列表；请先加载更多视频，或一次删除一个 UP。" });
+      return;
+    }
+    setDeleteTarget({ kind: "owners", owners });
+  }
+
+  function deletePayloadForTarget(target: DeleteTarget): { owner_mid?: string; bvid?: string; bvids?: string[] } {
+    if (target.kind === "owner") return { owner_mid: target.owner.ownerMid };
+    if (target.kind === "video") return { bvid: target.video.bvid };
+    if (target.kind === "videos") return { bvids: target.videos.map((video) => video.bvid) };
+    const mids = target.owners.map((owner) => owner.ownerMid).filter(Boolean);
+    if (mids.length === 1 && target.owners.length === 1) return { owner_mid: mids[0] };
+    return { bvids: Array.from(new Set(target.owners.flatMap((owner) => owner.bvids))) };
+  }
+
+  function deleteTargetVideoCount(target: DeleteTarget) {
+    if (target.kind === "owner") return target.owner.videoCount;
+    if (target.kind === "owners") return target.owners.reduce((sum, owner) => sum + owner.videoCount, 0);
+    if (target.kind === "videos") return target.videos.length;
+    return 1;
+  }
+
+  async function queueArchiveDeleteTarget() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    const payloadTarget = deletePayloadForTarget(target);
+    const removedBvids = new Set(payloadTarget.bvids || []);
+    setDeletingKey(`delete:${target.kind}`);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await deleteArchiveData({ db_id: activeDbId, ...payloadTarget });
+      setDeleteTarget(null);
+      setOwnerFilter("all");
+      setLibraryView("tasks");
+      setManagementView("queue");
+      if (payloadTarget.owner_mid) {
+        setVideos((current) => current.filter((video) => video.owner_mid !== payloadTarget.owner_mid));
+        setOwnerSummaries((current) => current.filter((owner) => owner.owner_mid !== payloadTarget.owner_mid));
+      } else {
+        setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
+      }
+      setVideoTotal((current) => Math.max(0, current - deleteTargetVideoCount(target)));
+      setMessage(payload.message || `删除任务已加入队列：${payload.task_id || "等待执行"}`);
+      setNotice({
+        kind: "success",
+        title: "删除任务已提交",
+        message: "本地档案会在后台删除，任务列表会显示进度；完成后数据库空间也会在后台整理。",
+      });
+      window.setTimeout(() => {
+        void loadVideos({ quiet: true });
+        void loadDatabases({ quiet: true, selectId: activeDbId });
+      }, 8000);
+      logClientEvent("client.user.archive_delete.success", "archive delete task queued", {
+        db_id: activeDbId,
+        target: target.kind,
+        task_id: payload.task_id,
+        queue_position: payload.queue_position,
+        queued_videos: deleteTargetVideoCount(target),
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setNotice({ kind: "error", title: "删除失败", message: text });
+      logClientEvent("client.user.archive_delete.error", text, {
+        db_id: activeDbId,
+        target: target.kind,
+      });
+    } finally {
+      setDeletingKey("");
     }
   }
 
@@ -626,6 +829,7 @@ export function VideoLibraryPage() {
         active={libraryView}
         databaseCount={databases.length}
         hasTaskWork={hasTaskWork}
+        manageCount={ownerGroups.length + (videoTotal || videos.length)}
         queuedCount={(taskQueue.active ? 1 : 0) + taskQueue.queued.length}
         videoCount={videoTotal || videos.length}
         onChange={setLibraryView}
@@ -637,7 +841,6 @@ export function VideoLibraryPage() {
             activeDatabase={activeDatabase}
             cookieStatus={cookieStatus}
             duplicateVideo={duplicateVideo}
-            exportingKey={exportingKey}
             hasSpaceQueueWork={hasSpaceQueueWork}
             hotplugDir={hotplugDir}
             isParsing={isParsing}
@@ -659,7 +862,7 @@ export function VideoLibraryPage() {
               });
               void runParse(pendingParseTarget);
             }}
-            onOwnerExport={(owner) => setExportTarget({ kind: "owner", owner })}
+            onOwnerExport={(owner, format) => void exportOwnerDatabase(owner, format)}
             onOwnerFilterChange={(key, owner) => {
               logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
                 owner: owner?.name || "all",
@@ -680,7 +883,6 @@ export function VideoLibraryPage() {
 
           <VideoListPanel
             activeDbId={activeDbId}
-            exportingKey={exportingKey}
             isLoading={isLoading}
             query={query}
             selectedOwnerName={selectedOwnerName}
@@ -688,11 +890,26 @@ export function VideoLibraryPage() {
             backendTotalVideoCount={videoTotal}
             hasMore={hasMoreVideos}
             videos={filteredVideos}
-            onExport={(video) => setExportTarget({ kind: "video", video })}
             onLoadMore={() => void loadMoreVideos()}
             onQueryChange={setQuery}
           />
         </section>
+      )}
+
+      {libraryView === "manage" && (
+        <BatchManagementPanel
+          backendTotalVideoCount={videoTotal}
+          disabled={Boolean(exportingKey || deletingKey)}
+          hasMoreVideos={hasMoreVideos}
+          isLoadingVideos={isLoading}
+          ownerGroups={ownerGroups}
+          videos={videos}
+          onDeleteOwners={queueBatchOwnerDelete}
+          onDeleteVideos={queueBatchVideoDelete}
+          onExportOwners={(owners, format) => void exportBatchOwners(owners, format)}
+          onExportVideos={(selectedVideos, format) => void exportBatchVideos(selectedVideos, format)}
+          onLoadMoreVideos={() => void loadMoreVideos()}
+        />
       )}
 
       {libraryView === "tasks" && (
@@ -758,6 +975,14 @@ export function VideoLibraryPage() {
               void exportVideoDatabase(exportTarget.video, format);
             }
           }}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          disabled={Boolean(deletingKey)}
+          target={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => void queueArchiveDeleteTarget()}
         />
       )}
       {notice && <NoticeDialog notice={notice} onClose={() => setNotice(null)} />}
@@ -857,4 +1082,8 @@ function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummary[]) {
     byBvid.set(video.bvid, video);
   }
   return Array.from(byBvid.values());
+}
+
+function estimateOwnerStorageBytes(commentCount: number, danmakuCount: number, videoCount: number) {
+  return commentCount * 900 + danmakuCount * 260 + videoCount * 4096;
 }

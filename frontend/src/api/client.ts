@@ -1,4 +1,5 @@
 import type {
+  ArchiveDeleteResponse,
   AuthQrPollResponse,
   AuthQrSession,
   CommentData,
@@ -202,6 +203,39 @@ export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: st
       bvid: payload.bvid,
       db_id: payload.db_id,
       format: payload.format,
+      owner_mid: payload.owner_mid,
+      video_count: payload.bvids?.length,
+    },
+  );
+}
+
+export async function openLocalPath(path: string) {
+  return requestJson<{ ok: boolean; path: string; relative_path: string }>(
+    "system.open_path",
+    `/api/system/open-path?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+    { path },
+  );
+}
+
+export async function deleteArchiveData(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; db_id?: string }) {
+  return requestJson<ArchiveDeleteResponse>(
+    "archive.delete",
+    `/api/archive/delete?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    {
+      bvid: payload.bvid,
+      db_id: payload.db_id,
       owner_mid: payload.owner_mid,
       video_count: payload.bvids?.length,
     },

@@ -7,10 +7,14 @@ import sqlite3
 
 DEFAULT_DATABASE_NAME = "comment_danmaku.db"
 LEGACY_DATABASE_NAME = "comments.db"
+DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 32 * 1024 * 1024
+DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
+DELETE_COMMENT_BATCH_SIZE = 5000
+DELETE_DANMAKU_BATCH_SIZE = 10000
+DELETE_VIDEO_BATCH_SIZE = 200
 
 
 SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -132,6 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_mid ON comments (bvid, mid);
 CREATE INDEX IF NOT EXISTS idx_comments_like ON comments (bvid, like_count DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_fetched_at ON videos (fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_videos_owner_mid ON videos (owner_mid, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_comments_mid_global ON comments (mid);
 CREATE INDEX IF NOT EXISTS idx_pictures_rpid ON comment_pictures (rpid);
 CREATE INDEX IF NOT EXISTS idx_emotes_rpid ON comment_emotes (rpid);
 CREATE INDEX IF NOT EXISTS idx_danmaku_bvid ON danmaku (bvid);
@@ -143,7 +148,12 @@ CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_ctime ON danmaku (bvid, ctime, dmid)
 def connect(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 60000")
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA wal_autocheckpoint = 512")
+    conn.execute(f"PRAGMA journal_size_limit = {DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES}")
     return conn
 
 
@@ -161,7 +171,9 @@ def prepare_database_path(db_path):
     return db_path
 
 
-def ensure_schema(conn):
+def ensure_schema(conn, journal_mode="WAL"):
+    if journal_mode:
+        conn.execute(f"PRAGMA journal_mode = {journal_mode}")
     conn.executescript(SCHEMA_SQL)
     rename_video_column(conn, "api_all_count", "api_comment_count", "INTEGER")
     rename_video_column(conn, "top_level_count", "top_level_comment_count", "INTEGER")
@@ -786,6 +798,7 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
         videos = [video_summary_from_row(row) for row in rows]
         return {
             "videos": videos,
+            "owners": list_owner_summaries(conn),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -793,6 +806,461 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
         }
     finally:
         conn.close()
+
+
+def list_owner_summaries(conn):
+    page_count = conn.execute("PRAGMA page_count").fetchone()[0] or 0
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0] or 0
+    freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0] or 0
+    used_bytes = max(0, (page_count - freelist_count) * page_size)
+    rows = conn.execute(
+        """
+        WITH owner_videos AS (
+            SELECT
+                CASE
+                    WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
+                END AS owner_key,
+                MAX(COALESCE(NULLIF(owner_mid, ''), '')) AS owner_mid,
+                COALESCE(NULLIF(owner_name, ''), 'Unknown') AS owner_name,
+                COUNT(*) AS video_count
+            FROM videos
+            GROUP BY owner_key, owner_name
+        ),
+        comment_stats AS (
+            SELECT
+                CASE
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                END AS owner_key,
+                COUNT(c.rpid) AS comment_count,
+                COUNT(DISTINCT NULLIF(c.mid, '')) AS user_count,
+                SUM(LENGTH(COALESCE(c.message, ''))) AS comment_text_bytes
+            FROM videos v
+            LEFT JOIN comments c ON c.bvid = v.bvid
+            GROUP BY owner_key
+        ),
+        comment_asset_stats AS (
+            SELECT
+                CASE
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                END AS owner_key,
+                COUNT(DISTINCT p.id) AS picture_count,
+                COUNT(DISTINCT e.id) AS emote_count
+            FROM videos v
+            LEFT JOIN comments c ON c.bvid = v.bvid
+            LEFT JOIN comment_pictures p ON p.rpid = c.rpid
+            LEFT JOIN comment_emotes e ON e.rpid = c.rpid
+            GROUP BY owner_key
+        ),
+        danmaku_stats AS (
+            SELECT
+                CASE
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                END AS owner_key,
+                COUNT(d.dmid) AS danmaku_count,
+                SUM(LENGTH(COALESCE(d.content, ''))) AS danmaku_text_bytes
+            FROM videos v
+            LEFT JOIN danmaku d ON d.bvid = v.bvid
+            GROUP BY owner_key
+        ),
+        weighted AS (
+            SELECT
+                owner_videos.owner_key,
+                owner_videos.owner_mid,
+                owner_videos.owner_name,
+                owner_videos.video_count,
+                COALESCE(comment_stats.comment_count, 0) AS comment_count,
+                COALESCE(danmaku_stats.danmaku_count, 0) AS danmaku_count,
+                (
+                    owner_videos.video_count * 4096
+                    + COALESCE(comment_stats.comment_count, 0) * 900
+                    + COALESCE(danmaku_stats.danmaku_count, 0) * 260
+                    + COALESCE(comment_asset_stats.picture_count, 0) * 240
+                    + COALESCE(comment_asset_stats.emote_count, 0) * 180
+                    + COALESCE(comment_stats.user_count, 0) * 420
+                    + COALESCE(comment_stats.comment_text_bytes, 0) * 2
+                    + COALESCE(danmaku_stats.danmaku_text_bytes, 0) * 2
+                ) AS storage_weight
+            FROM owner_videos
+            LEFT JOIN comment_stats ON comment_stats.owner_key = owner_videos.owner_key
+            LEFT JOIN comment_asset_stats ON comment_asset_stats.owner_key = owner_videos.owner_key
+            LEFT JOIN danmaku_stats ON danmaku_stats.owner_key = owner_videos.owner_key
+        )
+        SELECT
+            weighted.*,
+            SUM(storage_weight) OVER () AS total_storage_weight
+        FROM weighted
+        ORDER BY video_count DESC, comment_count DESC, owner_name ASC
+        """,
+    ).fetchall()
+    return [
+        {
+            "key": row["owner_key"],
+            "name": row["owner_name"],
+            "owner_mid": value_or_empty(row["owner_mid"]),
+            "video_count": value_or_zero(row["video_count"]),
+            "comment_count": value_or_zero(row["comment_count"]),
+            "danmaku_count": value_or_zero(row["danmaku_count"]),
+            "storage_bytes": estimate_owner_storage_bytes(
+                used_bytes,
+                value_or_zero(row["storage_weight"]),
+                value_or_zero(row["total_storage_weight"]),
+            ),
+        }
+        for row in rows
+    ]
+
+
+def estimate_owner_storage_bytes(used_bytes, owner_weight, total_weight):
+    if used_bytes <= 0 or owner_weight <= 0 or total_weight <= 0:
+        return 0
+    return int(round(used_bytes * owner_weight / total_weight))
+
+
+def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=None):
+    selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
+    if not selected_bvids:
+        raise ValueError("请选择要删除的视频")
+
+    db_path = Path(db_path)
+    size_before = db_path.stat().st_size if db_path.exists() else 0
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        existing_rows = conn.execute(
+            f"""
+            SELECT bvid, title, owner_mid, owner_name
+            FROM videos
+            WHERE bvid IN ({placeholders(len(selected_bvids))})
+            ORDER BY fetched_at DESC
+            """,
+            selected_bvids,
+        ).fetchall()
+        if not existing_rows:
+            raise LookupError("没有找到要删除的视频")
+
+        existing_bvids = [row["bvid"] for row in existing_rows]
+        existing_bvid_set = set(existing_bvids)
+        counts_before = count_archive_rows(conn, existing_bvids)
+        conn.commit()
+        conn.close()
+        conn = None
+        cleanup = delete_video_rows_chunked(db_path, existing_bvids, progress_callback=progress_callback)
+        if vacuum:
+            conn = connect(db_path)
+            conn.execute("VACUUM")
+            conn.close()
+            conn = None
+        else:
+            checkpoint_database(db_path, truncate=True)
+        size_after = db_path.stat().st_size if db_path.exists() else 0
+        return {
+            "deleted_bvids": existing_bvids,
+            "deleted_videos": len(existing_bvids),
+            "missing_bvids": [bvid for bvid in selected_bvids if bvid not in existing_bvid_set],
+            "videos": [video_delete_summary(row) for row in existing_rows],
+            "counts": counts_before,
+            "size_before": size_before,
+            "size_after": size_after,
+            "bytes_reclaimed": max(0, size_before - size_after),
+            "vacuum_deferred": not vacuum,
+            "wal_before": cleanup["wal_before"],
+            "wal_after": wal_file_size(db_path),
+            "wal_peak": cleanup["wal_peak"],
+            "chunks": cleanup["chunks"],
+        }
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def delete_owner_from_sqlite(db_path, owner_mid, vacuum=True, progress_callback=None):
+    owner_mid = str(owner_mid or "").strip()
+    if not owner_mid:
+        raise ValueError("请选择要删除的 UP 主")
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT bvid
+            FROM videos
+            WHERE owner_mid = ?
+            ORDER BY fetched_at DESC
+            """,
+            (owner_mid,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        raise LookupError("没有找到这个 UP 主的本地视频")
+    return delete_videos_from_sqlite(db_path, [row["bvid"] for row in rows], vacuum=vacuum, progress_callback=progress_callback)
+
+
+def vacuum_database(db_path):
+    db_path = Path(db_path)
+    size_before = db_path.stat().st_size if db_path.exists() else 0
+    wal_before = wal_file_size(db_path)
+    checkpoint_database(db_path, truncate=True)
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    checkpoint_database(db_path, truncate=True)
+    size_after = db_path.stat().st_size if db_path.exists() else 0
+    return {
+        "size_before": size_before,
+        "size_after": size_after,
+        "bytes_reclaimed": max(0, size_before - size_after),
+        "wal_before": wal_before,
+        "wal_after": wal_file_size(db_path),
+    }
+
+
+def wal_path_for(db_path):
+    db_path = Path(db_path)
+    return db_path.with_name(f"{db_path.name}-wal")
+
+
+def wal_file_size(db_path):
+    path = wal_path_for(db_path)
+    return path.stat().st_size if path.exists() else 0
+
+
+def checkpoint_database_if_large(db_path, threshold_bytes=DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES):
+    if wal_file_size(db_path) < threshold_bytes:
+        return {
+            "checkpointed": False,
+            "wal_before": wal_file_size(db_path),
+            "wal_after": wal_file_size(db_path),
+        }
+    return checkpoint_database(db_path, truncate=True)
+
+
+def checkpoint_database(db_path, truncate=False):
+    db_path = Path(db_path)
+    wal_before = wal_file_size(db_path)
+    conn = connect(db_path)
+    try:
+        mode = "TRUNCATE" if truncate else "PASSIVE"
+        row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+    finally:
+        conn.close()
+    return {
+        "checkpointed": True,
+        "mode": "TRUNCATE" if truncate else "PASSIVE",
+        "busy": row[0] if row else 0,
+        "log": row[1] if row else 0,
+        "checkpointed_frames": row[2] if row else 0,
+        "wal_before": wal_before,
+        "wal_after": wal_file_size(db_path),
+    }
+
+
+def set_database_journal_mode(db_path, mode):
+    conn = connect(db_path)
+    try:
+        row = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    return row[0] if row else ""
+
+
+def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
+    db_path = Path(db_path)
+    selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
+    if not selected_bvids:
+        return {"wal_before": wal_file_size(db_path), "wal_peak": wal_file_size(db_path), "chunks": 0}
+
+    wal_before = wal_file_size(db_path)
+    checkpoint_database(db_path, truncate=True)
+    wal_peak = wal_file_size(db_path)
+    chunks = 0
+    set_database_journal_mode(db_path, "DELETE")
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn, journal_mode=None)
+        deleted_user_mids = collect_comment_mids(conn, selected_bvids)
+        while True:
+            batch = fetch_comment_rpid_batch(conn, selected_bvids, DELETE_COMMENT_BATCH_SIZE)
+            if not batch:
+                break
+            marks = placeholders(len(batch))
+            conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN ({marks})", batch)
+            conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN ({marks})", batch)
+            conn.execute(f"DELETE FROM comments WHERE rpid IN ({marks})", batch)
+            conn.commit()
+            chunks += 1
+            wal_peak = max(wal_peak, wal_file_size(db_path))
+            conn.close()
+            conn = None
+            checkpoint = delete_mode_checkpoint(db_path)
+            notify_delete_progress(progress_callback, "comments", chunks, wal_peak, checkpoint)
+            conn = connect(db_path)
+
+        while True:
+            batch = fetch_scalar_batch(conn, "SELECT dmid FROM danmaku WHERE bvid IN ({marks}) LIMIT ?", selected_bvids, DELETE_DANMAKU_BATCH_SIZE)
+            if not batch:
+                break
+            marks = placeholders(len(batch))
+            conn.execute(f"DELETE FROM danmaku WHERE dmid IN ({marks})", batch)
+            conn.commit()
+            chunks += 1
+            wal_peak = max(wal_peak, wal_file_size(db_path))
+            conn.close()
+            conn = None
+            checkpoint = delete_mode_checkpoint(db_path)
+            notify_delete_progress(progress_callback, "danmaku", chunks, wal_peak, checkpoint)
+            conn = connect(db_path)
+
+        for batch in chunked(selected_bvids, DELETE_VIDEO_BATCH_SIZE):
+            marks = placeholders(len(batch))
+            conn.execute(f"DELETE FROM videos WHERE bvid IN ({marks})", batch)
+            conn.commit()
+            chunks += 1
+            wal_peak = max(wal_peak, wal_file_size(db_path))
+            conn.close()
+            conn = None
+            checkpoint = delete_mode_checkpoint(db_path)
+            notify_delete_progress(progress_callback, "videos", chunks, wal_peak, checkpoint)
+            conn = connect(db_path)
+
+        cleanup_unreferenced_users(conn, deleted_user_mids)
+        conn.commit()
+        chunks += 1
+        wal_peak = max(wal_peak, wal_file_size(db_path))
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        set_database_journal_mode(db_path, "WAL")
+    checkpoint_database(db_path, truncate=True)
+    return {"wal_before": wal_before, "wal_peak": wal_peak, "chunks": chunks}
+
+
+def delete_mode_checkpoint(db_path):
+    return {
+        "checkpointed": False,
+        "wal_before": wal_file_size(db_path),
+        "wal_after": wal_file_size(db_path),
+    }
+
+
+def notify_delete_progress(callback, stage, chunks, wal_peak, checkpoint):
+    if not callback:
+        return
+    callback(
+        {
+            "stage": stage,
+            "chunks": chunks,
+            "wal_peak": wal_peak,
+            "wal_after": checkpoint.get("wal_after", 0),
+            "checkpointed": bool(checkpoint.get("checkpointed")),
+        }
+    )
+
+
+def collect_comment_mids(conn, bvids):
+    params = list(bvids)
+    marks = placeholders(len(params))
+    rows = conn.execute(f"SELECT DISTINCT mid FROM comments WHERE bvid IN ({marks}) AND mid IS NOT NULL AND mid != ''", params).fetchall()
+    return [row["mid"] for row in rows]
+
+
+def fetch_comment_rpid_batch(conn, bvids, limit):
+    return fetch_scalar_batch(conn, "SELECT rpid FROM comments WHERE bvid IN ({marks}) LIMIT ?", bvids, limit)
+
+
+def fetch_scalar_batch(conn, sql_template, bvids, limit):
+    params = list(bvids)
+    marks = placeholders(len(params))
+    rows = conn.execute(sql_template.format(marks=marks), [*params, int(limit)]).fetchall()
+    return [row[0] for row in rows]
+
+
+def chunked(items, size):
+    for index in range(0, len(items), size):
+        yield list(items[index : index + size])
+
+
+def delete_video_rows(conn, bvids):
+    params = list(bvids)
+    marks = placeholders(len(params))
+    deleted_user_rows = conn.execute(f"SELECT DISTINCT mid FROM comments WHERE bvid IN ({marks}) AND mid IS NOT NULL AND mid != ''", params).fetchall()
+    deleted_user_mids = [row["mid"] for row in deleted_user_rows]
+    conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
+    conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
+    conn.execute(f"DELETE FROM comments WHERE bvid IN ({marks})", params)
+    conn.execute(f"DELETE FROM danmaku WHERE bvid IN ({marks})", params)
+    conn.execute(f"DELETE FROM videos WHERE bvid IN ({marks})", params)
+    cleanup_unreferenced_users(conn, deleted_user_mids)
+
+
+def cleanup_unreferenced_users(conn, mids=None):
+    selected_mids = sorted({str(mid).strip() for mid in (mids or []) if str(mid).strip()})
+    if not selected_mids:
+        return
+    marks = placeholders(len(selected_mids))
+    conn.execute(
+        f"""
+        DELETE FROM users
+        WHERE mid IN ({marks})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM comments
+              WHERE comments.mid = users.mid
+              LIMIT 1
+          )
+        """,
+        selected_mids,
+    )
+
+
+def count_archive_rows(conn, bvids):
+    params = list(bvids)
+    marks = placeholders(len(params))
+    return {
+        "videos": len(params),
+        "comments": conn.execute(f"SELECT COUNT(*) FROM comments WHERE bvid IN ({marks})", params).fetchone()[0],
+        "comment_pictures": conn.execute(
+            f"SELECT COUNT(*) FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
+            params,
+        ).fetchone()[0],
+        "comment_emotes": conn.execute(
+            f"SELECT COUNT(*) FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
+            params,
+        ).fetchone()[0],
+        "danmaku": conn.execute(f"SELECT COUNT(*) FROM danmaku WHERE bvid IN ({marks})", params).fetchone()[0],
+    }
+
+
+def placeholders(count):
+    return ",".join("?" for _ in range(count))
+
+
+def video_delete_summary(row):
+    return {
+        "bvid": row["bvid"],
+        "title": row["title"],
+        "owner_mid": value_or_empty(row["owner_mid"]),
+        "owner_name": row["owner_name"] or "",
+    }
 
 
 def video_summary_from_row(row):
@@ -978,4 +1446,3 @@ def node_sort_key(node):
     ctime = normalized.get("ctime") or 0
     rpid = str(normalized.get("rpid") or "")
     return ctime, rpid
-

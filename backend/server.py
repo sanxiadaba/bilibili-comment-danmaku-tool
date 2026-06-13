@@ -1,23 +1,28 @@
 import argparse
+import os
+import subprocess
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, shutdown_logging
+from archive_delete_tasks import ArchiveDeleteTaskService
 from auth_store import BilibiliQrLoginService, CookieStore
 from bilibili_comment_danmaku import (
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
-    list_video_summaries_page,
     load_comment_data,
+    list_video_summaries_page,
     load_danmaku_data,
     prepare_database_path,
     save_danmaku_to_sqlite,
     save_comments_to_sqlite,
     scrape_comments,
     scrape_danmaku,
+    vacuum_database,
 )
 from database_registry import (
     DATABASE_EXTENSIONS,
@@ -63,18 +68,21 @@ DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 refresh_lock = threading.Lock()
+maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
 qr_login_service = BilibiliQrLoginService(auth_cookie_store)
 space_archive_service = None
 video_parse_service = None
+archive_delete_service = None
 
 
 def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEFAULT_SPACE_CACHE_DIR, persist=False):
-    global auth_cookie_store, qr_login_service, space_archive_service, video_parse_service
+    global auth_cookie_store, qr_login_service, space_archive_service, video_parse_service, archive_delete_service
     auth_cookie_store = CookieStore(cookie_file)
     qr_login_service = BilibiliQrLoginService(auth_cookie_store)
     space_state_path = space_cache_dir / "space_queue.json" if persist else None
     video_state_path = space_cache_dir / "video_parse_queue.json" if persist else None
+    delete_state_path = space_cache_dir / "archive_delete_queue.json" if persist else None
     space_archive_service = SpaceArchiveService(
         cookie_file,
         space_cache_dir,
@@ -86,15 +94,21 @@ def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEF
         refresh_lock,
         state_path=video_state_path,
     )
+    archive_delete_service = ArchiveDeleteTaskService(
+        refresh_lock,
+        state_path=delete_state_path,
+        vacuum_scheduler=schedule_database_vacuum,
+    )
     set_queue_snapshot_provider(combined_queue_snapshot)
 
 
 def combined_queue_snapshot():
-    if not space_archive_service or not video_parse_service:
+    if not space_archive_service or not video_parse_service or not archive_delete_service:
         return {"active": None, "queued": [], "recent": []}
     space = space_archive_service.snapshot()
     video = video_parse_service.snapshot()
-    active_candidates = [task for task in [space.get("active"), video.get("active")] if task]
+    delete = archive_delete_service.snapshot()
+    active_candidates = [task for task in [space.get("active"), video.get("active"), delete.get("active")] if task]
     running = next((task for task in active_candidates if task.get("status") == "running"), None)
     active = running or (active_candidates[0] if active_candidates else None)
     queued = []
@@ -102,11 +116,119 @@ def combined_queue_snapshot():
         if active and task.get("id") == active.get("id"):
             continue
         queued.append({**task, "queue_position": len(queued) + 1})
-    queued.extend([*(space.get("queued") or []), *(video.get("queued") or [])])
+    queued.extend([*(space.get("queued") or []), *(video.get("queued") or []), *(delete.get("queued") or [])])
     queued = [{**task, "queue_position": index + 1} for index, task in enumerate(queued)]
-    recent = [*(space.get("recent") or []), *(video.get("recent") or [])]
+    recent = [*(space.get("recent") or []), *(video.get("recent") or []), *(delete.get("recent") or [])]
     recent.sort(key=lambda task: task.get("updated_at", ""), reverse=True)
     return {"active": active, "queued": queued, "recent": recent[:10]}
+
+
+def build_export_label(kind, label="", bvid="", owner_mid="", video_count=0):
+    label = str(label or "").strip()
+    bvid = str(bvid or "").strip()
+    owner_mid = str(owner_mid or "").strip()
+    if kind == "up":
+        parts = ["UP", label or owner_mid or "unknown", owner_mid, f"{video_count}videos" if video_count else ""]
+    elif kind == "video":
+        parts = ["video", bvid, label or "untitled"]
+    else:
+        parts = [kind or "collection", label or "archive", f"{video_count}items" if video_count else ""]
+    return "_".join(part for part in parts if part)
+
+
+def count_owner_export_videos(db_path, owner_mid):
+    from bilibili_comment_danmaku.storage import connect, ensure_schema
+
+    owner_mid = str(owner_mid or "").strip()
+    if not owner_mid:
+        return 0
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        row = conn.execute("SELECT COUNT(*) FROM videos WHERE owner_mid = ?", (owner_mid,)).fetchone()
+        return int(row[0] or 0)
+    finally:
+        conn.close()
+
+
+def ensure_export_result_file(result):
+    path = Path(result.get("path") or "").resolve()
+    if not path.exists() or not path.is_file():
+        raise RuntimeError(f"导出失败：目标文件没有生成：{path}")
+    size = path.stat().st_size
+    if size <= 0:
+        raise RuntimeError(f"导出失败：目标文件为空：{path}")
+    result["size_bytes"] = size
+    return path
+
+
+def ensure_openable_local_path(raw_path, allowed_dirs):
+    if not raw_path:
+        raise ValueError("缺少要打开的路径")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve()
+    if path.is_file():
+        path = path.parent
+    if not path.exists() or not path.is_dir():
+        raise FileNotFoundError(f"目录不存在：{path}")
+    allowed = [Path(item).resolve() for item in allowed_dirs]
+    if not any(is_path_relative_to(path, directory) for directory in allowed):
+        raise ValueError("只能打开本项目的数据、导出或日志目录")
+    return path
+
+
+def is_path_relative_to(path, directory):
+    try:
+        Path(path).resolve().relative_to(Path(directory).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def open_local_directory(path):
+    if os.name == "nt":
+        subprocess.Popen(["explorer", str(path)])
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+        return
+    subprocess.Popen(["xdg-open", str(path)])
+
+
+def schedule_database_vacuum(db_path, request_id=""):
+    if maintenance_lock.locked():
+        log_event(
+            "database.vacuum.skip",
+            "database vacuum already scheduled",
+            request_id=request_id,
+            db=str(db_path),
+            level="warning",
+        )
+        return
+
+    def worker():
+        with maintenance_lock:
+            log_event("database.vacuum.wait", "waiting to reclaim database space", request_id=request_id, db=str(db_path))
+            with refresh_lock:
+                try:
+                    result = vacuum_database(db_path)
+                except Exception as exc:
+                    log_exception("database.vacuum.error", str(exc), request_id=request_id, db=str(db_path))
+                    return
+            log_event(
+                "database.vacuum.finish",
+                "database space reclaimed",
+                request_id=request_id,
+                db=str(db_path),
+                bytes_reclaimed=result["bytes_reclaimed"],
+                size_before=result["size_before"],
+                size_after=result["size_after"],
+            )
+
+    thread = threading.Thread(target=worker, name="database-vacuum", daemon=True)
+    thread.start()
 
 
 configure_task_services()
@@ -204,6 +326,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 return
             if parsed.path == "/api/database/export":
                 self.handle_database_export_api()
+                return
+            if parsed.path == "/api/system/open-path":
+                self.handle_open_path_api()
+                return
+            if parsed.path == "/api/archive/delete":
+                self.handle_archive_delete_api()
                 return
             self.send_error(404)
         except BadRequestError as exc:
@@ -437,6 +565,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if path == "/api/v1/control/archive/export":
             self.handle_database_export_api()
             return
+        if path == "/api/v1/control/archive/delete":
+            self.handle_archive_delete_api()
+            return
         if path == "/api/v1/control/databases/import":
             self.handle_database_import_api()
             return
@@ -462,6 +593,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             return
         if action == "archive.export":
             self.run_with_json_body(params, self.handle_database_export_api)
+            return
+        if action == "archive.delete":
+            self.run_with_json_body(params, self.handle_archive_delete_api)
             return
         if action == "databases.import":
             self.run_with_json_body(params, self.handle_database_import_api)
@@ -595,13 +729,20 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
             elif task_id and task_id.startswith("space-"):
                 payload = space_archive_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
+            elif task_id and task_id.startswith("delete-"):
+                payload = archive_delete_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
             else:
                 space_payload = space_archive_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
                 video_payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
+                delete_payload = archive_delete_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
                 payload = {
                     "ok": True,
                     "action": action,
-                    "changed": [*(space_payload.get("changed") or []), *(video_payload.get("changed") or [])],
+                    "changed": [
+                        *(space_payload.get("changed") or []),
+                        *(video_payload.get("changed") or []),
+                        *(delete_payload.get("changed") or []),
+                    ],
                     "queue": combined_queue_snapshot(),
                 }
         except ValueError as exc:
@@ -640,17 +781,31 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if owner_mid and not bvid:
             selected_bvids = []
 
-        target_path = export_database_path(label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
+        archive_kind = "up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection"
+        export_video_count = len(selected_bvids)
+        if owner_mid and not selected_bvids:
+            with refresh_lock:
+                export_video_count = count_owner_export_videos(db_path, owner_mid)
+        export_label = build_export_label(
+            archive_kind,
+            label=label,
+            bvid=selected_bvids[0] if len(selected_bvids) == 1 else "",
+            owner_mid=owner_mid,
+            video_count=export_video_count,
+        )
+        target_path = export_database_path(export_label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
         try:
-            exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
-            result = exporter(
-                db_path,
-                target_path,
-                bvids=selected_bvids or None,
-                owner_mid=owner_mid or None,
-                archive_kind="up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection",
-                label=label,
-            )
+            with refresh_lock:
+                exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
+                result = exporter(
+                    db_path,
+                    target_path,
+                    bvids=selected_bvids or None,
+                    owner_mid=owner_mid or None,
+                    archive_kind=archive_kind,
+                    label=label,
+                )
+                exported_path = ensure_export_result_file(result)
         except LookupError as exc:
             log_event(
                 "api.database_export.not_found",
@@ -680,7 +835,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             "api.database_export.finish",
             "exported archive database",
             request_id=getattr(self, "request_id", ""),
-            path=result["path"],
+            path=str(exported_path),
             source_db=str(db_path),
             export_format=export_format,
             video_count=len(result["bvids"]),
@@ -690,14 +845,16 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.send_json(
             {
                 "ok": True,
-                "path": result["path"],
-                "relative_path": str(Path(result["path"]).resolve().relative_to(ROOT)),
-                "file_name": Path(result["path"]).name,
+                "path": str(exported_path),
+                "relative_path": relative_to_root(exported_path),
+                "file_name": exported_path.name,
+                "directory_path": str(exported_path.parent),
+                "directory_relative_path": relative_to_root(exported_path.parent),
                 "format": export_format,
                 "json_path": result.get("json_path", ""),
                 "json_relative_path": relative_to_root(result["json_path"]) if result.get("json_path") else "",
                 "json_file_name": Path(result["json_path"]).name if result.get("json_path") else "",
-                "database": public_database_info(database_info_for_path(Path(result["path"]), self.db_path, self.database_dir))
+                "database": public_database_info(database_info_for_path(exported_path, self.db_path, self.database_dir))
                 if export_format == "sqlite"
                 else None,
                 "video_count": len(result["bvids"]),
@@ -706,6 +863,198 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 "manifest": result.get("manifest") or {},
                 "size_bytes": result["size_bytes"],
             }
+        )
+
+    def handle_open_path_api(self):
+        body = self.read_json_body()
+        raw_path = body.get("path") or body.get("directory_path") or body.get("relative_path")
+        try:
+            directory = ensure_openable_local_path(
+                raw_path,
+                allowed_dirs=[
+                    ROOT / "data",
+                    self.database_dir,
+                    DEFAULT_EXPORT_DIR,
+                    LEGACY_EXPORT_DIR,
+                    self.log_dir,
+                ],
+            )
+            open_local_directory(directory)
+        except FileNotFoundError as exc:
+            self.send_json({"error": str(exc)}, status=404)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.system_open_path.error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                path=str(raw_path or ""),
+            )
+            self.send_json({"error": f"打开目录失败：{exc}"}, status=500)
+            return
+        log_event(
+            "api.system_open_path.finish",
+            "opened local directory",
+            request_id=getattr(self, "request_id", ""),
+            path=str(directory),
+        )
+        self.send_json({"ok": True, "path": str(directory), "relative_path": relative_to_root(directory)})
+
+    def _handle_archive_delete_api_sync_legacy_unused(self):
+        raise NotImplementedError("archive deletion now runs through ArchiveDeleteTaskService")
+        if not refresh_lock.acquire(blocking=False):
+            log_event(
+                "api.archive_delete.rejected",
+                "archive delete rejected because another task is active",
+                request_id=getattr(self, "request_id", ""),
+                level="warning",
+            )
+            self.send_json({"error": "已有抓取、刷新或删除任务正在进行，请稍后再试"}, status=409)
+            return
+
+        try:
+            body = self.read_json_body()
+            db_path = self.resolve_db_path_from_body(body)
+            bvid = (body.get("bvid") or "").strip()
+            owner_mid = (body.get("owner_mid") or "").strip()
+            raw_bvids = body.get("bvids")
+            if isinstance(raw_bvids, list):
+                bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
+            else:
+                bvids = []
+            if bvid:
+                bvids = [bvid]
+            if owner_mid and bvids:
+                self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
+                return
+            if not owner_mid and not bvids:
+                self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
+                return
+            result = (
+                delete_owner_from_sqlite(db_path, owner_mid, vacuum=False)
+                if owner_mid
+                else delete_videos_from_sqlite(db_path, bvids, vacuum=False)
+            )
+        except LookupError as exc:
+            log_event(
+                "api.archive_delete.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
+                owner_mid=owner_mid,
+                bvid=bvid,
+                bvid_count=len(bvids),
+                level="warning",
+            )
+            self.send_json({"error": str(exc)}, status=404)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.archive_delete.error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
+                owner_mid=owner_mid,
+                bvid=bvid,
+                bvid_count=len(bvids),
+            )
+            self.send_json({"error": str(exc)}, status=500)
+            return
+        finally:
+            refresh_lock.release()
+
+        log_event(
+            "api.archive_delete.finish",
+            "deleted archive data",
+            request_id=getattr(self, "request_id", ""),
+            db=str(db_path),
+            owner_mid=owner_mid,
+            deleted_videos=result["deleted_videos"],
+            counts=result["counts"],
+            bytes_reclaimed=result["bytes_reclaimed"],
+            vacuum_deferred=result.get("vacuum_deferred"),
+        )
+        schedule_database_vacuum(db_path, getattr(self, "request_id", ""))
+        self.send_json(
+            {
+                "ok": True,
+                "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
+                **result,
+            }
+        )
+
+    def handle_archive_delete_api(self):
+        try:
+            body = self.read_json_body()
+            db_path = self.resolve_db_path_from_body(body)
+            bvid = (body.get("bvid") or "").strip()
+            owner_mid = (body.get("owner_mid") or "").strip()
+            raw_bvids = body.get("bvids")
+            if isinstance(raw_bvids, list):
+                bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
+            else:
+                bvids = []
+            if bvid:
+                bvids = [bvid]
+            if owner_mid and bvids:
+                self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
+                return
+            if not owner_mid and not bvids:
+                self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
+                return
+            task = archive_delete_service.enqueue(
+                db_path=db_path,
+                owner_mid=owner_mid,
+                bvids=bvids,
+                request_id=getattr(self, "request_id", ""),
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.archive_delete.queue_error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+            )
+            self.send_json({"error": str(exc)}, status=500)
+            return
+
+        log_event(
+            "task.archive_delete.queued",
+            "archive delete task queued",
+            request_id=getattr(self, "request_id", ""),
+            db=str(db_path),
+            owner_mid=owner_mid,
+            bvid=bvid,
+            bvid_count=len(bvids),
+            task_id=task["id"],
+            queue_position=task["queue_position"],
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "database": None,
+                "task_id": task["id"],
+                "queue_position": task["queue_position"],
+                "message": "删除任务已加入队列",
+                "deleted_bvids": bvids,
+                "deleted_videos": len(bvids),
+                "missing_bvids": [],
+                "videos": [],
+                "counts": {},
+                "size_before": 0,
+                "size_after": 0,
+                "bytes_reclaimed": 0,
+                "vacuum_deferred": True,
+            },
+            status=202,
         )
 
     def handle_database_import_api(self):
@@ -1080,6 +1429,7 @@ def main():
     configure_task_services(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, persist=True)
     space_archive_service.start_pending_tasks()
     video_parse_service.start_pending_tasks()
+    archive_delete_service.start_pending_tasks()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     log_event(
         "service.start",
@@ -1107,4 +1457,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

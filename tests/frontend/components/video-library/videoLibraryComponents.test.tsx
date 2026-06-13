@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { LibraryStats } from "../../../../frontend/src/components/video-library/LibraryStats";
 import { LibrarySidebar } from "../../../../frontend/src/components/video-library/LibrarySidebar";
 import { StatusStrips } from "../../../../frontend/src/components/video-library/StatusStrips";
+import { NoticeDialog } from "../../../../frontend/src/components/video-library/NoticeDialog";
 import { VideoListPanel } from "../../../../frontend/src/components/video-library/VideoListPanel";
 import { makeCookieStatus, makeProgress, makeVideo } from "../../helpers/factories";
 
@@ -55,13 +56,11 @@ describe("video library components", () => {
         <VideoListPanel
           activeDbId="main"
           backendTotalVideoCount={0}
-          exportingKey=""
           hasMore={false}
           isLoading
           query=""
           totalVideoCount={0}
           videos={[]}
-          onExport={() => undefined}
           onLoadMore={() => undefined}
           onQueryChange={() => undefined}
         />,
@@ -73,13 +72,11 @@ describe("video library components", () => {
         <VideoListPanel
           activeDbId="main"
           backendTotalVideoCount={0}
-          exportingKey=""
           hasMore={false}
           isLoading={false}
           query=""
           totalVideoCount={0}
           videos={[]}
-          onExport={() => undefined}
           onLoadMore={() => undefined}
           onQueryChange={() => undefined}
         />,
@@ -90,14 +87,12 @@ describe("video library components", () => {
       <VideoListPanel
         activeDbId="archive"
         backendTotalVideoCount={1}
-        exportingKey="video:BV1xx411c7mD"
         hasMore={false}
         isLoading={false}
         query="test"
         selectedOwnerName="Owner"
         totalVideoCount={1}
         videos={[makeVideo()]}
-        onExport={() => undefined}
         onLoadMore={() => undefined}
         onQueryChange={() => undefined}
       />,
@@ -116,13 +111,11 @@ describe("video library components", () => {
       <VideoListPanel
         activeDbId="main"
         backendTotalVideoCount={45}
-        exportingKey=""
         hasMore
         isLoading={false}
         query=""
         totalVideoCount={45}
         videos={videos}
-        onExport={() => undefined}
         onLoadMore={() => undefined}
         onQueryChange={() => undefined}
       />,
@@ -145,7 +138,6 @@ describe("video library components", () => {
           bili_ticket_expired: true,
         })}
         duplicateVideo={null}
-        exportingKey=""
         hasSpaceQueueWork={false}
         hotplugDir="data/databases"
         isParsing={false}
@@ -175,5 +167,68 @@ describe("video library components", () => {
     expect(html).toContain("SESSDATA");
     expect(html).toContain("DedeUserID");
     expect(html).toContain("短期票据过期");
+  });
+
+  it("renders direct DB and JSON export actions for owner groups", () => {
+    const html = renderToStaticMarkup(
+      <LibrarySidebar
+        cookieStatus={makeCookieStatus()}
+        duplicateVideo={null}
+        hasSpaceQueueWork={false}
+        hotplugDir="data/databases"
+        isParsing={false}
+        isSubmittingSpace={false}
+        isTaskBusy={false}
+        ownerFilter="all"
+        ownerGroups={[
+          {
+            bvids: ["BV1xx411c7mD"],
+            key: "mid:42",
+            name: "Owner",
+            ownerMid: "42",
+            videoCount: 1,
+            commentCount: 20,
+            danmakuCount: 8,
+          },
+        ]}
+        ownerRef=""
+        parseDelay={1}
+        showSettings={false}
+        totals={{ comments: 20, danmaku: 8 }}
+        url=""
+        videoCount={1}
+        onDuplicateOpen={() => undefined}
+        onDuplicateReparse={() => undefined}
+        onOwnerExport={() => undefined}
+        onOwnerFilterChange={() => undefined}
+        onOwnerRefChange={() => undefined}
+        onParseDelayChange={() => undefined}
+        onSubmitParse={(event) => event.preventDefault()}
+        onSubmitSpaceArchive={(event) => event.preventDefault()}
+        onUrlChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Owner");
+    expect(html).toContain("DB");
+    expect(html).toContain("JSON");
+  });
+
+  it("renders an export notice action for opening the output folder", () => {
+    const html = renderToStaticMarkup(
+      <NoticeDialog
+        notice={{
+          kind: "success",
+          title: "导出完成",
+          message: "data/databases/video.db 已导出",
+          actionLabel: "打开所在文件夹",
+          onAction: () => undefined,
+        }}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("导出完成");
+    expect(html).toContain("打开所在文件夹");
   });
 });

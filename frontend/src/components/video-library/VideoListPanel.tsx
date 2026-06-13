@@ -5,14 +5,12 @@ import type { VideoSummary } from "../../types";
 type VideoListPanelProps = {
   activeDbId: string;
   backendTotalVideoCount: number;
-  exportingKey: string;
   hasMore: boolean;
   isLoading: boolean;
   query: string;
   selectedOwnerName?: string;
   totalVideoCount: number;
   videos: VideoSummary[];
-  onExport: (video: VideoSummary) => void;
   onLoadMore: () => void;
   onQueryChange: (value: string) => void;
 };
@@ -20,19 +18,17 @@ type VideoListPanelProps = {
 export function VideoListPanel({
   activeDbId,
   backendTotalVideoCount,
-  exportingKey,
   hasMore,
   isLoading,
   query,
   selectedOwnerName,
   totalVideoCount,
   videos,
-  onExport,
   onLoadMore,
   onQueryChange,
 }: VideoListPanelProps) {
   return (
-    <section className="surface-card flex min-h-[560px] min-w-0 flex-col rounded-md">
+    <section className="surface-card flex min-w-0 flex-col rounded-md">
       <div className="border-b border-line/80 bg-white/45 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
@@ -54,17 +50,14 @@ export function VideoListPanel({
         </div>
       </div>
 
-      <div className="grid max-h-[70vh] min-h-[420px] content-start gap-3 overflow-y-auto p-4">
+      <div className="grid content-start gap-3 p-4">
         {isLoading && <div className="p-6 text-center text-sm text-muted">正在载入视频库</div>}
         {!isLoading &&
           videos.map((video) => (
             <VideoCard
-              disabled={Boolean(exportingKey)}
               dbId={activeDbId}
-              exporting={exportingKey === `video:${video.bvid}`}
               key={video.bvid}
               video={video}
-              onExport={() => onExport(video)}
             />
           ))}
         {!isLoading && hasMore && !query && !selectedOwnerName && (

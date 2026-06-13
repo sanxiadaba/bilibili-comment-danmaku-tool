@@ -13,9 +13,11 @@ from pathlib import Path
 
 from helpers import BVID, make_archive, make_comment
 
+from archive_delete_tasks import ArchiveDeleteTaskService  # noqa: E402
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
+    export_database_path,
     import_database_file,
     list_database_catalog,
     parse_multipart_files,
@@ -40,12 +42,16 @@ from bilibili_comment_danmaku.archive import (  # noqa: E402
 from bilibili_comment_danmaku import scraper  # noqa: E402
 from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
+    delete_owner_from_sqlite,
+    delete_videos_from_sqlite,
     load_comment_data,
     load_danmaku_data,
     list_video_summaries_page,
     save_comments_to_sqlite,
     save_danmaku_to_sqlite,
+    vacuum_database,
 )
+import bilibili_comment_danmaku.storage as storage  # noqa: E402
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 class StorageTests(unittest.TestCase):
     def test_comment_refresh_keeps_missing_comments_as_deleted(self):
@@ -186,6 +192,205 @@ class StorageTests(unittest.TestCase):
             self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222"])
             self.assertEqual(page["videos"][0]["comment_total_count"], 2)
             self.assertEqual(page["videos"][0]["danmaku_count"], 2)
+
+    def test_video_page_owner_summaries_use_full_database_not_current_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            for index in range(3):
+                archive = make_archive(f"2024-01-0{index + 1}T00:00:00+00:00", [make_comment(f"owner-{index}", 1, "comment")])
+                archive["metadata"] = {
+                    **archive["metadata"],
+                    "bvid": f"BVowner{index:05d}",
+                    "aid": 100 + index,
+                    "source_url": f"https://www.bilibili.com/video/BVowner{index:05d}",
+                }
+                archive["video_raw"] = {**archive["video_raw"], "owner": {"mid": "42", "name": "Owner", "face": ""}}
+                save_comments_to_sqlite(archive, db_path, replace=True)
+
+            other = make_archive("2024-01-04T00:00:00+00:00", [make_comment("other", 1, "comment")])
+            other["metadata"] = {**other["metadata"], "bvid": "BVother0001", "aid": 200, "source_url": "https://www.bilibili.com/video/BVother0001"}
+            other["video_raw"] = {**other["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(other, db_path, replace=True)
+
+            page = list_video_summaries_page(db_path, limit=1, offset=0)
+            owners = {owner["owner_mid"]: owner for owner in page["owners"]}
+
+            self.assertEqual(len(page["videos"]), 1)
+            self.assertEqual(page["total"], 4)
+            self.assertEqual(owners["42"]["video_count"], 3)
+            self.assertEqual(owners["42"]["comment_count"], 3)
+            self.assertEqual(owners["100"]["video_count"], 1)
+            self.assertGreater(owners["42"]["storage_bytes"], owners["100"]["storage_bytes"])
+            self.assertEqual(owners["42"]["key"], "mid:42")
+
+    def test_delete_video_removes_related_archive_rows_and_keeps_other_videos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            first_top = make_comment("1", 1, "top comment", mid="42", like=8)
+            second_top = make_comment("2", 1, "other comment", mid="100", like=3)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [first_top]), db_path, replace=True)
+            second_archive = make_archive("2024-01-02T00:00:00+00:00", [second_top])
+            second_archive["metadata"] = {
+                **second_archive["metadata"],
+                "bvid": "BV2222222222",
+                "aid": 222,
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            second_archive["video_raw"] = {**second_archive["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(second_archive, db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": "100",
+                            "progress": 1.2,
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000001,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 9,
+                            "like_count": 12,
+                            "content": "danmaku",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+
+            result = delete_videos_from_sqlite(db_path, [BVID], vacuum=False)
+            page = list_video_summaries_page(db_path, limit=10)
+
+            self.assertEqual(result["deleted_videos"], 1)
+            self.assertTrue(result["vacuum_deferred"])
+            self.assertEqual(result["deleted_bvids"], [BVID])
+            self.assertEqual(result["counts"]["comments"], 1)
+            self.assertEqual(result["counts"]["comment_pictures"], 1)
+            self.assertEqual(result["counts"]["comment_emotes"], 1)
+            self.assertEqual(result["counts"]["danmaku"], 1)
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222"])
+            with self.assertRaises(LookupError):
+                load_comment_data(db_path, bvid=BVID)
+
+    def test_delete_video_uses_chunked_commits_to_limit_wal_growth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            comments = [make_comment(str(index), 1, f"comment {index}", mid=str(index)) for index in range(12)]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", comments), db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": f"dm-{index}",
+                            "progress": float(index),
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000000 + index,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 1,
+                            "like_count": 0,
+                            "content": f"danmaku {index}",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        }
+                        for index in range(9)
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+            original_comment_batch = storage.DELETE_COMMENT_BATCH_SIZE
+            original_danmaku_batch = storage.DELETE_DANMAKU_BATCH_SIZE
+            original_threshold = storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES
+            progress = []
+            try:
+                storage.DELETE_COMMENT_BATCH_SIZE = 5
+                storage.DELETE_DANMAKU_BATCH_SIZE = 4
+                storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 1
+                result = delete_videos_from_sqlite(db_path, [BVID], vacuum=False, progress_callback=progress.append)
+            finally:
+                storage.DELETE_COMMENT_BATCH_SIZE = original_comment_batch
+                storage.DELETE_DANMAKU_BATCH_SIZE = original_danmaku_batch
+                storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = original_threshold
+
+            self.assertEqual(result["deleted_videos"], 1)
+            self.assertGreater(result["chunks"], 1)
+            self.assertGreaterEqual(result["wal_peak"], result["wal_after"])
+            self.assertLess(result["wal_after"], 1024 * 1024)
+            self.assertLess(result["wal_peak"], 1024 * 1024)
+            self.assertEqual(storage.set_database_journal_mode(db_path, "WAL").lower(), "wal")
+            self.assertGreaterEqual(len(progress), 3)
+            self.assertEqual({item["stage"] for item in progress}, {"comments", "danmaku", "videos"})
+            with self.assertRaises(LookupError):
+                load_comment_data(db_path, bvid=BVID)
+
+    def test_delete_owner_removes_all_owner_videos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+            owner_second = make_archive("2024-01-02T00:00:00+00:00", [])
+            owner_second["metadata"] = {
+                **owner_second["metadata"],
+                "bvid": "BV2222222222",
+                "aid": 222,
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            save_comments_to_sqlite(owner_second, db_path, replace=True)
+            other = make_archive("2024-01-03T00:00:00+00:00", [])
+            other["metadata"] = {**other["metadata"], "bvid": "BV3333333333", "aid": 333, "source_url": "https://www.bilibili.com/video/BV3333333333"}
+            other["video_raw"] = {**other["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(other, db_path, replace=True)
+
+            result = delete_owner_from_sqlite(db_path, "42", vacuum=False)
+            page = list_video_summaries_page(db_path, limit=10)
+
+            self.assertEqual(result["deleted_videos"], 2)
+            self.assertEqual(set(result["deleted_bvids"]), {BVID, "BV2222222222"})
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV3333333333"])
+
+    def test_archive_delete_task_deletes_in_background(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            top = make_comment("1", 1, "top comment", mid="42", like=8)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), db_path, replace=True)
+            scheduled = []
+            service = ArchiveDeleteTaskService(threading.Lock(), vacuum_scheduler=lambda path, request_id="": scheduled.append((Path(path), request_id)))
+
+            task = service.enqueue(db_path, bvids=[BVID], request_id="req-1")
+            self.assertTrue(task["id"].startswith("delete-"))
+            self.assertEqual(task["queue_position"], 1)
+            self.assertTrue(service.queue.wait_until_idle(timeout=2))
+
+            snapshot = service.snapshot()
+            self.assertIsNone(snapshot["active"])
+            self.assertEqual(snapshot["recent"][0]["status"], "finished")
+            self.assertEqual(snapshot["recent"][0]["complete"], 1)
+            self.assertEqual(scheduled, [(db_path, "req-1")])
+            with self.assertRaises(LookupError):
+                load_comment_data(db_path, bvid=BVID)
+
+    def test_vacuum_database_reports_reclaimed_space(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+
+            result = vacuum_database(db_path)
+
+            self.assertIn("size_before", result)
+            self.assertIn("size_after", result)
+            self.assertGreaterEqual(result["bytes_reclaimed"], 0)
 
     def test_export_archive_to_sqlite_creates_independent_subset_database(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -331,6 +536,28 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(by_id["db:owner_archive.db"]["ok"])
             self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
 
+    def test_database_catalog_reports_storage_and_top_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            top = make_comment("1", 1, "top comment", mid="100", like=8)
+            reply = make_comment("2", 2, "reply comment", root="1", parent="1", mid="101", like=3)
+            top["replies"] = [reply]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+
+            catalog = list_database_catalog(main_db, hotplug_dir)
+            main = {item["id"]: item for item in catalog}["main"]
+
+            self.assertGreater(main["page_count"], 0)
+            self.assertGreater(main["page_size"], 0)
+            self.assertGreaterEqual(main["used_bytes"], 0)
+            self.assertGreaterEqual(main["reclaimable_bytes"], 0)
+            self.assertIn("storage_message", main)
+            self.assertEqual(main["top_owners"][0]["owner_mid"], "42")
+            self.assertEqual(main["top_owners"][0]["video_count"], 1)
+            self.assertEqual(main["top_owners"][0]["comment_count"], 2)
+
     def test_database_catalog_ignores_hotplug_json_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -402,6 +629,13 @@ class StorageTests(unittest.TestCase):
             with self.assertRaises(BadRequestError):
                 resolve_database_path("db:notes.txt", main_db, hotplug_dir)
 
+    def test_export_database_path_uses_readable_label_before_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_path = export_database_path("UP_测试UP_42_8videos", Path(tmp), suffix=".db")
+
+            self.assertTrue(export_path.name.startswith("UP_测试UP_42_8videos_"))
+            self.assertTrue(export_path.name.endswith(".db"))
+
     def test_import_database_file_normalizes_name_and_uses_hotplug_files_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -431,6 +665,3 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual(files[0]["filename"], "archive.db")
         self.assertEqual(files[0]["content"], content)
-
-
-

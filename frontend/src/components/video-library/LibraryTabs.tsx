@@ -1,4 +1,4 @@
-import { Database, KeyRound, ListVideo, RefreshCcw } from "lucide-react";
+import { Database, KeyRound, ListChecks, ListVideo, RefreshCcw } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { LibraryView } from "./types";
@@ -7,15 +7,17 @@ type LibraryTabsProps = {
   active: LibraryView;
   databaseCount: number;
   hasTaskWork: boolean;
+  manageCount: number;
   queuedCount: number;
   videoCount: number;
   onChange: (view: LibraryView) => void;
 };
 
-export function LibraryTabs({ active, databaseCount, hasTaskWork, queuedCount, videoCount, onChange }: LibraryTabsProps) {
+export function LibraryTabs({ active, databaseCount, hasTaskWork, manageCount, queuedCount, videoCount, onChange }: LibraryTabsProps) {
   return (
     <nav className="mx-auto flex max-w-[1540px] gap-2 overflow-x-auto px-4 py-4 lg:px-6" aria-label="主视图">
       <TabButton active={active === "videos"} icon={ListVideo} label="视频列表" meta={`${videoCount} 个`} onClick={() => onChange("videos")} />
+      <TabButton active={active === "manage"} icon={ListChecks} label="批量管理" meta={`${manageCount} 项`} onClick={() => onChange("manage")} />
       <TabButton
         active={active === "tasks"}
         icon={RefreshCcw}
