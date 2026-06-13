@@ -14,6 +14,7 @@ import {
   type TaskControlAction,
 } from "../api/client";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
+import { AuthPanel } from "../components/video-library/AuthPanel";
 import { LibraryHeader } from "../components/video-library/LibraryHeader";
 import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
 import { LibraryStats } from "../components/video-library/LibraryStats";
@@ -738,6 +739,12 @@ export function VideoLibraryPage() {
             webkitdirectory="true"
             onChange={(event) => void importSelectedFiles(event.target.files, "folder")}
           />
+        </section>
+      )}
+
+      {libraryView === "auth" && (
+        <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
+          <AuthPanel cookieStatus={cookieStatus} onStatusChange={setCookieStatus} />
         </section>
       )}
       {exportTarget && (
