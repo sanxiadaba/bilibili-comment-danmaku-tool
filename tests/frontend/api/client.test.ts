@@ -122,7 +122,7 @@ describe("API client", () => {
 
     await fetchCommentData("BV1xx411c7mD", "archive");
     await refreshCommentData("BV1xx411c7mD", "archive");
-    await fetchDanmakuData("BV1xx411c7mD", "archive", { limit: 2000 });
+    await fetchDanmakuData("BV1xx411c7mD", "archive");
     await refreshDanmakuData("BV1xx411c7mD", "archive");
 
     expect(fetchMock.mock.calls[0][0]).toContain("/api/comments?");
@@ -131,9 +131,19 @@ describe("API client", () => {
     expect(fetchMock.mock.calls[1][0]).toContain("/api/refresh?");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[2][0]).toContain("/api/danmaku?");
-    expect(fetchMock.mock.calls[2][0]).toContain("limit=2000");
+    expect(fetchMock.mock.calls[2][0]).not.toContain("limit=");
     expect(fetchMock.mock.calls[3][0]).toContain("/api/danmaku/refresh?");
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("supports optional danmaku limits for control callers", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true })));
+    globalThis.fetch = fetchMock;
+
+    await fetchDanmakuData("BV1xx411c7mD", "archive", { limit: 2000 });
+
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/danmaku?");
+    expect(fetchMock.mock.calls[0][0]).toContain("limit=2000");
   });
 
   it("uploads selected database files as multipart form data", async () => {
