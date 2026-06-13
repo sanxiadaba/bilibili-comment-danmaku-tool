@@ -94,10 +94,18 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
         "relative_path": relative_to_root(path),
         "exists": path.exists(),
         "size_bytes": path.stat().st_size if path.exists() else 0,
+        "page_count": 0,
+        "page_size": 0,
+        "freelist_count": 0,
+        "reclaimable_bytes": 0,
+        "used_bytes": 0,
+        "wal_bytes": sidecar_file_size(path, "-wal"),
+        "storage_message": "",
         "video_count": 0,
         "comment_count": 0,
         "danmaku_count": 0,
         "owner_count": 0,
+        "top_owners": [],
         "archive_kind": "main" if db_id == "main" else "unknown",
         "archive_label": "主数据库" if db_id == "main" else "",
         "owner_mid": "",
@@ -122,6 +130,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
             ensure_schema(conn)
             conn.commit()
             archive_meta = read_archive_meta(conn)
+            storage = database_storage_info(conn, path)
             row = conn.execute(
                 """
                 SELECT
@@ -153,13 +162,16 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
                 }
                 for item in bvid_rows
             ]
+            top_owners = list_database_top_owners(conn)
             archive_kind = archive_kind_from_meta_or_stats(archive_meta, bvid_stats, info["role"])
             info.update(
                 {
+                    **storage,
                     "video_count": row["video_count"] or 0,
                     "comment_count": row["comment_count"] or 0,
                     "danmaku_count": row["danmaku_count"] or 0,
                     "owner_count": row["owner_count"] or 0,
+                    "top_owners": top_owners,
                     "archive_kind": archive_kind,
                     "archive_label": archive_label_from_meta_or_stats(archive_meta, bvid_stats, path, db_id),
                     "owner_mid": str(archive_meta.get("owner_mid") or single_database_value("owner_mid", bvid_stats) or ""),
@@ -174,6 +186,89 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     except Exception as exc:
         info["error"] = str(exc)
     return info
+
+
+def database_storage_info(conn, path):
+    page_count = pragma_int(conn, "page_count")
+    page_size = pragma_int(conn, "page_size")
+    freelist_count = pragma_int(conn, "freelist_count")
+    reclaimable_bytes = max(0, freelist_count * page_size)
+    allocated_bytes = max(0, page_count * page_size)
+    used_bytes = max(0, allocated_bytes - reclaimable_bytes)
+    if reclaimable_bytes > 0:
+        storage_message = f"可通过整理空间回收约 {reclaimable_bytes} 字节"
+    else:
+        storage_message = "数据库已整理，没有可回收空页；文件大小主要来自仍保留的数据和索引"
+    return {
+        "page_count": page_count,
+        "page_size": page_size,
+        "freelist_count": freelist_count,
+        "reclaimable_bytes": reclaimable_bytes,
+        "used_bytes": used_bytes,
+        "wal_bytes": sidecar_file_size(path, "-wal"),
+        "storage_message": storage_message,
+    }
+
+
+def list_database_top_owners(conn, limit=6):
+    rows = conn.execute(
+        """
+        WITH owner_videos AS (
+            SELECT
+                CASE
+                    WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid
+                    ELSE 'name:' || COALESCE(owner_name, '')
+                END AS owner_key,
+                COALESCE(owner_mid, '') AS owner_mid,
+                COALESCE(owner_name, '') AS owner_name,
+                bvid
+            FROM videos
+        ),
+        comment_counts AS (
+            SELECT bvid, COUNT(*) AS comment_count
+            FROM comments
+            GROUP BY bvid
+        ),
+        danmaku_counts AS (
+            SELECT bvid, COUNT(*) AS danmaku_count
+            FROM danmaku
+            GROUP BY bvid
+        )
+        SELECT
+            MAX(owner_mid) AS owner_mid,
+            MAX(owner_name) AS owner_name,
+            COUNT(*) AS video_count,
+            COALESCE(SUM(comment_counts.comment_count), 0) AS comment_count,
+            COALESCE(SUM(danmaku_counts.danmaku_count), 0) AS danmaku_count
+        FROM owner_videos
+        LEFT JOIN comment_counts ON comment_counts.bvid = owner_videos.bvid
+        LEFT JOIN danmaku_counts ON danmaku_counts.bvid = owner_videos.bvid
+        GROUP BY owner_key
+        ORDER BY comment_count DESC, danmaku_count DESC, video_count DESC, owner_name ASC
+        LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+    return [
+        {
+            "owner_mid": row["owner_mid"] or "",
+            "owner_name": row["owner_name"] or "未知UP主",
+            "video_count": row["video_count"] or 0,
+            "comment_count": row["comment_count"] or 0,
+            "danmaku_count": row["danmaku_count"] or 0,
+        }
+        for row in rows
+    ]
+
+
+def pragma_int(conn, name):
+    row = conn.execute(f"PRAGMA {name}").fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def sidecar_file_size(path, suffix):
+    sidecar = Path(path).with_name(f"{Path(path).name}{suffix}")
+    return sidecar.stat().st_size if sidecar.exists() else 0
 
 
 def public_database_info(info):

@@ -341,10 +341,24 @@ export type DatabaseInfo = {
   relative_path: string;
   exists: boolean;
   size_bytes: number;
+  page_count: number;
+  page_size: number;
+  freelist_count: number;
+  reclaimable_bytes: number;
+  used_bytes: number;
+  wal_bytes: number;
+  storage_message: string;
   video_count: number;
   comment_count: number;
   danmaku_count: number;
   owner_count: number;
+  top_owners: Array<{
+    owner_mid: string;
+    owner_name: string;
+    video_count: number;
+    comment_count: number;
+    danmaku_count: number;
+  }>;
   archive_kind: "main" | "up" | "video" | "collection" | "unknown" | string;
   archive_label: string;
   owner_mid: string;

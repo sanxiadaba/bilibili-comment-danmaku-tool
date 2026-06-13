@@ -172,6 +172,9 @@ describe("video library management components", () => {
     expect(html).toContain("Archive");
     expect(html).toContain("D:/data/hotplug");
     expect(html).toContain("D:/backup/archive.json");
+    expect(html).toContain("可回收");
+    expect(html).toContain("数据库已整理");
+    expect(html).toContain("20 评论");
   });
 
   it("renders auth management controls inside management panel", () => {

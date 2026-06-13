@@ -282,6 +282,28 @@ function DatabaseCard({ active, database, onSelect }: { active: boolean; databas
         <span>弹幕 {formatNumber(database.danmaku_count)}</span>
         <span>{formatBytes(database.size_bytes)}</span>
       </div>
+      {database.ok && (
+        <div className="rounded-md bg-white/70 px-2.5 py-2 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span>实际占用 {formatBytes(database.used_bytes || database.size_bytes)}</span>
+            <span>可回收 {formatBytes(database.reclaimable_bytes || 0)}</span>
+            {database.wal_bytes > 0 && <span>临时日志 {formatBytes(database.wal_bytes)}</span>}
+          </div>
+          {database.storage_message && <div className="mt-1 line-clamp-2 text-[11px] leading-5">{database.storage_message}</div>}
+          {database.top_owners?.length > 0 && (
+            <div className="mt-2 grid gap-1">
+              {database.top_owners.slice(0, 3).map((owner) => (
+                <div className="flex min-w-0 items-center justify-between gap-2" key={`${owner.owner_mid}:${owner.owner_name}`}>
+                  <span className="truncate text-ink">{owner.owner_name || owner.owner_mid || "未知UP主"}</span>
+                  <span className="shrink-0 text-muted">
+                    {formatNumber(owner.video_count)} 视频 · {formatNumber(owner.comment_count)} 评论 · {formatNumber(owner.danmaku_count)} 弹幕
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {database.coverage_message && <div className={cn("line-clamp-2 text-xs", coverageTone)}>{database.coverage_message}</div>}
       <div className={cn("truncate text-xs", database.ok ? "text-muted" : "text-amber-700")}>{database.ok ? database.relative_path : database.error || "不可用"}</div>
     </button>

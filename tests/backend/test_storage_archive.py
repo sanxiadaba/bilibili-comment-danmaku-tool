@@ -533,6 +533,28 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(by_id["db:owner_archive.db"]["ok"])
             self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
 
+    def test_database_catalog_reports_storage_and_top_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            top = make_comment("1", 1, "top comment", mid="100", like=8)
+            reply = make_comment("2", 2, "reply comment", root="1", parent="1", mid="101", like=3)
+            top["replies"] = [reply]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+
+            catalog = list_database_catalog(main_db, hotplug_dir)
+            main = {item["id"]: item for item in catalog}["main"]
+
+            self.assertGreater(main["page_count"], 0)
+            self.assertGreater(main["page_size"], 0)
+            self.assertGreaterEqual(main["used_bytes"], 0)
+            self.assertGreaterEqual(main["reclaimable_bytes"], 0)
+            self.assertIn("storage_message", main)
+            self.assertEqual(main["top_owners"][0]["owner_mid"], "42")
+            self.assertEqual(main["top_owners"][0]["video_count"], 1)
+            self.assertEqual(main["top_owners"][0]["comment_count"], 2)
+
     def test_database_catalog_ignores_hotplug_json_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
