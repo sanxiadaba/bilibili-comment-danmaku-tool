@@ -13,7 +13,6 @@ from bilibili_comment_danmaku import (
     export_archive_to_sqlite,
     extract_bvid,
     inspect_cookie_status,
-    list_video_summaries,
     list_video_summaries_page,
     load_comment_data,
     load_danmaku_data,

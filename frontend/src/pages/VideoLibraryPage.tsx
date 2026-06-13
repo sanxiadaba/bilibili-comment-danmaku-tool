@@ -13,12 +13,12 @@ import {
   parseVideo,
   type TaskControlAction,
 } from "../api/client";
-import { DatabaseManagementSection } from "../components/video-library/DatabaseManagementSection";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
 import { LibraryHeader } from "../components/video-library/LibraryHeader";
 import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
 import { LibraryStats } from "../components/video-library/LibraryStats";
 import { LibraryTabs } from "../components/video-library/LibraryTabs";
+import { ManagementPanel } from "../components/video-library/ManagementPanel";
 import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
 import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
@@ -699,25 +699,44 @@ export function VideoLibraryPage() {
       )}
 
       {libraryView === "databases" && (
-        <DatabaseManagementSection
-          activeDbId={activeDbId}
-          databases={databases}
-          fileInputRef={fileInputRef}
-          folderInputRef={folderInputRef}
-          hotplugDir={hotplugDir}
-          importPath={importPath}
-          isImporting={isImporting}
-          isLoading={isLoadingDatabases}
-          legacyExportDir={legacyExportDir}
-          queue={spaceQueue}
-          view="database"
-          onFilesSelected={(files, source) => void importSelectedFiles(files, source)}
-          onImportPathChange={setImportPath}
-          onRefresh={() => void refreshDatabaseCatalog()}
-          onSelect={setActiveDatabase}
-          onSubmitImport={submitDatabaseImport}
-          onViewChange={setManagementView}
-        />
+        <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
+          <ManagementPanel
+            activeDbId={activeDbId}
+            databases={databases}
+            hotplugDir={hotplugDir}
+            importPath={importPath}
+            isImporting={isImporting}
+            isLoading={isLoadingDatabases}
+            legacyExportDir={legacyExportDir}
+            queue={spaceQueue}
+            view="database"
+            onImportPathChange={setImportPath}
+            onPickFiles={() => fileInputRef.current?.click()}
+            onPickFolder={() => folderInputRef.current?.click()}
+            onRefresh={() => void refreshDatabaseCatalog()}
+            onSelect={setActiveDatabase}
+            onSubmitImport={submitDatabaseImport}
+            onViewChange={setManagementView}
+          />
+          <input
+            ref={fileInputRef}
+            className="hidden"
+            type="file"
+            accept=".db,.sqlite,.sqlite3,.json"
+            multiple
+            onChange={(event) => void importSelectedFiles(event.target.files, "file")}
+          />
+          <input
+            ref={folderInputRef}
+            className="hidden"
+            type="file"
+            accept=".db,.sqlite,.sqlite3,.json"
+            multiple
+            // @ts-expect-error Chromium supports folder selection via webkitdirectory.
+            webkitdirectory="true"
+            onChange={(event) => void importSelectedFiles(event.target.files, "folder")}
+          />
+        </section>
       )}
       {exportTarget && (
         <ExportChoiceDialog

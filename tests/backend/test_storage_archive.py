@@ -42,7 +42,6 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
     load_comment_data,
     load_danmaku_data,
-    list_video_summaries,
     list_video_summaries_page,
     save_comments_to_sqlite,
     save_danmaku_to_sqlite,
@@ -123,7 +122,7 @@ class StorageTests(unittest.TestCase):
             )
 
             loaded = load_danmaku_data(db_path, bvid=BVID, limit=1)
-            summaries = list_video_summaries(db_path)
+            summaries = list_video_summaries_page(db_path, limit=10)["videos"]
 
             self.assertEqual(loaded["metadata"]["total_count"], 2)
             self.assertEqual(loaded["metadata"]["limit"], 1)
@@ -222,7 +221,7 @@ class StorageTests(unittest.TestCase):
             )
 
             result = export_archive_to_sqlite(db_path, export_path, bvids=[BVID])
-            summaries = list_video_summaries(export_path)
+            summaries = list_video_summaries_page(export_path, limit=10)["videos"]
             comments = load_comment_data(export_path, bvid=BVID)
             danmaku = load_danmaku_data(export_path, bvid=BVID)
 
@@ -307,7 +306,7 @@ class StorageTests(unittest.TestCase):
             save_comments_to_sqlite(other, db_path, replace=True)
 
             result = export_archive_to_sqlite(db_path, export_path, owner_mid="42", archive_kind="up", label="Owner")
-            summaries = list_video_summaries(export_path)
+            summaries = list_video_summaries_page(export_path, limit=10)["videos"]
 
             self.assertEqual(result["bvids"], [BVID])
             self.assertEqual(result["manifest"]["archive_kind"], "up")

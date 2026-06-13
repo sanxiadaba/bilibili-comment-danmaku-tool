@@ -42,7 +42,6 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
     load_comment_data,
     load_danmaku_data,
-    list_video_summaries,
     save_comments_to_sqlite,
     save_danmaku_to_sqlite,
 )
