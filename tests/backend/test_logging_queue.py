@@ -261,15 +261,19 @@ class TaskQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_path = Path(tmpdir) / "queue.json"
             events = []
+            first_started = threading.Event()
             release = threading.Event()
 
             def runner(task):
                 events.append(task["mid"])
+                if task["mid"] == "1":
+                    first_started.set()
                 release.wait(1)
                 queue.update(task, status="finished", message="done", finished_at="done", progress=100)
 
             queue = InMemoryTaskQueue("space", runner, state_path=state_path)
             first = queue.enqueue({"mid": "1", "owner_ref": "1"})
+            self.assertTrue(first_started.wait(1))
             second = queue.enqueue({"mid": "2", "owner_ref": "2"})
             paused = queue.control("pause", task_id=second["id"])
             self.assertEqual(paused["queue"]["queued"][0]["status"], "paused")
@@ -372,6 +376,26 @@ class TaskQueueTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(observed, [(True, True)])
 
+    def test_public_task_hides_terminal_control_flags(self):
+        def runner(task):
+            queue.update(
+                task,
+                status="finished",
+                message="done",
+                finished_at="done",
+                progress=100,
+                pause_requested=True,
+                stop_requested=True,
+            )
+
+        queue = InMemoryTaskQueue("space", runner)
+        queue.enqueue({"mid": "1", "owner_ref": "1"})
+        self.assertTrue(queue.wait_until_idle())
+
+        task = queue.snapshot()["recent"][0]
+        self.assertFalse(task["pause_requested"])
+        self.assertFalse(task["stop_requested"])
+
     def test_combined_queue_keeps_waiting_parse_task_visible(self):
         import server
 
@@ -465,6 +489,8 @@ class TaskQueueTests(unittest.TestCase):
         calls = []
         original_timeout = space_archive.scraper.call_with_hard_timeout
         original_mixin = space_archive.scraper.get_wbi_mixin_key
+        original_sleep = space_archive.time.sleep
+        original_delay = space_archive.retry_delay
 
         class FakeBackoff:
             def wait(self, include_spacing=True, spacing_factor=1.0):
@@ -490,15 +516,67 @@ class TaskQueueTests(unittest.TestCase):
         try:
             space_archive.scraper.call_with_hard_timeout = fake_hard_timeout
             space_archive.scraper.get_wbi_mixin_key = fake_mixin
+            space_archive.time.sleep = lambda seconds: calls.append(("sleep", seconds))
+            space_archive.retry_delay = lambda delays, attempt, jitter=(0.0, 0.0): 0
             payload, mixin = fetch_space_page(FakeClient(), "https://example.test/list", {"pn": 1}, 1, "403943112", "a" * 32)
         finally:
             space_archive.scraper.call_with_hard_timeout = original_timeout
             space_archive.scraper.get_wbi_mixin_key = original_mixin
+            space_archive.time.sleep = original_sleep
+            space_archive.retry_delay = original_delay
 
         self.assertEqual(payload["code"], 0)
         self.assertEqual(mixin, "b" * 32)
         self.assertEqual([item[0] for item in calls].count("request"), 2)
         self.assertIn(("mixin", True), calls)
+
+    def test_space_page_retries_repeated_risk_control_before_failing(self):
+        import space_archive
+
+        calls = []
+        original_timeout = space_archive.scraper.call_with_hard_timeout
+        original_mixin = space_archive.scraper.get_wbi_mixin_key
+        original_sleep = space_archive.time.sleep
+        original_delay = space_archive.retry_delay
+
+        class FakeBackoff:
+            def wait(self, include_spacing=True, spacing_factor=1.0):
+                return 0
+
+        class FakeClient:
+            def __init__(self):
+                self.backoff = FakeBackoff()
+
+            def request_json(self, url, **kwargs):
+                calls.append(("request", url, kwargs))
+                if len([item for item in calls if item[0] == "request"]) < space_archive.SPACE_PAGE_RETRIES:
+                    raise scraper.BilibiliRequestError("API code=-352 message=risk", api_code=-352)
+                return {"code": 0, "data": {"list": {"vlist": []}, "page": {"count": 0}}}
+
+        def fake_hard_timeout(func, _timeout_seconds, _timeout_message):
+            return func()
+
+        def fake_mixin(_client, _log, force_refresh=False):
+            calls.append(("mixin", force_refresh))
+            return "b" * 32
+
+        try:
+            space_archive.scraper.call_with_hard_timeout = fake_hard_timeout
+            space_archive.scraper.get_wbi_mixin_key = fake_mixin
+            space_archive.time.sleep = lambda seconds: calls.append(("sleep", seconds))
+            space_archive.retry_delay = lambda delays, attempt, jitter=(0.0, 0.0): attempt
+            payload, mixin = fetch_space_page(FakeClient(), "https://example.test/list", {"pn": 6}, 6, "403943112", "a" * 32)
+        finally:
+            space_archive.scraper.call_with_hard_timeout = original_timeout
+            space_archive.scraper.get_wbi_mixin_key = original_mixin
+            space_archive.time.sleep = original_sleep
+            space_archive.retry_delay = original_delay
+
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(mixin, "b" * 32)
+        self.assertEqual([item[0] for item in calls].count("request"), space_archive.SPACE_PAGE_RETRIES)
+        self.assertEqual([item for item in calls if item[0] == "mixin"], [("mixin", True), ("mixin", True), ("mixin", True)])
+        self.assertEqual([item for item in calls if item[0] == "sleep"], [("sleep", 1), ("sleep", 2), ("sleep", 3)])
 
     def test_active_task_returning_paused_goes_back_to_queue(self):
         active_started = threading.Event()

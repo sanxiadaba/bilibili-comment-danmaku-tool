@@ -90,10 +90,10 @@ function QueueTaskRow({
   const percent = Math.max(0, Math.min(100, Math.round(task.progress || 0)));
   const status = taskStatusLabel(task);
   const title = taskTitle(task);
-  const canControl = Boolean(onControl) && tone !== "recent" && isControllableTaskKind(task.kind);
+  const canControl = Boolean(onControl) && tone !== "recent" && isControllableTaskKind(task.kind) && !isTerminalTaskStatus(task.status);
   const canManageHistory = Boolean(onControl) && tone === "recent";
   const canRetry = task.status === "failed" || task.status === "stopped";
-  const isPaused = task.status === "paused";
+  const canResume = task.status === "paused" || task.pause_requested;
   return (
     <div
       className={cn(
@@ -125,8 +125,8 @@ function QueueTaskRow({
       </div>
       {canControl && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {isPaused ? (
-            <TaskButton disabled={isControlling} icon={Play} label="继续" onClick={() => onControl?.("resume", task.id)} />
+          {canResume ? (
+            <TaskButton disabled={isControlling || task.stop_requested} icon={Play} label={task.status === "paused" ? "继续" : "取消暂停"} onClick={() => onControl?.("resume", task.id)} />
           ) : (
             <TaskButton disabled={isControlling || task.pause_requested} icon={Pause} label={task.pause_requested ? "等待暂停" : "暂停"} onClick={() => onControl?.("pause", task.id)} />
           )}
@@ -190,4 +190,8 @@ function taskStatusLabel(task: ProgressTask) {
 
 function isControllableTaskKind(kind: string) {
   return kind === "space" || kind === "space_archive" || kind === "parse";
+}
+
+function isTerminalTaskStatus(status: string) {
+  return status === "finished" || status === "failed" || status === "stopped";
 }

@@ -176,6 +176,8 @@ class InMemoryTaskQueue:
         }
         fields.update({key: value for key, value in defaults.items() if value not in (None, "")})
         fields["retry_of"] = task.get("id", "")
+        fields["pause_requested"] = False
+        fields["stop_requested"] = False
         return fields
 
     def matches_task(self, task, task_id):
@@ -226,6 +228,8 @@ class InMemoryTaskQueue:
                         status="finished",
                         message="finished",
                         finished_at=utc_now(),
+                        pause_requested=False,
+                        stop_requested=False,
                     )
                 self.history.insert(0, dict(task))
                 del self.history[self.history_limit :]
@@ -256,6 +260,8 @@ class InMemoryTaskQueue:
         }
 
     def public_task(self, task, queue_position=None):
+        status = task.get("status", "")
+        is_terminal = status in {"finished", "failed", "stopped"}
         payload = {
             "id": task.get("id", ""),
             "kind": task.get("kind", self.kind),
@@ -263,7 +269,7 @@ class InMemoryTaskQueue:
             "owner_ref": task.get("owner_ref", ""),
             "bvid": task.get("bvid", ""),
             "video_ref": task.get("video_ref", ""),
-            "status": task.get("status", ""),
+            "status": status,
             "message": task.get("message", ""),
             "created_at": task.get("created_at", ""),
             "updated_at": task.get("updated_at", ""),
@@ -276,8 +282,8 @@ class InMemoryTaskQueue:
             "archived": task.get("archived", 0),
             "skipped": task.get("skipped", 0),
             "failed": task.get("failed", 0),
-            "pause_requested": bool(task.get("pause_requested")),
-            "stop_requested": bool(task.get("stop_requested")),
+            "pause_requested": bool(task.get("pause_requested")) and not is_terminal,
+            "stop_requested": bool(task.get("stop_requested")) and not is_terminal,
         }
         if queue_position is not None:
             payload["queue_position"] = queue_position

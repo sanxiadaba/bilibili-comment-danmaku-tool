@@ -47,8 +47,27 @@ describe("video library management components", () => {
 
     expect(html).toContain("全部暂停");
     expect(html).toContain("继续");
-    expect(html).toContain("等待暂停");
+    expect(html).toContain("取消暂停");
     expect(html).toContain("paused task");
+  });
+
+  it("disables global controls when only history tasks remain", () => {
+    const html = renderToStaticMarkup(
+      <TaskManagementPanel
+        isControlling={false}
+        queue={{
+          active: null,
+          queued: [],
+          recent: [makeProgressTask({ id: "task-1", status: "failed", message: "failed task" })],
+        }}
+        onControl={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("全部暂停");
+    expect(html).toContain("disabled");
+    expect(html).toContain("failed task");
+    expect(html).toContain("重试");
   });
 
   it("shows single-video progress tasks with task controls", () => {

@@ -174,6 +174,8 @@ class VideoParseTaskService:
                 archived=1,
                 failed=0,
                 progress=100,
+                pause_requested=False,
+                stop_requested=False,
             )
             finish_progress("parse", bvid, "解析与抓取完成")
             log_event(
@@ -196,6 +198,8 @@ class VideoParseTaskService:
                 finished_at=utc_now(),
                 current_bvid=bvid,
                 failed=1,
+                pause_requested=False,
+                stop_requested=False,
             )
             fail_progress("parse", bvid, payload["error"])
             log_exception(

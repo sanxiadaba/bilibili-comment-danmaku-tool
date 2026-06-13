@@ -17,7 +17,9 @@ from task_queue import InMemoryTaskQueue
 SPACE_PAGE_SIZE = 20
 SPACE_PAGE_TIMEOUT_SECONDS = 20
 SPACE_PAGE_HARD_TIMEOUT_SECONDS = 35
-SPACE_PAGE_RETRIES = 2
+SPACE_PAGE_RETRIES = 4
+SPACE_PAGE_RISK_RETRY_DELAYS = (8, 20, 45)
+SPACE_PAGE_TIMEOUT_RETRY_DELAYS = (3, 8, 15)
 SPACE_BACKOFF_STATE_PATH = "data/space_cache/space_backoff_state.json"
 SPACE_DM_IMG_LIST = "[]"
 SPACE_DM_IMG_STR = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
@@ -122,17 +124,24 @@ def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
         except BilibiliRequestError as exc:
             if exc.api_code != -352 or attempt >= SPACE_PAGE_RETRIES:
                 raise
-            log(f"UP视频列表 page={page} 遇到风控校验，刷新签名后重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
+            delay = retry_delay(SPACE_PAGE_RISK_RETRY_DELAYS, attempt, jitter=(2.0, 8.0))
+            log(f"UP视频列表 page={page} 遇到风控校验，等待 {delay:.0f}s 后刷新签名重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
             mixin_key = scraper.get_wbi_mixin_key(client, log, force_refresh=True)
             request_url = scraper.build_url(endpoint, scraper.sign_wbi_params(params, mixin_key))
-            time.sleep(random.uniform(3.0, 6.0))
+            time.sleep(delay)
         except TimeoutError:
             if attempt >= SPACE_PAGE_RETRIES:
                 raise
+            delay = retry_delay(SPACE_PAGE_TIMEOUT_RETRY_DELAYS, attempt, jitter=(1.0, 4.0))
             cache_buster = urlencode({"_": int(time.time() * 1000), "retry": attempt})
             request_url = f"{url}&{cache_buster}"
-            log(f"UP视频列表 page={page} 超时，重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
-            time.sleep(random.uniform(2.0, 4.0))
+            log(f"UP视频列表 page={page} 超时，等待 {delay:.0f}s 后重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
+            time.sleep(delay)
+
+
+def retry_delay(delays, attempt, jitter=(0.0, 0.0)):
+    base = delays[min(max(attempt - 1, 0), len(delays) - 1)]
+    return base + random.uniform(*jitter)
 
 
 def space_request_backoff():
@@ -317,6 +326,8 @@ class SpaceArchiveService:
                         archived=archived,
                         skipped=skipped,
                         failed=failed,
+                        pause_requested=False,
+                        stop_requested=False,
                     )
                     finish_progress("space", mid, f"UP 主归档已停止：{complete}/{total}")
                     return
@@ -480,6 +491,8 @@ class SpaceArchiveService:
                 skipped=skipped,
                 failed=failed,
                 progress=100,
+                pause_requested=False,
+                stop_requested=False,
             )
             finish_progress("space", mid, f"UP 主归档完成：{complete}/{total} 个视频已有评论和弹幕，失败 {failed} 个")
             log_event(
@@ -493,6 +506,8 @@ class SpaceArchiveService:
                 archived=archived,
                 skipped=skipped,
                 failed=failed,
+                pause_requested=False,
+                stop_requested=False,
             )
         except Exception as exc:
             payload, status_code = api_error_response(exc)
