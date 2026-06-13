@@ -267,6 +267,21 @@ function OwnerFilterList({
   onDelete,
   onSelect,
 }: OwnerFilterListProps) {
+  const allOwnerTotals = ownerGroups.reduce(
+    (acc, owner) => {
+      acc.comments += owner.commentCount;
+      acc.danmaku += owner.danmakuCount;
+      acc.storageBytes += owner.storageBytes || 0;
+      acc.videos += owner.videoCount;
+      return acc;
+    },
+    { comments: 0, danmaku: 0, storageBytes: 0, videos: 0 },
+  );
+  const allCommentCount = ownerGroups.length ? allOwnerTotals.comments : totals.comments;
+  const allDanmakuCount = ownerGroups.length ? allOwnerTotals.danmaku : totals.danmaku;
+  const allStorageBytes = ownerGroups.length ? allOwnerTotals.storageBytes : 0;
+  const allVideoCount = ownerGroups.length ? allOwnerTotals.videos : videoCount;
+
   return (
     <div className="mt-4 border-t border-line pt-4">
       <div className="flex items-center justify-between gap-3">
@@ -279,10 +294,11 @@ function OwnerFilterList({
       <div className="mt-3 grid gap-2">
         <OwnerFilterButton
           active={ownerFilter === "all"}
-          commentCount={totals.comments}
-          danmakuCount={totals.danmaku}
+          commentCount={allCommentCount}
+          danmakuCount={allDanmakuCount}
           name="全部视频"
-          videoCount={videoCount}
+          storageBytes={allStorageBytes}
+          videoCount={allVideoCount}
           onClick={() => onSelect("all")}
         />
         <div className="max-h-[360px] overflow-y-auto pr-1">
@@ -296,6 +312,7 @@ function OwnerFilterList({
                 exporting={exportingKey === `owner:${owner.key}`}
                 key={owner.key}
                 name={owner.name}
+                storageBytes={owner.storageBytes}
                 videoCount={owner.videoCount}
                 onExport={() => onExport(owner)}
                 onDelete={() => onDelete(owner)}

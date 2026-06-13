@@ -1,5 +1,6 @@
 import { Download, Trash2 } from "lucide-react";
 import { cn, formatNumber } from "../../lib/utils";
+import { formatBytes } from "../../lib/videoLibrary";
 
 type OwnerFilterButtonProps = {
   active: boolean;
@@ -8,6 +9,7 @@ type OwnerFilterButtonProps = {
   exportDisabled?: boolean;
   exporting?: boolean;
   name: string;
+  storageBytes?: number;
   videoCount: number;
   onDelete?: () => void;
   onExport?: () => void;
@@ -21,6 +23,7 @@ export function OwnerFilterButton({
   exportDisabled = false,
   exporting = false,
   name,
+  storageBytes,
   videoCount,
   onDelete,
   onExport,
@@ -41,6 +44,9 @@ export function OwnerFilterButton({
         <span className="text-xs text-muted">
           评论 {formatNumber(commentCount)} · 弹幕 {formatNumber(danmakuCount)}
         </span>
+        {typeof storageBytes === "number" && storageBytes > 0 && (
+          <span className="text-xs text-muted">估算占用 {formatBytes(storageBytes)}</span>
+        )}
       </button>
       {(onExport || onDelete) && (
         <div className="grid w-20 border-l border-line bg-white/80">

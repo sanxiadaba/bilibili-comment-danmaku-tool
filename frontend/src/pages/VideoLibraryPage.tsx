@@ -175,6 +175,7 @@ export function VideoLibraryPage() {
         videoCount: owner.video_count,
         commentCount: owner.comment_count,
         danmakuCount: owner.danmaku_count,
+        storageBytes: owner.storage_bytes,
       }));
     }
 
@@ -187,6 +188,7 @@ export function VideoLibraryPage() {
         existing.videoCount += 1;
         existing.commentCount += video.comment_total_count || 0;
         existing.danmakuCount += video.danmaku_count || 0;
+        existing.storageBytes = estimateOwnerStorageBytes(existing.commentCount, existing.danmakuCount, existing.videoCount);
       } else {
         groups.set(key, {
           bvids: [video.bvid],
@@ -196,6 +198,7 @@ export function VideoLibraryPage() {
           videoCount: 1,
           commentCount: video.comment_total_count || 0,
           danmakuCount: video.danmaku_count || 0,
+          storageBytes: estimateOwnerStorageBytes(video.comment_total_count || 0, video.danmaku_count || 0, 1),
         });
       }
     }
@@ -1000,4 +1003,8 @@ function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummary[]) {
     byBvid.set(video.bvid, video);
   }
   return Array.from(byBvid.values());
+}
+
+function estimateOwnerStorageBytes(commentCount: number, danmakuCount: number, videoCount: number) {
+  return commentCount * 900 + danmakuCount * 260 + videoCount * 4096;
 }

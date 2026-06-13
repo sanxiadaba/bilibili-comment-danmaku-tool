@@ -12,6 +12,7 @@ export type OwnerGroup = {
   videoCount: number;
   commentCount: number;
   danmakuCount: number;
+  storageBytes?: number;
 };
 
 export type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };

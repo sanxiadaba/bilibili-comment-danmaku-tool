@@ -217,6 +217,7 @@ describe("video library management components", () => {
       videoCount: 2,
       commentCount: 20,
       danmakuCount: 8,
+      storageBytes: 1024 * 1024 * 12,
     };
 
     const ownerHtml = renderToStaticMarkup(
@@ -225,6 +226,7 @@ describe("video library management components", () => {
         commentCount={owner.commentCount}
         danmakuCount={owner.danmakuCount}
         name={owner.name}
+        storageBytes={owner.storageBytes}
         videoCount={owner.videoCount}
         onClick={onClick}
         onDelete={() => undefined}
@@ -234,6 +236,8 @@ describe("video library management components", () => {
     expect(ownerHtml).toContain("Owner");
     expect(ownerHtml).toContain("20");
     expect(ownerHtml).toContain("8");
+    expect(ownerHtml).toContain("估算占用");
+    expect(ownerHtml).toContain("12 MB");
     expect(ownerHtml).toContain("删除");
 
     const dialogHtml = renderToStaticMarkup(

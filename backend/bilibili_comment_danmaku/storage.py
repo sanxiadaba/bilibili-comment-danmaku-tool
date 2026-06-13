@@ -809,6 +809,10 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
 
 
 def list_owner_summaries(conn):
+    page_count = conn.execute("PRAGMA page_count").fetchone()[0] or 0
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0] or 0
+    freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0] or 0
+    used_bytes = max(0, (page_count - freelist_count) * page_size)
     rows = conn.execute(
         """
         WITH owner_videos AS (
@@ -823,40 +827,74 @@ def list_owner_summaries(conn):
             FROM videos
             GROUP BY owner_key, owner_name
         ),
-        comment_counts AS (
+        comment_stats AS (
             SELECT
                 CASE
                     WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
-                COUNT(c.rpid) AS comment_count
+                COUNT(c.rpid) AS comment_count,
+                COUNT(DISTINCT NULLIF(c.mid, '')) AS user_count,
+                SUM(LENGTH(COALESCE(c.message, ''))) AS comment_text_bytes
             FROM videos v
             LEFT JOIN comments c ON c.bvid = v.bvid
             GROUP BY owner_key
         ),
-        danmaku_counts AS (
+        comment_asset_stats AS (
             SELECT
                 CASE
                     WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
-                COUNT(d.dmid) AS danmaku_count
+                COUNT(DISTINCT p.id) AS picture_count,
+                COUNT(DISTINCT e.id) AS emote_count
+            FROM videos v
+            LEFT JOIN comments c ON c.bvid = v.bvid
+            LEFT JOIN comment_pictures p ON p.rpid = c.rpid
+            LEFT JOIN comment_emotes e ON e.rpid = c.rpid
+            GROUP BY owner_key
+        ),
+        danmaku_stats AS (
+            SELECT
+                CASE
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                END AS owner_key,
+                COUNT(d.dmid) AS danmaku_count,
+                SUM(LENGTH(COALESCE(d.content, ''))) AS danmaku_text_bytes
             FROM videos v
             LEFT JOIN danmaku d ON d.bvid = v.bvid
             GROUP BY owner_key
+        ),
+        weighted AS (
+            SELECT
+                owner_videos.owner_key,
+                owner_videos.owner_mid,
+                owner_videos.owner_name,
+                owner_videos.video_count,
+                COALESCE(comment_stats.comment_count, 0) AS comment_count,
+                COALESCE(danmaku_stats.danmaku_count, 0) AS danmaku_count,
+                (
+                    owner_videos.video_count * 4096
+                    + COALESCE(comment_stats.comment_count, 0) * 900
+                    + COALESCE(danmaku_stats.danmaku_count, 0) * 260
+                    + COALESCE(comment_asset_stats.picture_count, 0) * 240
+                    + COALESCE(comment_asset_stats.emote_count, 0) * 180
+                    + COALESCE(comment_stats.user_count, 0) * 420
+                    + COALESCE(comment_stats.comment_text_bytes, 0) * 2
+                    + COALESCE(danmaku_stats.danmaku_text_bytes, 0) * 2
+                ) AS storage_weight
+            FROM owner_videos
+            LEFT JOIN comment_stats ON comment_stats.owner_key = owner_videos.owner_key
+            LEFT JOIN comment_asset_stats ON comment_asset_stats.owner_key = owner_videos.owner_key
+            LEFT JOIN danmaku_stats ON danmaku_stats.owner_key = owner_videos.owner_key
         )
         SELECT
-            owner_videos.owner_key,
-            owner_videos.owner_mid,
-            owner_videos.owner_name,
-            owner_videos.video_count,
-            COALESCE(comment_counts.comment_count, 0) AS comment_count,
-            COALESCE(danmaku_counts.danmaku_count, 0) AS danmaku_count
-        FROM owner_videos
-        LEFT JOIN comment_counts ON comment_counts.owner_key = owner_videos.owner_key
-        LEFT JOIN danmaku_counts ON danmaku_counts.owner_key = owner_videos.owner_key
-        ORDER BY owner_videos.video_count DESC, comment_count DESC, owner_videos.owner_name ASC
-        """
+            weighted.*,
+            SUM(storage_weight) OVER () AS total_storage_weight
+        FROM weighted
+        ORDER BY video_count DESC, comment_count DESC, owner_name ASC
+        """,
     ).fetchall()
     return [
         {
@@ -866,9 +904,20 @@ def list_owner_summaries(conn):
             "video_count": value_or_zero(row["video_count"]),
             "comment_count": value_or_zero(row["comment_count"]),
             "danmaku_count": value_or_zero(row["danmaku_count"]),
+            "storage_bytes": estimate_owner_storage_bytes(
+                used_bytes,
+                value_or_zero(row["storage_weight"]),
+                value_or_zero(row["total_storage_weight"]),
+            ),
         }
         for row in rows
     ]
+
+
+def estimate_owner_storage_bytes(used_bytes, owner_weight, total_weight):
+    if used_bytes <= 0 or owner_weight <= 0 or total_weight <= 0:
+        return 0
+    return int(round(used_bytes * owner_weight / total_weight))
 
 
 def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=None):

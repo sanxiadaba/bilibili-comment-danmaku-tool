@@ -211,6 +211,7 @@ export type OwnerSummary = {
   video_count: number;
   comment_count: number;
   danmaku_count: number;
+  storage_bytes?: number;
 };
 
 export type VideoListResponse = {
