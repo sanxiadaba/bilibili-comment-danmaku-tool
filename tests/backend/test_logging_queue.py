@@ -143,5 +143,116 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["recent"][1]["message"], "boom")
         self.assertEqual(snapshot["recent"][1]["failed"], 0)
 
+    def test_queue_persists_and_recovers_pending_tasks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            first_started = threading.Event()
+            release_first = threading.Event()
+
+            def blocked_runner(task):
+                first_started.set()
+                release_first.wait(1)
+                queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+            queue = InMemoryTaskQueue("space", blocked_runner, state_path=state_path)
+            queue.enqueue({"mid": "1", "owner_ref": "1", "db_path": "D:/data/comment_danmaku.db"})
+            self.assertTrue(first_started.wait(1))
+            queue.enqueue({"mid": "2", "owner_ref": "2", "db_path": "D:/data/comment_danmaku.db"})
+
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["active"]["mid"], "1")
+            self.assertEqual([task["mid"] for task in persisted["queued"]], ["2"])
+
+            recovered = InMemoryTaskQueue("space", lambda task: None, state_path=state_path)
+            snapshot = recovered.snapshot()
+            self.assertIsNone(snapshot["active"])
+            self.assertEqual([task["mid"] for task in snapshot["queued"]], ["1", "2"])
+            self.assertEqual([task["status"] for task in snapshot["queued"]], ["queued", "queued"])
+
+            release_first.set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if len(queue.snapshot()["recent"]) == 2:
+                    break
+                time.sleep(0.01)
+
+    def test_queue_starts_recovered_tasks_and_keeps_history(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "kind": "space",
+                        "next_id": 2,
+                        "active": {
+                            "id": "space-1",
+                            "kind": "space",
+                            "mid": "1",
+                            "owner_ref": "1",
+                            "status": "running",
+                            "message": "interrupted",
+                            "created_at": "2024-01-01T00:00:00+00:00",
+                            "updated_at": "2024-01-01T00:00:01+00:00",
+                            "started_at": "2024-01-01T00:00:01+00:00",
+                            "finished_at": "",
+                            "progress": 50,
+                            "current_bvid": "BV1",
+                            "total": 2,
+                            "complete": 1,
+                            "archived": 1,
+                            "skipped": 0,
+                            "failed": 0,
+                        },
+                        "queued": [
+                            {
+                                "id": "space-2",
+                                "kind": "space",
+                                "mid": "2",
+                                "owner_ref": "2",
+                                "status": "queued",
+                                "message": "queued",
+                                "created_at": "2024-01-01T00:00:00+00:00",
+                                "updated_at": "2024-01-01T00:00:00+00:00",
+                                "started_at": "",
+                                "finished_at": "",
+                                "progress": 0,
+                                "current_bvid": "",
+                                "total": 0,
+                                "complete": 0,
+                                "archived": 0,
+                                "skipped": 0,
+                                "failed": 0,
+                            }
+                        ],
+                        "history": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            events = []
+
+            def runner(task):
+                events.append(task["mid"])
+                queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+            queue = InMemoryTaskQueue("space", runner, history_limit=3, state_path=state_path)
+            queue.start_pending_worker()
+
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                snapshot = queue.snapshot()
+                if len(snapshot["recent"]) == 2:
+                    break
+                time.sleep(0.01)
+
+            snapshot = queue.snapshot()
+            self.assertEqual(events, ["1", "2"])
+            self.assertEqual(snapshot["queued"], [])
+            self.assertEqual([task["mid"] for task in snapshot["recent"]], ["2", "1"])
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertIsNone(persisted["active"])
+            self.assertEqual(persisted["queued"], [])
+            self.assertEqual([task["mid"] for task in persisted["history"]], ["2", "1"])
+
 
 

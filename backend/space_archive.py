@@ -154,11 +154,11 @@ def normalize_space_archive_options(body):
 
 
 class SpaceArchiveService:
-    def __init__(self, cookie_file, cache_dir, refresh_lock):
+    def __init__(self, cookie_file, cache_dir, refresh_lock, state_path=None):
         self.cookie_file = cookie_file
         self.cache_dir = cache_dir
         self.refresh_lock = refresh_lock
-        self.queue = InMemoryTaskQueue("space", self.run_queue_task)
+        self.queue = InMemoryTaskQueue("space", self.run_queue_task, state_path=state_path or (cache_dir / "space_queue.json"))
 
     def enqueue(self, db_path, mid, owner_ref, options, request_id=""):
         return self.queue.enqueue(
@@ -173,6 +173,9 @@ class SpaceArchiveService:
 
     def snapshot(self):
         return self.queue.snapshot()
+
+    def start_pending_tasks(self):
+        self.queue.start_pending_worker()
 
     def update_task(self, task, **fields):
         self.queue.update(task, **fields)
