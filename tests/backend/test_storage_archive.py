@@ -298,6 +298,8 @@ class StorageTests(unittest.TestCase):
             self.assertGreater(result["chunks"], 1)
             self.assertGreaterEqual(result["wal_peak"], result["wal_after"])
             self.assertLess(result["wal_after"], 1024 * 1024)
+            self.assertLess(result["wal_peak"], 1024 * 1024)
+            self.assertEqual(storage.set_database_journal_mode(db_path, "WAL").lower(), "wal")
             self.assertGreaterEqual(len(progress), 3)
             self.assertEqual({item["stage"] for item in progress}, {"comments", "danmaku", "videos"})
             with self.assertRaises(LookupError):

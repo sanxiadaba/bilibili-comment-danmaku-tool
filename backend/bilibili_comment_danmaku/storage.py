@@ -15,7 +15,6 @@ DELETE_VIDEO_BATCH_SIZE = 200
 
 
 SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -172,7 +171,9 @@ def prepare_database_path(db_path):
     return db_path
 
 
-def ensure_schema(conn):
+def ensure_schema(conn, journal_mode="WAL"):
+    if journal_mode:
+        conn.execute(f"PRAGMA journal_mode = {journal_mode}")
     conn.executescript(SCHEMA_SQL)
     rename_video_column(conn, "api_all_count", "api_comment_count", "INTEGER")
     rename_video_column(conn, "top_level_count", "top_level_comment_count", "INTEGER")
@@ -955,6 +956,16 @@ def checkpoint_database(db_path, truncate=False):
     }
 
 
+def set_database_journal_mode(db_path, mode):
+    conn = connect(db_path)
+    try:
+        row = conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    return row[0] if row else ""
+
+
 def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
     db_path = Path(db_path)
     selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
@@ -962,11 +973,13 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
         return {"wal_before": wal_file_size(db_path), "wal_peak": wal_file_size(db_path), "chunks": 0}
 
     wal_before = wal_file_size(db_path)
-    wal_peak = wal_before
+    checkpoint_database(db_path, truncate=True)
+    wal_peak = wal_file_size(db_path)
     chunks = 0
+    set_database_journal_mode(db_path, "DELETE")
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema(conn, journal_mode=None)
         deleted_user_mids = collect_comment_mids(conn, selected_bvids)
         while True:
             batch = fetch_comment_rpid_batch(conn, selected_bvids, DELETE_COMMENT_BATCH_SIZE)
@@ -980,7 +993,8 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             chunks += 1
             wal_peak = max(wal_peak, wal_file_size(db_path))
             conn.close()
-            checkpoint = checkpoint_database_if_large(db_path)
+            conn = None
+            checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "comments", chunks, wal_peak, checkpoint)
             conn = connect(db_path)
 
@@ -994,7 +1008,8 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             chunks += 1
             wal_peak = max(wal_peak, wal_file_size(db_path))
             conn.close()
-            checkpoint = checkpoint_database_if_large(db_path)
+            conn = None
+            checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "danmaku", chunks, wal_peak, checkpoint)
             conn = connect(db_path)
 
@@ -1005,7 +1020,8 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             chunks += 1
             wal_peak = max(wal_peak, wal_file_size(db_path))
             conn.close()
-            checkpoint = checkpoint_database_if_large(db_path)
+            conn = None
+            checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "videos", chunks, wal_peak, checkpoint)
             conn = connect(db_path)
 
@@ -1014,12 +1030,23 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
         chunks += 1
         wal_peak = max(wal_peak, wal_file_size(db_path))
     except Exception:
-        conn.rollback()
+        if conn is not None:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        set_database_journal_mode(db_path, "WAL")
     checkpoint_database(db_path, truncate=True)
     return {"wal_before": wal_before, "wal_peak": wal_peak, "chunks": chunks}
+
+
+def delete_mode_checkpoint(db_path):
+    return {
+        "checkpointed": False,
+        "wal_before": wal_file_size(db_path),
+        "wal_after": wal_file_size(db_path),
+    }
 
 
 def notify_delete_progress(callback, stage, chunks, wal_peak, checkpoint):
