@@ -86,6 +86,31 @@ function deleteSummary(target: DeleteTarget) {
       confirmText: target.owner.ownerMid || target.owner.name,
     };
   }
+  if (target.kind === "owners") {
+    const videoCount = target.owners.reduce((sum, owner) => sum + owner.videoCount, 0);
+    const commentCount = target.owners.reduce((sum, owner) => sum + owner.commentCount, 0);
+    const danmakuCount = target.owners.reduce((sum, owner) => sum + owner.danmakuCount, 0);
+    return {
+      title: "批量删除 UP 主本地档案",
+      subtitle: "这是不可恢复的数据库删除操作。",
+      name: target.owners.map((owner) => owner.name).join("、"),
+      videoCount,
+      commentCount,
+      danmakuCount,
+      confirmText: "DELETE",
+    };
+  }
+  if (target.kind === "videos") {
+    return {
+      title: "批量删除视频本地档案",
+      subtitle: "这是不可恢复的数据库删除操作。",
+      name: `${target.videos.length} 个视频`,
+      videoCount: target.videos.length,
+      commentCount: target.videos.reduce((sum, video) => sum + (video.comment_total_count || 0), 0),
+      danmakuCount: target.videos.reduce((sum, video) => sum + (video.danmaku_count || 0), 0),
+      confirmText: "DELETE",
+    };
+  }
   return {
     title: "删除这个视频的本地档案",
     subtitle: "这是不可恢复的数据库删除操作。",

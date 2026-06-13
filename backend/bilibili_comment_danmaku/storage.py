@@ -148,7 +148,7 @@ CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_ctime ON danmaku (bvid, ctime, dmid)
 def connect(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 60000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA temp_store = MEMORY")
@@ -818,7 +818,7 @@ def list_owner_summaries(conn):
         WITH owner_videos AS (
             SELECT
                 CASE
-                    WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN owner_mid
+                    WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
                 END AS owner_key,
                 MAX(COALESCE(NULLIF(owner_mid, ''), '')) AS owner_mid,
@@ -830,7 +830,7 @@ def list_owner_summaries(conn):
         comment_stats AS (
             SELECT
                 CASE
-                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
                 COUNT(c.rpid) AS comment_count,
@@ -843,7 +843,7 @@ def list_owner_summaries(conn):
         comment_asset_stats AS (
             SELECT
                 CASE
-                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
                 COUNT(DISTINCT p.id) AS picture_count,
@@ -857,7 +857,7 @@ def list_owner_summaries(conn):
         danmaku_stats AS (
             SELECT
                 CASE
-                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
                     ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
                 COUNT(d.dmid) AS danmaku_count,

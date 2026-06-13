@@ -10,7 +10,6 @@ type LibrarySidebarProps = {
   activeDatabase?: DatabaseInfo;
   cookieStatus?: CookieStatus | null;
   duplicateVideo: VideoSummary | null;
-  exportingKey: string;
   hasSpaceQueueWork: boolean;
   hotplugDir: string;
   isParsing: boolean;
@@ -29,8 +28,6 @@ type LibrarySidebarProps = {
   videoCount: number;
   onDuplicateOpen: (video: VideoSummary) => void;
   onDuplicateReparse: () => void;
-  onOwnerDelete: (owner: OwnerGroup) => void;
-  onOwnerExport: (owner: OwnerGroup) => void;
   onOwnerFilterChange: (ownerKey: string, owner?: OwnerGroup) => void;
   onOwnerRefChange: (value: string) => void;
   onParseDelayChange: (value: number) => void;
@@ -43,7 +40,6 @@ export function LibrarySidebar({
   activeDatabase,
   cookieStatus,
   duplicateVideo,
-  exportingKey,
   hasSpaceQueueWork,
   hotplugDir,
   isParsing,
@@ -59,8 +55,6 @@ export function LibrarySidebar({
   videoCount,
   onDuplicateOpen,
   onDuplicateReparse,
-  onOwnerDelete,
-  onOwnerExport,
   onOwnerFilterChange,
   onOwnerRefChange,
   onParseDelayChange,
@@ -158,13 +152,10 @@ export function LibrarySidebar({
         </div>
       )}
       <OwnerFilterList
-        exportingKey={exportingKey}
         ownerFilter={ownerFilter}
         ownerGroups={ownerGroups}
         totals={totals}
         videoCount={videoCount}
-        onExport={onOwnerExport}
-        onDelete={onOwnerDelete}
         onSelect={onOwnerFilterChange}
       />
     </aside>
@@ -244,7 +235,6 @@ function DuplicateVideoNotice({ disabled, isParsing, video, onOpen, onReparse }:
 }
 
 type OwnerFilterListProps = {
-  exportingKey: string;
   ownerFilter: string;
   ownerGroups: OwnerGroup[];
   totals: {
@@ -252,19 +242,14 @@ type OwnerFilterListProps = {
     danmaku: number;
   };
   videoCount: number;
-  onExport: (owner: OwnerGroup) => void;
-  onDelete: (owner: OwnerGroup) => void;
   onSelect: (ownerKey: string, owner?: OwnerGroup) => void;
 };
 
 function OwnerFilterList({
-  exportingKey,
   ownerFilter,
   ownerGroups,
   totals,
   videoCount,
-  onExport,
-  onDelete,
   onSelect,
 }: OwnerFilterListProps) {
   const allOwnerTotals = ownerGroups.reduce(
@@ -308,14 +293,10 @@ function OwnerFilterList({
                 active={ownerFilter === owner.key}
                 commentCount={owner.commentCount}
                 danmakuCount={owner.danmakuCount}
-                exportDisabled={Boolean(exportingKey)}
-                exporting={exportingKey === `owner:${owner.key}`}
                 key={owner.key}
                 name={owner.name}
                 storageBytes={owner.storageBytes}
                 videoCount={owner.videoCount}
-                onExport={() => onExport(owner)}
-                onDelete={() => onDelete(owner)}
                 onClick={() => onSelect(owner.key, owner)}
               />
             ))}

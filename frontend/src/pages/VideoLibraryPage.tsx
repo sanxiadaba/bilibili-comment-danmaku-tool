@@ -16,6 +16,7 @@ import {
 } from "../api/client";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
 import { AuthPanel } from "../components/video-library/AuthPanel";
+import { BatchManagementPanel } from "../components/video-library/BatchManagementPanel";
 import { DeleteConfirmDialog } from "../components/video-library/DeleteConfirmDialog";
 import { LibraryHeader } from "../components/video-library/LibraryHeader";
 import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
@@ -365,107 +366,134 @@ export function VideoLibraryPage() {
     }
   }
 
-  async function deleteArchiveTarget() {
-    if (!deleteTarget) return;
-    const key = deleteTarget.kind === "owner" ? `owner:${deleteTarget.owner.key}` : `video:${deleteTarget.video.bvid}`;
-    setDeletingKey(key);
+  async function exportBatchVideos(selectedVideos: VideoSummary[], format: ExportFormat) {
+    const bvids = selectedVideos.map((video) => video.bvid);
+    if (!bvids.length) return;
+    setExportingKey("batch:videos");
     setError("");
-    setMessage("");
+    setMessage(`正在导出 ${bvids.length} 个视频`);
     try {
-      const payload = await deleteArchiveData(
-        deleteTarget.kind === "owner"
-          ? { db_id: activeDbId, owner_mid: deleteTarget.owner.ownerMid }
-          : { db_id: activeDbId, bvid: deleteTarget.video.bvid },
-      );
-      setDeleteTarget(null);
-      setOwnerFilter("all");
-      setMessage(
-        payload.vacuum_deferred
-          ? `已删除 ${payload.deleted_videos} 个视频，评论 ${payload.counts.comments || 0} 条，弹幕 ${
-              payload.counts.danmaku || 0
-            } 条；数据库空间正在后台回收`
-          : `已删除 ${payload.deleted_videos} 个视频，评论 ${payload.counts.comments || 0} 条，弹幕 ${
-              payload.counts.danmaku || 0
-            } 条，释放 ${formatBytes(payload.bytes_reclaimed || 0)}`,
-      );
-      setNotice({
-        kind: "success",
-        title: "本地档案已删除",
-        message: payload.vacuum_deferred
-          ? `已从当前数据库删除 ${payload.deleted_videos} 个视频；空间回收已转入后台，不影响继续操作。`
-          : `已从当前数据库删除 ${payload.deleted_videos} 个视频；数据库空间已执行回收。`,
-      });
-      await loadVideos({ quiet: true });
-      await loadDatabases({ quiet: true, selectId: activeDbId });
-      logClientEvent("client.user.archive_delete.success", "archive data deleted", {
+      const payload = await exportDatabaseArchive({
+        bvids,
         db_id: activeDbId,
-        target: deleteTarget.kind,
-        deleted_videos: payload.deleted_videos,
-        bytes_reclaimed: payload.bytes_reclaimed,
+        format,
+        label: `batch_${bvids.length}_videos`,
       });
+      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
-      setNotice({ kind: "error", title: "删除失败", message: text });
-      logClientEvent("client.user.archive_delete.error", text, {
-        db_id: activeDbId,
-        target: deleteTarget.kind,
-      });
+      setNotice({ kind: "error", title: "批量导出失败", message: text });
     } finally {
-      setDeletingKey("");
+      setExportingKey("");
     }
+  }
+
+  async function exportBatchOwners(owners: OwnerGroup[], format: ExportFormat) {
+    if (!owners.length) return;
+    if (owners.length === 1 && owners[0].ownerMid) {
+      await exportOwnerDatabase(owners[0], format);
+      return;
+    }
+    const bvids = Array.from(new Set(owners.flatMap((owner) => owner.bvids)));
+    if (!bvids.length || bvids.length < owners.reduce((sum, owner) => sum + owner.videoCount, 0)) {
+      setNotice({ kind: "warning", title: "批量导出需要完整视频列表", message: "多个 UP 合并导出依赖已加载的视频；请先加载更多视频，或一次导出一个 UP。" });
+      return;
+    }
+    setExportingKey("batch:owners");
+    setError("");
+    setMessage(`正在导出 ${owners.length} 个 UP`);
+    try {
+      const payload = await exportDatabaseArchive({
+        bvids,
+        db_id: activeDbId,
+        format,
+        label: `batch_${owners.length}_owners`,
+      });
+      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setNotice({ kind: "error", title: "批量导出失败", message: text });
+    } finally {
+      setExportingKey("");
+    }
+  }
+
+  function queueBatchVideoDelete(selectedVideos: VideoSummary[]) {
+    if (!selectedVideos.length) return;
+    setDeleteTarget({ kind: "videos", videos: selectedVideos });
+  }
+
+  function queueBatchOwnerDelete(owners: OwnerGroup[]) {
+    if (!owners.length) return;
+    if (owners.length > 1 && owners.some((owner) => owner.bvids.length < owner.videoCount)) {
+      setNotice({ kind: "warning", title: "批量删除需要完整视频列表", message: "多个 UP 同时删除依赖已加载的视频列表；请先加载更多视频，或一次删除一个 UP。" });
+      return;
+    }
+    setDeleteTarget({ kind: "owners", owners });
+  }
+
+  function deletePayloadForTarget(target: DeleteTarget): { owner_mid?: string; bvid?: string; bvids?: string[] } {
+    if (target.kind === "owner") return { owner_mid: target.owner.ownerMid };
+    if (target.kind === "video") return { bvid: target.video.bvid };
+    if (target.kind === "videos") return { bvids: target.videos.map((video) => video.bvid) };
+    const mids = target.owners.map((owner) => owner.ownerMid).filter(Boolean);
+    if (mids.length === 1 && target.owners.length === 1) return { owner_mid: mids[0] };
+    return { bvids: Array.from(new Set(target.owners.flatMap((owner) => owner.bvids))) };
+  }
+
+  function deleteTargetVideoCount(target: DeleteTarget) {
+    if (target.kind === "owner") return target.owner.videoCount;
+    if (target.kind === "owners") return target.owners.reduce((sum, owner) => sum + owner.videoCount, 0);
+    if (target.kind === "videos") return target.videos.length;
+    return 1;
   }
 
   async function queueArchiveDeleteTarget() {
     if (!deleteTarget) return;
     const target = deleteTarget;
-    const key = target.kind === "owner" ? `owner:${target.owner.key}` : `video:${target.video.bvid}`;
-    const removedBvids = target.kind === "owner" ? new Set(target.owner.bvids) : new Set([target.video.bvid]);
-    setDeletingKey(key);
+    const payloadTarget = deletePayloadForTarget(target);
+    const removedBvids = new Set(payloadTarget.bvids || []);
+    setDeletingKey(`delete:${target.kind}`);
     setError("");
     setMessage("");
     try {
-      const payload = await deleteArchiveData(
-        target.kind === "owner"
-          ? { db_id: activeDbId, owner_mid: target.owner.ownerMid }
-          : { db_id: activeDbId, bvid: target.video.bvid },
-      );
+      const payload = await deleteArchiveData({ db_id: activeDbId, ...payloadTarget });
       setDeleteTarget(null);
       setOwnerFilter("all");
       setLibraryView("tasks");
       setManagementView("queue");
-      setVideos((current) =>
-        target.kind === "owner"
-          ? current.filter((video) => ownerKey(video) !== target.owner.key)
-          : current.filter((video) => !removedBvids.has(video.bvid)),
-      );
-      setOwnerSummaries((current) =>
-        target.kind === "owner"
-          ? current.filter((owner) => owner.key !== target.owner.key)
-          : current.map((owner) => (owner.key === ownerKey(target.video) ? { ...owner, video_count: Math.max(0, owner.video_count - 1) } : owner)),
-      );
-      setVideoTotal((current) => Math.max(0, current - (target.kind === "owner" ? target.owner.videoCount : 1)));
-      setMessage(payload.message || `删除任务已加入队列：${payload.task_id || "等待执行"}`);
+      if (payloadTarget.owner_mid) {
+        setVideos((current) => current.filter((video) => video.owner_mid !== payloadTarget.owner_mid));
+        setOwnerSummaries((current) => current.filter((owner) => owner.owner_mid !== payloadTarget.owner_mid));
+      } else {
+        setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
+      }
+      setVideoTotal((current) => Math.max(0, current - deleteTargetVideoCount(target)));
+      setMessage(payload.message || `??????????${payload.task_id || "????"}`);
       setNotice({
         kind: "success",
-        title: "删除任务已提交",
-        message: "本地档案会在后台删除，任务列表会显示进度；完成后数据库空间也会在后台整理。",
+        title: "???????",
+        message: "?????????????????????????????????????",
       });
       window.setTimeout(() => {
         void loadVideos({ quiet: true });
         void loadDatabases({ quiet: true, selectId: activeDbId });
-      }, 3000);
+      }, 8000);
       logClientEvent("client.user.archive_delete.success", "archive delete task queued", {
         db_id: activeDbId,
         target: target.kind,
         task_id: payload.task_id,
         queue_position: payload.queue_position,
-        queued_videos: removedBvids.size,
+        queued_videos: deleteTargetVideoCount(target),
       });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
-      setNotice({ kind: "error", title: "删除失败", message: text });
+      setNotice({ kind: "error", title: "????", message: text });
       logClientEvent("client.user.archive_delete.error", text, {
         db_id: activeDbId,
         target: target.kind,
@@ -756,6 +784,7 @@ export function VideoLibraryPage() {
         active={libraryView}
         databaseCount={databases.length}
         hasTaskWork={hasTaskWork}
+        manageCount={ownerGroups.length + videos.length}
         queuedCount={(taskQueue.active ? 1 : 0) + taskQueue.queued.length}
         videoCount={videoTotal || videos.length}
         onChange={setLibraryView}
@@ -767,7 +796,6 @@ export function VideoLibraryPage() {
             activeDatabase={activeDatabase}
             cookieStatus={cookieStatus}
             duplicateVideo={duplicateVideo}
-            exportingKey={exportingKey || deletingKey}
             hasSpaceQueueWork={hasSpaceQueueWork}
             hotplugDir={hotplugDir}
             isParsing={isParsing}
@@ -789,14 +817,6 @@ export function VideoLibraryPage() {
               });
               void runParse(pendingParseTarget);
             }}
-            onOwnerExport={(owner) => setExportTarget({ kind: "owner", owner })}
-            onOwnerDelete={(owner) => {
-              if (!owner.ownerMid) {
-                setNotice({ kind: "error", title: "不能按 UP 主删除", message: "这个分组没有 owner_mid，只能逐个删除视频。" });
-                return;
-              }
-              setDeleteTarget({ kind: "owner", owner });
-            }}
             onOwnerFilterChange={(key, owner) => {
               logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
                 owner: owner?.name || "all",
@@ -817,7 +837,6 @@ export function VideoLibraryPage() {
 
           <VideoListPanel
             activeDbId={activeDbId}
-            exportingKey={exportingKey || deletingKey}
             isLoading={isLoading}
             query={query}
             selectedOwnerName={selectedOwnerName}
@@ -825,12 +844,22 @@ export function VideoLibraryPage() {
             backendTotalVideoCount={videoTotal}
             hasMore={hasMoreVideos}
             videos={filteredVideos}
-            onExport={(video) => setExportTarget({ kind: "video", video })}
-            onDelete={(video) => setDeleteTarget({ kind: "video", video })}
             onLoadMore={() => void loadMoreVideos()}
             onQueryChange={setQuery}
           />
         </section>
+      )}
+
+      {libraryView === "manage" && (
+        <BatchManagementPanel
+          disabled={Boolean(exportingKey || deletingKey)}
+          ownerGroups={ownerGroups}
+          videos={videos}
+          onDeleteOwners={queueBatchOwnerDelete}
+          onDeleteVideos={queueBatchVideoDelete}
+          onExportOwners={(owners, format) => void exportBatchOwners(owners, format)}
+          onExportVideos={(selectedVideos, format) => void exportBatchVideos(selectedVideos, format)}
+        />
       )}
 
       {libraryView === "tasks" && (

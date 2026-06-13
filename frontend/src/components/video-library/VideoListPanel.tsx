@@ -5,15 +5,12 @@ import type { VideoSummary } from "../../types";
 type VideoListPanelProps = {
   activeDbId: string;
   backendTotalVideoCount: number;
-  exportingKey: string;
   hasMore: boolean;
   isLoading: boolean;
   query: string;
   selectedOwnerName?: string;
   totalVideoCount: number;
   videos: VideoSummary[];
-  onDelete: (video: VideoSummary) => void;
-  onExport: (video: VideoSummary) => void;
   onLoadMore: () => void;
   onQueryChange: (value: string) => void;
 };
@@ -21,15 +18,12 @@ type VideoListPanelProps = {
 export function VideoListPanel({
   activeDbId,
   backendTotalVideoCount,
-  exportingKey,
   hasMore,
   isLoading,
   query,
   selectedOwnerName,
   totalVideoCount,
   videos,
-  onDelete,
-  onExport,
   onLoadMore,
   onQueryChange,
 }: VideoListPanelProps) {
@@ -61,13 +55,9 @@ export function VideoListPanel({
         {!isLoading &&
           videos.map((video) => (
             <VideoCard
-              disabled={Boolean(exportingKey)}
               dbId={activeDbId}
-              exporting={exportingKey === `video:${video.bvid}`}
               key={video.bvid}
               video={video}
-              onDelete={() => onDelete(video)}
-              onExport={() => onExport(video)}
             />
           ))}
         {!isLoading && hasMore && !query && !selectedOwnerName && (

@@ -55,14 +55,11 @@ describe("video library components", () => {
         <VideoListPanel
           activeDbId="main"
           backendTotalVideoCount={0}
-          exportingKey=""
           hasMore={false}
           isLoading
           query=""
           totalVideoCount={0}
           videos={[]}
-          onDelete={() => undefined}
-          onExport={() => undefined}
           onLoadMore={() => undefined}
           onQueryChange={() => undefined}
         />,
@@ -74,14 +71,11 @@ describe("video library components", () => {
         <VideoListPanel
           activeDbId="main"
           backendTotalVideoCount={0}
-          exportingKey=""
           hasMore={false}
           isLoading={false}
           query=""
           totalVideoCount={0}
           videos={[]}
-          onDelete={() => undefined}
-          onExport={() => undefined}
           onLoadMore={() => undefined}
           onQueryChange={() => undefined}
         />,
@@ -92,15 +86,12 @@ describe("video library components", () => {
       <VideoListPanel
         activeDbId="archive"
         backendTotalVideoCount={1}
-        exportingKey="video:BV1xx411c7mD"
         hasMore={false}
         isLoading={false}
         query="test"
         selectedOwnerName="Owner"
         totalVideoCount={1}
         videos={[makeVideo()]}
-        onDelete={() => undefined}
-        onExport={() => undefined}
         onLoadMore={() => undefined}
         onQueryChange={() => undefined}
       />,
@@ -119,14 +110,11 @@ describe("video library components", () => {
       <VideoListPanel
         activeDbId="main"
         backendTotalVideoCount={45}
-        exportingKey=""
         hasMore
         isLoading={false}
         query=""
         totalVideoCount={45}
         videos={videos}
-        onDelete={() => undefined}
-        onExport={() => undefined}
         onLoadMore={() => undefined}
         onQueryChange={() => undefined}
       />,
@@ -149,7 +137,6 @@ describe("video library components", () => {
           bili_ticket_expired: true,
         })}
         duplicateVideo={null}
-        exportingKey=""
         hasSpaceQueueWork={false}
         hotplugDir="data/databases"
         isParsing={false}
@@ -165,8 +152,6 @@ describe("video library components", () => {
         videoCount={0}
         onDuplicateOpen={() => undefined}
         onDuplicateReparse={() => undefined}
-        onOwnerDelete={() => undefined}
-        onOwnerExport={() => undefined}
         onOwnerFilterChange={() => undefined}
         onOwnerRefChange={() => undefined}
         onParseDelayChange={() => undefined}

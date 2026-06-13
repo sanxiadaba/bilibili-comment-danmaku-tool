@@ -1,19 +1,15 @@
-import { ChevronRight, Download, Eye, Sparkles, Trash2 } from "lucide-react";
+import { ChevronRight, Eye, Sparkles } from "lucide-react";
 import { logClientEvent } from "../../api/client";
-import { cn, formatFullDateTime, formatNumber, normalizeImageUrl } from "../../lib/utils";
+import { formatFullDateTime, formatNumber, normalizeImageUrl } from "../../lib/utils";
 import { dbPath } from "../../lib/videoLibrary";
 import type { VideoSummary } from "../../types";
 
 type VideoCardProps = {
-  disabled: boolean;
   dbId: string;
-  exporting: boolean;
   video: VideoSummary;
-  onDelete: () => void;
-  onExport: () => void;
 };
 
-export function VideoCard({ disabled, dbId, exporting, video, onDelete, onExport }: VideoCardProps) {
+export function VideoCard({ dbId, video }: VideoCardProps) {
   return (
     <article className="interactive-card grid gap-3 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
       <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100 shadow-sm">
@@ -67,24 +63,6 @@ export function VideoCard({ disabled, dbId, exporting, video, onDelete, onExport
           弹幕
           <Sparkles size={15} aria-hidden="true" />
         </a>
-        <button
-          className="btn-quiet inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
-          type="button"
-          disabled={disabled}
-          onClick={onExport}
-        >
-          <Download className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
-          {exporting ? "导出中" : "导出"}
-        </button>
-        <button
-          className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-red-100 bg-red-50/70 px-3 text-sm font-medium text-red-700 transition hover:border-red-300 hover:bg-red-50 disabled:cursor-wait disabled:opacity-60"
-          type="button"
-          disabled={disabled}
-          onClick={onDelete}
-        >
-          <Trash2 size={15} aria-hidden="true" />
-          删除
-        </button>
       </div>
     </article>
   );

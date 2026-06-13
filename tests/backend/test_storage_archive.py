@@ -220,6 +220,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(owners["42"]["comment_count"], 3)
             self.assertEqual(owners["100"]["video_count"], 1)
             self.assertGreater(owners["42"]["storage_bytes"], owners["100"]["storage_bytes"])
+            self.assertEqual(owners["42"]["key"], "mid:42")
 
     def test_delete_video_removes_related_archive_rows_and_keeps_other_videos(self):
         with tempfile.TemporaryDirectory() as tmp:

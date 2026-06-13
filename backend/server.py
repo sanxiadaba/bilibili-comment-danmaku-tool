@@ -703,15 +703,16 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
         target_path = export_database_path(label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
         try:
-            exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
-            result = exporter(
-                db_path,
-                target_path,
-                bvids=selected_bvids or None,
-                owner_mid=owner_mid or None,
-                archive_kind="up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection",
-                label=label,
-            )
+            with refresh_lock:
+                exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
+                result = exporter(
+                    db_path,
+                    target_path,
+                    bvids=selected_bvids or None,
+                    owner_mid=owner_mid or None,
+                    archive_kind="up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection",
+                    label=label,
+                )
         except LookupError as exc:
             log_event(
                 "api.database_export.not_found",
@@ -906,7 +907,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.send_json(
             {
                 "ok": True,
-                "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
+                "database": None,
                 "task_id": task["id"],
                 "queue_position": task["queue_position"],
                 "message": "删除任务已加入队列",
