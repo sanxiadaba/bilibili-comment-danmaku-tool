@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { LibraryStats } from "../../../../frontend/src/components/video-library/LibraryStats";
 import { LibrarySidebar } from "../../../../frontend/src/components/video-library/LibrarySidebar";
 import { StatusStrips } from "../../../../frontend/src/components/video-library/StatusStrips";
+import { NoticeDialog } from "../../../../frontend/src/components/video-library/NoticeDialog";
 import { VideoListPanel } from "../../../../frontend/src/components/video-library/VideoListPanel";
 import { makeCookieStatus, makeProgress, makeVideo } from "../../helpers/factories";
 
@@ -165,5 +166,23 @@ describe("video library components", () => {
     expect(html).toContain("SESSDATA");
     expect(html).toContain("DedeUserID");
     expect(html).toContain("短期票据过期");
+  });
+
+  it("renders an export notice action for opening the output folder", () => {
+    const html = renderToStaticMarkup(
+      <NoticeDialog
+        notice={{
+          kind: "success",
+          title: "导出完成",
+          message: "data/databases/video.db 已导出",
+          actionLabel: "打开所在文件夹",
+          onAction: () => undefined,
+        }}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("导出完成");
+    expect(html).toContain("打开所在文件夹");
   });
 });

@@ -11,6 +11,7 @@ import {
   importDatabase,
   importDatabaseFiles,
   logClientEvent,
+  openLocalPath,
   parseVideo,
   type TaskControlAction,
 } from "../api/client";
@@ -280,6 +281,43 @@ export function VideoLibraryPage() {
     await runParse(target);
   }
 
+  function exportSuccessNotice(
+    payload: { directory_path?: string; format: string; relative_path: string },
+    title: string,
+  ): NoticeState {
+    const isJson = payload.format === "json";
+    const directory = payload.directory_path;
+    return {
+      kind: "success",
+      title,
+      message: isJson
+        ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
+        : `${payload.relative_path} 已导出为独立数据库，可在数据库页面切换查看`,
+      actionLabel: "打开所在文件夹",
+      onAction: directory ? () => void openExportDirectory(directory) : undefined,
+    };
+  }
+
+  async function openExportDirectory(path: string) {
+    try {
+      await openLocalPath(path);
+      logClientEvent("client.user.export.open_folder", "opened export folder", { path });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setNotice({ kind: "error", title: "打开文件夹失败", message: text });
+    }
+  }
+
+  function videoExportLabel(video: VideoSummary) {
+    return video.title || "未命名视频";
+  }
+
+  function batchExportLabel(prefix: string, names: string[], count: number) {
+    const readable = names.slice(0, 2).filter(Boolean).join("_");
+    const suffix = names.length > 2 ? `_等${names.length}项` : "";
+    return `${prefix}_${readable || `${count}项`}${suffix}`;
+  }
+
   async function exportOwnerDatabase(owner = selectedOwner, format: ExportFormat) {
     if (!owner || !owner.bvids.length) return;
     setExportingKey(`owner:${owner.key}`);
@@ -291,20 +329,13 @@ export function VideoLibraryPage() {
         bvids: owner.ownerMid ? undefined : owner.bvids,
         db_id: activeDbId,
         format,
-        label: owner.name,
+        label: owner.name || owner.ownerMid || "未命名UP主",
         owner_mid: owner.ownerMid || undefined,
       });
       setMessage(
         `导出完成：${payload.relative_path}，${payload.video_count} 个视频，${formatBytes(payload.size_bytes)}`,
       );
-      setNotice({
-        kind: "success",
-        title: format === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成",
-        message:
-          format === "json"
-            ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录`,
-      });
+      setNotice(exportSuccessNotice(payload, format === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.owner_success", "owner database exported", {
         db_id: activeDbId,
@@ -337,17 +368,10 @@ export function VideoLibraryPage() {
         bvid: video.bvid,
         db_id: activeDbId,
         format,
-        label: `${video.bvid}_${video.title}`,
+        label: videoExportLabel(video),
       });
       setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
-      setNotice({
-        kind: "success",
-        title: format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成",
-        message:
-          format === "json"
-            ? `${payload.relative_path} 已导出为 JSON 数据文件，可再次导入`
-            : `${payload.relative_path} 已加入热插拔目录`,
-      });
+      setNotice(exportSuccessNotice(payload, format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
         db_id: activeDbId,
@@ -377,9 +401,10 @@ export function VideoLibraryPage() {
         bvids,
         db_id: activeDbId,
         format,
-        label: `batch_${bvids.length}_videos`,
+        label: batchExportLabel("批量视频", selectedVideos.map((video) => video.title || video.bvid), bvids.length),
       });
       setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      setNotice(exportSuccessNotice(payload, format === "json" ? "批量视频 JSON 导出完成" : "批量视频数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
@@ -409,9 +434,10 @@ export function VideoLibraryPage() {
         bvids,
         db_id: activeDbId,
         format,
-        label: `batch_${owners.length}_owners`,
+        label: batchExportLabel("批量UP", owners.map((owner) => owner.name || owner.ownerMid), owners.length),
       });
       setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
+      setNotice(exportSuccessNotice(payload, format === "json" ? "批量 UP JSON 导出完成" : "批量 UP 数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);

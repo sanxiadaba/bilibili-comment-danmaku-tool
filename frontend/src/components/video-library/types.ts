@@ -27,6 +27,8 @@ export type NoticeState = {
   kind: "success" | "error" | "warning";
   title: string;
   message: string;
+  actionLabel?: string;
+  onAction?: () => void | Promise<void>;
 };
 
 export type DatabaseSelectHandler = (database: DatabaseInfo) => void;

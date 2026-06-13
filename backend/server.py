@@ -1,4 +1,7 @@
 import argparse
+import os
+import subprocess
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -11,8 +14,8 @@ from bilibili_comment_danmaku import (
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
-    list_video_summaries_page,
     load_comment_data,
+    list_video_summaries_page,
     load_danmaku_data,
     prepare_database_path,
     save_danmaku_to_sqlite,
@@ -118,6 +121,80 @@ def combined_queue_snapshot():
     recent = [*(space.get("recent") or []), *(video.get("recent") or []), *(delete.get("recent") or [])]
     recent.sort(key=lambda task: task.get("updated_at", ""), reverse=True)
     return {"active": active, "queued": queued, "recent": recent[:10]}
+
+
+def build_export_label(kind, label="", bvid="", owner_mid="", video_count=0):
+    label = str(label or "").strip()
+    bvid = str(bvid or "").strip()
+    owner_mid = str(owner_mid or "").strip()
+    if kind == "up":
+        parts = ["UP", label or owner_mid or "unknown", owner_mid, f"{video_count}videos" if video_count else ""]
+    elif kind == "video":
+        parts = ["video", bvid, label or "untitled"]
+    else:
+        parts = [kind or "collection", label or "archive", f"{video_count}items" if video_count else ""]
+    return "_".join(part for part in parts if part)
+
+
+def count_owner_export_videos(db_path, owner_mid):
+    from bilibili_comment_danmaku.storage import connect, ensure_schema
+
+    owner_mid = str(owner_mid or "").strip()
+    if not owner_mid:
+        return 0
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        row = conn.execute("SELECT COUNT(*) FROM videos WHERE owner_mid = ?", (owner_mid,)).fetchone()
+        return int(row[0] or 0)
+    finally:
+        conn.close()
+
+
+def ensure_export_result_file(result):
+    path = Path(result.get("path") or "").resolve()
+    if not path.exists() or not path.is_file():
+        raise RuntimeError(f"导出失败：目标文件没有生成：{path}")
+    size = path.stat().st_size
+    if size <= 0:
+        raise RuntimeError(f"导出失败：目标文件为空：{path}")
+    result["size_bytes"] = size
+    return path
+
+
+def ensure_openable_local_path(raw_path, allowed_dirs):
+    if not raw_path:
+        raise ValueError("缺少要打开的路径")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve()
+    if path.is_file():
+        path = path.parent
+    if not path.exists() or not path.is_dir():
+        raise FileNotFoundError(f"目录不存在：{path}")
+    allowed = [Path(item).resolve() for item in allowed_dirs]
+    if not any(is_path_relative_to(path, directory) for directory in allowed):
+        raise ValueError("只能打开本项目的数据、导出或日志目录")
+    return path
+
+
+def is_path_relative_to(path, directory):
+    try:
+        Path(path).resolve().relative_to(Path(directory).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def open_local_directory(path):
+    if os.name == "nt":
+        subprocess.Popen(["explorer", str(path)])
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+        return
+    subprocess.Popen(["xdg-open", str(path)])
 
 
 def schedule_database_vacuum(db_path, request_id=""):
@@ -249,6 +326,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 return
             if parsed.path == "/api/database/export":
                 self.handle_database_export_api()
+                return
+            if parsed.path == "/api/system/open-path":
+                self.handle_open_path_api()
                 return
             if parsed.path == "/api/archive/delete":
                 self.handle_archive_delete_api()
@@ -701,7 +781,19 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if owner_mid and not bvid:
             selected_bvids = []
 
-        target_path = export_database_path(label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
+        archive_kind = "up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection"
+        export_video_count = len(selected_bvids)
+        if owner_mid and not selected_bvids:
+            with refresh_lock:
+                export_video_count = count_owner_export_videos(db_path, owner_mid)
+        export_label = build_export_label(
+            archive_kind,
+            label=label,
+            bvid=selected_bvids[0] if len(selected_bvids) == 1 else "",
+            owner_mid=owner_mid,
+            video_count=export_video_count,
+        )
+        target_path = export_database_path(export_label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
         try:
             with refresh_lock:
                 exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
@@ -710,9 +802,10 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     target_path,
                     bvids=selected_bvids or None,
                     owner_mid=owner_mid or None,
-                    archive_kind="up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection",
+                    archive_kind=archive_kind,
                     label=label,
                 )
+                exported_path = ensure_export_result_file(result)
         except LookupError as exc:
             log_event(
                 "api.database_export.not_found",
@@ -742,7 +835,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             "api.database_export.finish",
             "exported archive database",
             request_id=getattr(self, "request_id", ""),
-            path=result["path"],
+            path=str(exported_path),
             source_db=str(db_path),
             export_format=export_format,
             video_count=len(result["bvids"]),
@@ -752,14 +845,16 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.send_json(
             {
                 "ok": True,
-                "path": result["path"],
-                "relative_path": str(Path(result["path"]).resolve().relative_to(ROOT)),
-                "file_name": Path(result["path"]).name,
+                "path": str(exported_path),
+                "relative_path": relative_to_root(exported_path),
+                "file_name": exported_path.name,
+                "directory_path": str(exported_path.parent),
+                "directory_relative_path": relative_to_root(exported_path.parent),
                 "format": export_format,
                 "json_path": result.get("json_path", ""),
                 "json_relative_path": relative_to_root(result["json_path"]) if result.get("json_path") else "",
                 "json_file_name": Path(result["json_path"]).name if result.get("json_path") else "",
-                "database": public_database_info(database_info_for_path(Path(result["path"]), self.db_path, self.database_dir))
+                "database": public_database_info(database_info_for_path(exported_path, self.db_path, self.database_dir))
                 if export_format == "sqlite"
                 else None,
                 "video_count": len(result["bvids"]),
@@ -769,6 +864,44 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 "size_bytes": result["size_bytes"],
             }
         )
+
+    def handle_open_path_api(self):
+        body = self.read_json_body()
+        raw_path = body.get("path") or body.get("directory_path") or body.get("relative_path")
+        try:
+            directory = ensure_openable_local_path(
+                raw_path,
+                allowed_dirs=[
+                    ROOT / "data",
+                    self.database_dir,
+                    DEFAULT_EXPORT_DIR,
+                    LEGACY_EXPORT_DIR,
+                    self.log_dir,
+                ],
+            )
+            open_local_directory(directory)
+        except FileNotFoundError as exc:
+            self.send_json({"error": str(exc)}, status=404)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.system_open_path.error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                path=str(raw_path or ""),
+            )
+            self.send_json({"error": f"打开目录失败：{exc}"}, status=500)
+            return
+        log_event(
+            "api.system_open_path.finish",
+            "opened local directory",
+            request_id=getattr(self, "request_id", ""),
+            path=str(directory),
+        )
+        self.send_json({"ok": True, "path": str(directory), "relative_path": relative_to_root(directory)})
 
     def _handle_archive_delete_api_sync_legacy_unused(self):
         raise NotImplementedError("archive deletion now runs through ArchiveDeleteTaskService")

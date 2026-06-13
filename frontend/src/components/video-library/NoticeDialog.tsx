@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FolderOpen, X, XCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { NoticeState } from "./types";
 
@@ -29,7 +29,19 @@ export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose
             <X size={16} aria-hidden="true" />
           </button>
         </div>
-        <div className="flex justify-end p-4">
+        <div className="flex flex-wrap justify-end gap-2 p-4">
+          {notice.onAction && (
+            <button
+              className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
+              type="button"
+              onClick={() => {
+                void notice.onAction?.();
+              }}
+            >
+              <FolderOpen size={16} aria-hidden="true" />
+              {notice.actionLabel || "打开所在文件夹"}
+            </button>
+          )}
           <button
             className="btn-primary inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-medium"
             type="button"

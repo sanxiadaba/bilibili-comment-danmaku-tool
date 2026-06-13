@@ -506,11 +506,11 @@ def export_database_path(label, export_dir=DEFAULT_EXPORT_DIR, suffix=".db"):
     safe_label = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(label or "archive")).strip("._-")
     safe_label = safe_label[:80] or "archive"
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
-    base_path = export_dir / f"{timestamp}_{safe_label}{suffix}"
+    base_path = export_dir / f"{safe_label}_{timestamp}{suffix}"
     if not base_path.exists():
         return base_path
     for index in range(2, 1000):
-        candidate = export_dir / f"{timestamp}_{safe_label}_{index}{suffix}"
+        candidate = export_dir / f"{safe_label}_{timestamp}_{index}{suffix}"
         if not candidate.exists():
             return candidate
-    return export_dir / f"{timestamp}_{safe_label}_{int(time.time() * 1000)}{suffix}"
+    return export_dir / f"{safe_label}_{timestamp}_{int(time.time() * 1000)}{suffix}"

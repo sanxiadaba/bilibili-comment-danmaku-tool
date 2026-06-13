@@ -299,6 +299,8 @@ export type DatabaseExportResponse = {
   path: string;
   relative_path: string;
   file_name: string;
+  directory_path?: string;
+  directory_relative_path?: string;
   format: "sqlite" | "json" | string;
   json_path?: string;
   json_relative_path?: string;

@@ -209,6 +209,20 @@ export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: st
   );
 }
 
+export async function openLocalPath(path: string) {
+  return requestJson<{ ok: boolean; path: string; relative_path: string }>(
+    "system.open_path",
+    `/api/system/open-path?ts=${Date.now()}`,
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+    { path },
+  );
+}
+
 export async function deleteArchiveData(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; db_id?: string }) {
   return requestJson<ArchiveDeleteResponse>(
     "archive.delete",

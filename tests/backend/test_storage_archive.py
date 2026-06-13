@@ -17,6 +17,7 @@ from archive_delete_tasks import ArchiveDeleteTaskService  # noqa: E402
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
+    export_database_path,
     import_database_file,
     list_database_catalog,
     parse_multipart_files,
@@ -627,6 +628,13 @@ class StorageTests(unittest.TestCase):
                 resolve_database_path("db:../comment_danmaku.db", main_db, hotplug_dir)
             with self.assertRaises(BadRequestError):
                 resolve_database_path("db:notes.txt", main_db, hotplug_dir)
+
+    def test_export_database_path_uses_readable_label_before_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_path = export_database_path("UP_测试UP_42_8videos", Path(tmp), suffix=".db")
+
+            self.assertTrue(export_path.name.startswith("UP_测试UP_42_8videos_"))
+            self.assertTrue(export_path.name.endswith(".db"))
 
     def test_import_database_file_normalizes_name_and_uses_hotplug_files_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:

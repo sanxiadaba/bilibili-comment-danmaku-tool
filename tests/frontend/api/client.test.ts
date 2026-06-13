@@ -13,6 +13,7 @@ import {
   importDatabase,
   importDatabaseFiles,
   logClientEvent,
+  openLocalPath,
   parseVideo,
   pollAuthQrCode,
   refreshCommentData,
@@ -67,6 +68,7 @@ describe("API client", () => {
     await controlSpaceTasks("pause", "space-1");
     await importDatabase("D:/archive.json");
     await exportDatabaseArchive({ format: "json", bvid: "BV1xx411c7mD", db_id: "main" });
+    await openLocalPath("D:/data/databases");
     await deleteArchiveData({ bvid: "BV1xx411c7mD", db_id: "main" });
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
@@ -85,8 +87,10 @@ describe("API client", () => {
       format: "json",
       bvid: "BV1xx411c7mD",
     });
-    expect(fetchMock.mock.calls[5][0]).toContain("/api/archive/delete?");
-    expect(JSON.parse(fetchMock.mock.calls[5][1].body as string)).toMatchObject({
+    expect(fetchMock.mock.calls[5][0]).toContain("/api/system/open-path?");
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body as string)).toEqual({ path: "D:/data/databases" });
+    expect(fetchMock.mock.calls[6][0]).toContain("/api/archive/delete?");
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body as string)).toMatchObject({
       bvid: "BV1xx411c7mD",
       db_id: "main",
     });
