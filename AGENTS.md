@@ -10,6 +10,7 @@
 - 不提交本地数据和秘密：`data/`、`logs/`、`dist/`、`node_modules/`、`cookie.txt`、`*.db`、`*.sqlite*`、`__pycache__/`、`*.pyc`、`.env*`。
 - 提交前必须运行 `git status --short --ignored`，确认敏感文件只在 ignored 区域。
 - 前端优先 `pnpm`；Python 依赖管理需要时优先 `uv`。
+- 源码必须是 UTF-8 无 BOM。PowerShell 可能把正确中文显示成乱码，判断编码问题时以 `python scripts/check_encoding.py` 或 `unicode_escape` 输出为准，不要因为终端显示异常整文件重写。
 
 ## 常用命令
 
@@ -21,9 +22,12 @@ pnpm server
 pnpm dev
 ```
 
+`pnpm server` 固定使用 `127.0.0.1:8000`，会先停止 8000 上的旧进程再启动当前版本。不要临时改用 8001/8002。
+
 专项检查：
 
 ```powershell
+pnpm test:encoding
 pnpm test:backend
 pnpm test:frontend
 python -B -m py_compile backend/server.py backend/http_utils.py backend/fetch_bilibili_comment_danmaku.py backend/bilibili_comment_danmaku/storage.py backend/bilibili_comment_danmaku/danmaku.py backend/bilibili_comment_danmaku/scraper.py backend/bilibili_comment_danmaku/wbi.py backend/bilibili_comment_danmaku/url_utils.py backend/bilibili_comment_danmaku/__init__.py backend/task_queue.py backend/space_archive.py backend/video_tasks.py

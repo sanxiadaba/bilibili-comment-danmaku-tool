@@ -1,4 +1,4 @@
-﻿from .danmaku import scrape_danmaku
+from .danmaku import scrape_danmaku
 from .scraper import DEFAULT_BVID, inspect_cookie_status, scrape_comments, scrape_comments_to_sqlite
 from .archive import (
     export_archive_to_sqlite,

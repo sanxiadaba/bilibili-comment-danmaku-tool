@@ -1,4 +1,4 @@
-﻿export type NormalizedUser = {
+export type NormalizedUser = {
   mid: string;
   uname: string;
   sex?: string;

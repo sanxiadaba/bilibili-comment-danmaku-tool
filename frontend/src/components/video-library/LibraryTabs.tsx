@@ -3,9 +3,6 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { LibraryView } from "./types";
 
-const AUTH_TAB_LABEL = "\u767b\u5f55\u6001";
-const AUTH_TAB_META = "\u626b\u7801 / Cookie";
-
 type LibraryTabsProps = {
   active: LibraryView;
   databaseCount: number;
@@ -27,7 +24,7 @@ export function LibraryTabs({ active, databaseCount, hasTaskWork, queuedCount, v
         onClick={() => onChange("tasks")}
       />
       <TabButton active={active === "databases"} icon={Database} label="数据库" meta={`${databaseCount} 个`} onClick={() => onChange("databases")} />
-      <TabButton active={active === "auth"} icon={KeyRound} label={AUTH_TAB_LABEL} meta={AUTH_TAB_META} onClick={() => onChange("auth")} />
+      <TabButton active={active === "auth"} icon={KeyRound} label="登录态" meta="扫码 / Cookie" onClick={() => onChange("auth")} />
     </nav>
   );
 }
