@@ -61,6 +61,7 @@ describe("video library components", () => {
           query=""
           totalVideoCount={0}
           videos={[]}
+          onDelete={() => undefined}
           onExport={() => undefined}
           onLoadMore={() => undefined}
           onQueryChange={() => undefined}
@@ -79,6 +80,7 @@ describe("video library components", () => {
           query=""
           totalVideoCount={0}
           videos={[]}
+          onDelete={() => undefined}
           onExport={() => undefined}
           onLoadMore={() => undefined}
           onQueryChange={() => undefined}
@@ -97,6 +99,7 @@ describe("video library components", () => {
         selectedOwnerName="Owner"
         totalVideoCount={1}
         videos={[makeVideo()]}
+        onDelete={() => undefined}
         onExport={() => undefined}
         onLoadMore={() => undefined}
         onQueryChange={() => undefined}
@@ -122,6 +125,7 @@ describe("video library components", () => {
         query=""
         totalVideoCount={45}
         videos={videos}
+        onDelete={() => undefined}
         onExport={() => undefined}
         onLoadMore={() => undefined}
         onQueryChange={() => undefined}
@@ -161,6 +165,7 @@ describe("video library components", () => {
         videoCount={0}
         onDuplicateOpen={() => undefined}
         onDuplicateReparse={() => undefined}
+        onOwnerDelete={() => undefined}
         onOwnerExport={() => undefined}
         onOwnerFilterChange={() => undefined}
         onOwnerRefChange={() => undefined}

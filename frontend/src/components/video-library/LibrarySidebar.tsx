@@ -29,6 +29,7 @@ type LibrarySidebarProps = {
   videoCount: number;
   onDuplicateOpen: (video: VideoSummary) => void;
   onDuplicateReparse: () => void;
+  onOwnerDelete: (owner: OwnerGroup) => void;
   onOwnerExport: (owner: OwnerGroup) => void;
   onOwnerFilterChange: (ownerKey: string, owner?: OwnerGroup) => void;
   onOwnerRefChange: (value: string) => void;
@@ -58,6 +59,7 @@ export function LibrarySidebar({
   videoCount,
   onDuplicateOpen,
   onDuplicateReparse,
+  onOwnerDelete,
   onOwnerExport,
   onOwnerFilterChange,
   onOwnerRefChange,
@@ -162,6 +164,7 @@ export function LibrarySidebar({
         totals={totals}
         videoCount={videoCount}
         onExport={onOwnerExport}
+        onDelete={onOwnerDelete}
         onSelect={onOwnerFilterChange}
       />
     </aside>
@@ -250,6 +253,7 @@ type OwnerFilterListProps = {
   };
   videoCount: number;
   onExport: (owner: OwnerGroup) => void;
+  onDelete: (owner: OwnerGroup) => void;
   onSelect: (ownerKey: string, owner?: OwnerGroup) => void;
 };
 
@@ -260,6 +264,7 @@ function OwnerFilterList({
   totals,
   videoCount,
   onExport,
+  onDelete,
   onSelect,
 }: OwnerFilterListProps) {
   return (
@@ -293,6 +298,7 @@ function OwnerFilterList({
                 name={owner.name}
                 videoCount={owner.videoCount}
                 onExport={() => onExport(owner)}
+                onDelete={() => onDelete(owner)}
                 onClick={() => onSelect(owner.key, owner)}
               />
             ))}

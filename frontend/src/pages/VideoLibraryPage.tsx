@@ -3,6 +3,7 @@ import type React from "react";
 import {
   archiveSpaceVideos,
   controlSpaceTasks,
+  deleteArchiveData,
   exportDatabaseArchive,
   fetchCookieStatus,
   fetchDatabases,
@@ -15,6 +16,7 @@ import {
 } from "../api/client";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
 import { AuthPanel } from "../components/video-library/AuthPanel";
+import { DeleteConfirmDialog } from "../components/video-library/DeleteConfirmDialog";
 import { LibraryHeader } from "../components/video-library/LibraryHeader";
 import { LibrarySidebar } from "../components/video-library/LibrarySidebar";
 import { LibraryStats } from "../components/video-library/LibraryStats";
@@ -23,7 +25,7 @@ import { ManagementPanel } from "../components/video-library/ManagementPanel";
 import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
 import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
-import type { ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
+import type { DeleteTarget, ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
@@ -59,7 +61,9 @@ export function VideoLibraryPage() {
   const [isArchivingSpace, setIsArchivingSpace] = useState(false);
   const [isSubmittingSpace, setIsSubmittingSpace] = useState(false);
   const [exportingKey, setExportingKey] = useState("");
+  const [deletingKey, setDeletingKey] = useState("");
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const [hiddenTaskKeys, setHiddenTaskKeys] = useState<Set<string>>(() => new Set());
@@ -342,6 +346,51 @@ export function VideoLibraryPage() {
       });
     } finally {
       setExportingKey("");
+    }
+  }
+
+  async function deleteArchiveTarget() {
+    if (!deleteTarget) return;
+    const key = deleteTarget.kind === "owner" ? `owner:${deleteTarget.owner.key}` : `video:${deleteTarget.video.bvid}`;
+    setDeletingKey(key);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await deleteArchiveData(
+        deleteTarget.kind === "owner"
+          ? { db_id: activeDbId, owner_mid: deleteTarget.owner.ownerMid }
+          : { db_id: activeDbId, bvid: deleteTarget.video.bvid },
+      );
+      setDeleteTarget(null);
+      setOwnerFilter("all");
+      setMessage(
+        `已删除 ${payload.deleted_videos} 个视频，评论 ${payload.counts.comments || 0} 条，弹幕 ${
+          payload.counts.danmaku || 0
+        } 条，释放 ${formatBytes(payload.bytes_reclaimed || 0)}`,
+      );
+      setNotice({
+        kind: "success",
+        title: "本地档案已删除",
+        message: `已从当前数据库删除 ${payload.deleted_videos} 个视频；数据库空间已执行回收。`,
+      });
+      await loadVideos({ quiet: true });
+      await loadDatabases({ quiet: true, selectId: activeDbId });
+      logClientEvent("client.user.archive_delete.success", "archive data deleted", {
+        db_id: activeDbId,
+        target: deleteTarget.kind,
+        deleted_videos: payload.deleted_videos,
+        bytes_reclaimed: payload.bytes_reclaimed,
+      });
+    } catch (reason: unknown) {
+      const text = reason instanceof Error ? reason.message : String(reason);
+      setError(text);
+      setNotice({ kind: "error", title: "删除失败", message: text });
+      logClientEvent("client.user.archive_delete.error", text, {
+        db_id: activeDbId,
+        target: deleteTarget.kind,
+      });
+    } finally {
+      setDeletingKey("");
     }
   }
 
@@ -637,7 +686,7 @@ export function VideoLibraryPage() {
             activeDatabase={activeDatabase}
             cookieStatus={cookieStatus}
             duplicateVideo={duplicateVideo}
-            exportingKey={exportingKey}
+            exportingKey={exportingKey || deletingKey}
             hasSpaceQueueWork={hasSpaceQueueWork}
             hotplugDir={hotplugDir}
             isParsing={isParsing}
@@ -660,6 +709,13 @@ export function VideoLibraryPage() {
               void runParse(pendingParseTarget);
             }}
             onOwnerExport={(owner) => setExportTarget({ kind: "owner", owner })}
+            onOwnerDelete={(owner) => {
+              if (!owner.ownerMid) {
+                setNotice({ kind: "error", title: "不能按 UP 主删除", message: "这个分组没有 owner_mid，只能逐个删除视频。" });
+                return;
+              }
+              setDeleteTarget({ kind: "owner", owner });
+            }}
             onOwnerFilterChange={(key, owner) => {
               logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
                 owner: owner?.name || "all",
@@ -680,7 +736,7 @@ export function VideoLibraryPage() {
 
           <VideoListPanel
             activeDbId={activeDbId}
-            exportingKey={exportingKey}
+            exportingKey={exportingKey || deletingKey}
             isLoading={isLoading}
             query={query}
             selectedOwnerName={selectedOwnerName}
@@ -689,6 +745,7 @@ export function VideoLibraryPage() {
             hasMore={hasMoreVideos}
             videos={filteredVideos}
             onExport={(video) => setExportTarget({ kind: "video", video })}
+            onDelete={(video) => setDeleteTarget({ kind: "video", video })}
             onLoadMore={() => void loadMoreVideos()}
             onQueryChange={setQuery}
           />
@@ -758,6 +815,14 @@ export function VideoLibraryPage() {
               void exportVideoDatabase(exportTarget.video, format);
             }
           }}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          disabled={Boolean(deletingKey)}
+          target={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => void deleteArchiveTarget()}
         />
       )}
       {notice && <NoticeDialog notice={notice} onClose={() => setNotice(null)} />}

@@ -12,6 +12,7 @@ type VideoListPanelProps = {
   selectedOwnerName?: string;
   totalVideoCount: number;
   videos: VideoSummary[];
+  onDelete: (video: VideoSummary) => void;
   onExport: (video: VideoSummary) => void;
   onLoadMore: () => void;
   onQueryChange: (value: string) => void;
@@ -27,6 +28,7 @@ export function VideoListPanel({
   selectedOwnerName,
   totalVideoCount,
   videos,
+  onDelete,
   onExport,
   onLoadMore,
   onQueryChange,
@@ -64,6 +66,7 @@ export function VideoListPanel({
               exporting={exportingKey === `video:${video.bvid}`}
               key={video.bvid}
               video={video}
+              onDelete={() => onDelete(video)}
               onExport={() => onExport(video)}
             />
           ))}

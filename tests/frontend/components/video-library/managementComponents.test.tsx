@@ -224,12 +224,14 @@ describe("video library management components", () => {
         name={owner.name}
         videoCount={owner.videoCount}
         onClick={onClick}
+        onDelete={() => undefined}
         onExport={() => undefined}
       />,
     );
     expect(ownerHtml).toContain("Owner");
     expect(ownerHtml).toContain("20");
     expect(ownerHtml).toContain("8");
+    expect(ownerHtml).toContain("删除");
 
     const dialogHtml = renderToStaticMarkup(
       <ExportChoiceDialog target={{ kind: "video", video: makeVideo({ title: "Video A" }) }} onChoose={() => undefined} onClose={() => undefined} />,

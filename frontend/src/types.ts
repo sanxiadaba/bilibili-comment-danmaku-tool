@@ -300,6 +300,24 @@ export type DatabaseExportResponse = {
   size_bytes: number;
 };
 
+export type ArchiveDeleteResponse = {
+  ok: boolean;
+  database?: DatabaseInfo;
+  deleted_bvids: string[];
+  deleted_videos: number;
+  missing_bvids?: string[];
+  videos: Array<{
+    bvid: string;
+    title: string;
+    owner_mid: string;
+    owner_name: string;
+  }>;
+  counts: Record<string, number>;
+  size_before: number;
+  size_after: number;
+  bytes_reclaimed: number;
+};
+
 export type DatabaseInfo = {
   id: string;
   role: "main" | "hotplug" | "legacy_export" | string;
@@ -393,4 +411,3 @@ export type ProgressState = {
 export type SortMode = "time_asc" | "time_desc" | "like_desc" | "reply_desc";
 
 export type LevelFilter = "all" | "top" | "reply" | "owner";
-

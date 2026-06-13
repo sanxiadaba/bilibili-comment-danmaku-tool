@@ -115,6 +115,23 @@ CONTROL_ACTIONS = {
         },
         "example": {"format": "json", "bvid": "BV1xx411c7mD", "db_id": "main"},
     },
+    "archive.delete": {
+        "method": "POST",
+        "endpoint": f"{CONTROL_NAMESPACE}/archive/delete",
+        "description": "Delete selected videos or all videos from one UP owner from a local archive database, including comments, danmaku, pictures and emotes.",
+        "async": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "bvid": {"type": "string", "description": "Delete one video."},
+                "bvids": {"type": "array", "items": {"type": "string"}, "description": "Delete multiple videos."},
+                "owner_mid": {"type": "string", "description": "Delete all local videos from one owner."},
+                "db_id": DB_ID_SCHEMA,
+            },
+            "oneOf": [{"required": ["bvid"]}, {"required": ["bvids"]}, {"required": ["owner_mid"]}],
+        },
+        "example": {"bvid": "BV1xx411c7mD", "db_id": "main"},
+    },
     "databases.import": {
         "method": "POST",
         "endpoint": f"{CONTROL_NAMESPACE}/databases/import",

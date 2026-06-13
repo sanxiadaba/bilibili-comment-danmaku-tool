@@ -795,6 +795,123 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
         conn.close()
 
 
+def delete_videos_from_sqlite(db_path, bvids, vacuum=True):
+    selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
+    if not selected_bvids:
+        raise ValueError("请选择要删除的视频")
+
+    db_path = Path(db_path)
+    size_before = db_path.stat().st_size if db_path.exists() else 0
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        existing_rows = conn.execute(
+            f"""
+            SELECT bvid, title, owner_mid, owner_name
+            FROM videos
+            WHERE bvid IN ({placeholders(len(selected_bvids))})
+            ORDER BY fetched_at DESC
+            """,
+            selected_bvids,
+        ).fetchall()
+        if not existing_rows:
+            raise LookupError("没有找到要删除的视频")
+
+        existing_bvids = [row["bvid"] for row in existing_rows]
+        counts_before = count_archive_rows(conn, existing_bvids)
+        delete_video_rows(conn, existing_bvids)
+        cleanup_unreferenced_users(conn)
+        conn.commit()
+        if vacuum:
+            conn.execute("VACUUM")
+        size_after = db_path.stat().st_size if db_path.exists() else 0
+        return {
+            "deleted_bvids": existing_bvids,
+            "deleted_videos": len(existing_bvids),
+            "missing_bvids": [bvid for bvid in selected_bvids if bvid not in set(existing_bvids)],
+            "videos": [video_delete_summary(row) for row in existing_rows],
+            "counts": counts_before,
+            "size_before": size_before,
+            "size_after": size_after,
+            "bytes_reclaimed": max(0, size_before - size_after),
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def delete_owner_from_sqlite(db_path, owner_mid, vacuum=True):
+    owner_mid = str(owner_mid or "").strip()
+    if not owner_mid:
+        raise ValueError("请选择要删除的 UP 主")
+
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT bvid
+            FROM videos
+            WHERE owner_mid = ?
+            ORDER BY fetched_at DESC
+            """,
+            (owner_mid,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        raise LookupError("没有找到这个 UP 主的本地视频")
+    return delete_videos_from_sqlite(db_path, [row["bvid"] for row in rows], vacuum=vacuum)
+
+
+def delete_video_rows(conn, bvids):
+    params = list(bvids)
+    marks = placeholders(len(params))
+    conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
+    conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
+    conn.execute(f"DELETE FROM comments WHERE bvid IN ({marks})", params)
+    conn.execute(f"DELETE FROM danmaku WHERE bvid IN ({marks})", params)
+    conn.execute(f"DELETE FROM videos WHERE bvid IN ({marks})", params)
+
+
+def cleanup_unreferenced_users(conn):
+    conn.execute("DELETE FROM users WHERE mid NOT IN (SELECT DISTINCT mid FROM comments WHERE mid IS NOT NULL AND mid != '')")
+
+
+def count_archive_rows(conn, bvids):
+    params = list(bvids)
+    marks = placeholders(len(params))
+    return {
+        "videos": len(params),
+        "comments": conn.execute(f"SELECT COUNT(*) FROM comments WHERE bvid IN ({marks})", params).fetchone()[0],
+        "comment_pictures": conn.execute(
+            f"SELECT COUNT(*) FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
+            params,
+        ).fetchone()[0],
+        "comment_emotes": conn.execute(
+            f"SELECT COUNT(*) FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
+            params,
+        ).fetchone()[0],
+        "danmaku": conn.execute(f"SELECT COUNT(*) FROM danmaku WHERE bvid IN ({marks})", params).fetchone()[0],
+    }
+
+
+def placeholders(count):
+    return ",".join("?" for _ in range(count))
+
+
+def video_delete_summary(row):
+    return {
+        "bvid": row["bvid"],
+        "title": row["title"],
+        "owner_mid": value_or_empty(row["owner_mid"]),
+        "owner_name": row["owner_name"] or "",
+    }
+
+
 def video_summary_from_row(row):
     total = value_or_zero(row["comment_total_count_actual"])
     deleted = value_or_zero(row["deleted_comment_count"])
@@ -978,4 +1095,3 @@ def node_sort_key(node):
     ctime = normalized.get("ctime") or 0
     rpid = str(normalized.get("rpid") or "")
     return ctime, rpid
-

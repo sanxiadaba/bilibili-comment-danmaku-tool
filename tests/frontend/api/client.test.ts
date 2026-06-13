@@ -4,6 +4,7 @@ import {
   clearCookie,
   controlSpaceTasks,
   createAuthQrCode,
+  deleteArchiveData,
   exportDatabaseArchive,
   fetchCommentData,
   fetchDanmakuData,
@@ -66,6 +67,7 @@ describe("API client", () => {
     await controlSpaceTasks("pause", "space-1");
     await importDatabase("D:/archive.json");
     await exportDatabaseArchive({ format: "json", bvid: "BV1xx411c7mD", db_id: "main" });
+    await deleteArchiveData({ bvid: "BV1xx411c7mD", db_id: "main" });
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
       url: "BV1xx411c7mD",
@@ -82,6 +84,11 @@ describe("API client", () => {
     expect(JSON.parse(fetchMock.mock.calls[4][1].body as string)).toMatchObject({
       format: "json",
       bvid: "BV1xx411c7mD",
+    });
+    expect(fetchMock.mock.calls[5][0]).toContain("/api/archive/delete?");
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body as string)).toMatchObject({
+      bvid: "BV1xx411c7mD",
+      db_id: "main",
     });
   });
 

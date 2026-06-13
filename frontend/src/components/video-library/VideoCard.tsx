@@ -1,4 +1,4 @@
-import { ChevronRight, Download, Eye, Sparkles } from "lucide-react";
+import { ChevronRight, Download, Eye, Sparkles, Trash2 } from "lucide-react";
 import { logClientEvent } from "../../api/client";
 import { cn, formatFullDateTime, formatNumber, normalizeImageUrl } from "../../lib/utils";
 import { dbPath } from "../../lib/videoLibrary";
@@ -9,10 +9,11 @@ type VideoCardProps = {
   dbId: string;
   exporting: boolean;
   video: VideoSummary;
+  onDelete: () => void;
   onExport: () => void;
 };
 
-export function VideoCard({ disabled, dbId, exporting, video, onExport }: VideoCardProps) {
+export function VideoCard({ disabled, dbId, exporting, video, onDelete, onExport }: VideoCardProps) {
   return (
     <article className="interactive-card grid gap-3 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
       <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100 shadow-sm">
@@ -74,6 +75,15 @@ export function VideoCard({ disabled, dbId, exporting, video, onExport }: VideoC
         >
           <Download className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
           {exporting ? "导出中" : "导出"}
+        </button>
+        <button
+          className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-red-100 bg-red-50/70 px-3 text-sm font-medium text-red-700 transition hover:border-red-300 hover:bg-red-50 disabled:cursor-wait disabled:opacity-60"
+          type="button"
+          disabled={disabled}
+          onClick={onDelete}
+        >
+          <Trash2 size={15} aria-hidden="true" />
+          删除
         </button>
       </div>
     </article>

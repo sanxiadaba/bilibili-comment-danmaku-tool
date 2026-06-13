@@ -40,6 +40,8 @@ from bilibili_comment_danmaku.archive import (  # noqa: E402
 from bilibili_comment_danmaku import scraper  # noqa: E402
 from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
+    delete_owner_from_sqlite,
+    delete_videos_from_sqlite,
     load_comment_data,
     load_danmaku_data,
     list_video_summaries_page,
@@ -186,6 +188,85 @@ class StorageTests(unittest.TestCase):
             self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222"])
             self.assertEqual(page["videos"][0]["comment_total_count"], 2)
             self.assertEqual(page["videos"][0]["danmaku_count"], 2)
+
+    def test_delete_video_removes_related_archive_rows_and_keeps_other_videos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            first_top = make_comment("1", 1, "top comment", mid="42", like=8)
+            second_top = make_comment("2", 1, "other comment", mid="100", like=3)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [first_top]), db_path, replace=True)
+            second_archive = make_archive("2024-01-02T00:00:00+00:00", [second_top])
+            second_archive["metadata"] = {
+                **second_archive["metadata"],
+                "bvid": "BV2222222222",
+                "aid": 222,
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            second_archive["video_raw"] = {**second_archive["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(second_archive, db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": "100",
+                            "progress": 1.2,
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000001,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 9,
+                            "like_count": 12,
+                            "content": "danmaku",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        },
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+
+            result = delete_videos_from_sqlite(db_path, [BVID])
+            page = list_video_summaries_page(db_path, limit=10)
+
+            self.assertEqual(result["deleted_videos"], 1)
+            self.assertEqual(result["deleted_bvids"], [BVID])
+            self.assertEqual(result["counts"]["comments"], 1)
+            self.assertEqual(result["counts"]["comment_pictures"], 1)
+            self.assertEqual(result["counts"]["comment_emotes"], 1)
+            self.assertEqual(result["counts"]["danmaku"], 1)
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222"])
+            with self.assertRaises(LookupError):
+                load_comment_data(db_path, bvid=BVID)
+
+    def test_delete_owner_removes_all_owner_videos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+            owner_second = make_archive("2024-01-02T00:00:00+00:00", [])
+            owner_second["metadata"] = {
+                **owner_second["metadata"],
+                "bvid": "BV2222222222",
+                "aid": 222,
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            save_comments_to_sqlite(owner_second, db_path, replace=True)
+            other = make_archive("2024-01-03T00:00:00+00:00", [])
+            other["metadata"] = {**other["metadata"], "bvid": "BV3333333333", "aid": 333, "source_url": "https://www.bilibili.com/video/BV3333333333"}
+            other["video_raw"] = {**other["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(other, db_path, replace=True)
+
+            result = delete_owner_from_sqlite(db_path, "42")
+            page = list_video_summaries_page(db_path, limit=10)
+
+            self.assertEqual(result["deleted_videos"], 2)
+            self.assertEqual(set(result["deleted_bvids"]), {BVID, "BV2222222222"})
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV3333333333"])
 
     def test_export_archive_to_sqlite_creates_independent_subset_database(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -431,6 +512,5 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual(files[0]["filename"], "archive.db")
         self.assertEqual(files[0]["content"], content)
-
 
 

@@ -16,6 +16,8 @@ export type OwnerGroup = {
 
 export type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
 
+export type DeleteTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
+
 export type NoticeState = {
   kind: "success" | "error" | "warning";
   title: string;

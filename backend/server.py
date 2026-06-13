@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from app_logging import configure_logging, logging_status, log_event, log_exception, shutdown_logging
 from auth_store import BilibiliQrLoginService, CookieStore
 from bilibili_comment_danmaku import (
+    delete_owner_from_sqlite,
+    delete_videos_from_sqlite,
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
@@ -204,6 +206,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 return
             if parsed.path == "/api/database/export":
                 self.handle_database_export_api()
+                return
+            if parsed.path == "/api/archive/delete":
+                self.handle_archive_delete_api()
                 return
             self.send_error(404)
         except BadRequestError as exc:
@@ -437,6 +442,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if path == "/api/v1/control/archive/export":
             self.handle_database_export_api()
             return
+        if path == "/api/v1/control/archive/delete":
+            self.handle_archive_delete_api()
+            return
         if path == "/api/v1/control/databases/import":
             self.handle_database_import_api()
             return
@@ -462,6 +470,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             return
         if action == "archive.export":
             self.run_with_json_body(params, self.handle_database_export_api)
+            return
+        if action == "archive.delete":
+            self.run_with_json_body(params, self.handle_archive_delete_api)
             return
         if action == "databases.import":
             self.run_with_json_body(params, self.handle_database_import_api)
@@ -705,6 +716,78 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 "counts": result["counts"],
                 "manifest": result.get("manifest") or {},
                 "size_bytes": result["size_bytes"],
+            }
+        )
+
+    def handle_archive_delete_api(self):
+        body = self.read_json_body()
+        db_path = self.resolve_db_path_from_body(body)
+        bvid = (body.get("bvid") or "").strip()
+        owner_mid = (body.get("owner_mid") or "").strip()
+        raw_bvids = body.get("bvids")
+        if isinstance(raw_bvids, list):
+            bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
+        else:
+            bvids = []
+        if bvid:
+            bvids = [bvid]
+        if owner_mid and bvids:
+            self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
+            return
+        if not owner_mid and not bvids:
+            self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
+            return
+
+        try:
+            result = (
+                delete_owner_from_sqlite(db_path, owner_mid)
+                if owner_mid
+                else delete_videos_from_sqlite(db_path, bvids)
+            )
+        except LookupError as exc:
+            log_event(
+                "api.archive_delete.not_found",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
+                owner_mid=owner_mid,
+                bvid=bvid,
+                bvid_count=len(bvids),
+                level="warning",
+            )
+            self.send_json({"error": str(exc)}, status=404)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            log_exception(
+                "api.archive_delete.error",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                db=str(db_path),
+                owner_mid=owner_mid,
+                bvid=bvid,
+                bvid_count=len(bvids),
+            )
+            self.send_json({"error": str(exc)}, status=500)
+            return
+
+        log_event(
+            "api.archive_delete.finish",
+            "deleted archive data",
+            request_id=getattr(self, "request_id", ""),
+            db=str(db_path),
+            owner_mid=owner_mid,
+            deleted_videos=result["deleted_videos"],
+            counts=result["counts"],
+            bytes_reclaimed=result["bytes_reclaimed"],
+        )
+        self.send_json(
+            {
+                "ok": True,
+                "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
+                **result,
             }
         )
 
@@ -1107,4 +1190,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

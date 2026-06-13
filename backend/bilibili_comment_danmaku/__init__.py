@@ -7,6 +7,8 @@ from .archive import (
     read_archive_meta,
 )
 from .storage import (
+    delete_owner_from_sqlite,
+    delete_videos_from_sqlite,
     list_video_summaries_page,
     load_comment_data,
     load_danmaku_data,
@@ -23,6 +25,8 @@ __all__ = [
     "export_archive_to_json",
     "import_archive_json_to_sqlite",
     "inspect_cookie_status",
+    "delete_owner_from_sqlite",
+    "delete_videos_from_sqlite",
     "list_video_summaries_page",
     "load_comment_data",
     "load_danmaku_data",
