@@ -1,28 +1,28 @@
 # bilibili-comment-danmaku-tool
 
-A local tool for archiving and exploring Bilibili comments, nested replies, danmaku, and video metadata.
+本地运行的 Bilibili 评论、楼中楼、弹幕归档和查看工具。
 
-The app stores everything in local SQLite files and serves a React UI from a small Python HTTP server. The repository contains source code only: no cookies, databases, logs, dependencies, or build output.
+它把数据保存到本机 SQLite，通过 Python HTTP 服务提供 API 和 React 页面。仓库只保存源码和配置，不保存 cookie、数据库、日志、依赖或构建产物。
 
-## Features
+## 功能
 
-- Archive one video by URL or BV id.
-- Queue UP-owner archive tasks.
-- Pause, resume, stop, retry, and clear tasks.
-- Persist queued tasks across service restarts.
-- View video library, comments, danmaku, statistics, and detail panels.
-- Refresh comments and danmaku independently.
-- Preserve comments that are not returned during refresh.
-- Export/import archives as JSON or SQLite.
-- Control the tool from other local programs through `/api/v1/control`.
+- 按视频 URL 或 BV 号归档评论和弹幕。
+- 把 UP 主全部视频加入归档任务队列。
+- 支持任务暂停、继续、停止、重试和清空记录。
+- 服务重启后可恢复持久化任务。
+- 查看视频库、评论、弹幕、统计和详情。
+- 独立刷新评论和弹幕。
+- 刷新评论时保留“本次未返回”的历史评论。
+- JSON / SQLite 导入导出。
+- 通过 `/api/v1/control` 被其它本地程序调用。
 
-## Requirements
+## 环境
 
 - Python 3.11+
 - pnpm
-- Optional: `data/cookie.txt` for logged-in Bilibili access
+- 可选：`data/cookie.txt`，用于 Bilibili 登录态访问
 
-## Install And Run
+## 安装运行
 
 ```powershell
 pnpm install
@@ -30,55 +30,55 @@ pnpm build
 pnpm server
 ```
 
-Open:
+访问：
 
 ```text
 http://127.0.0.1:8000/
 ```
 
-Development mode:
+开发模式：
 
 ```powershell
 pnpm server
 pnpm dev
 ```
 
-Vite proxies `/api` to `http://127.0.0.1:8000`.
+Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
 
-## Local Data
+## 本地数据
 
 ```text
-data/comment_danmaku.db       default SQLite database
-data/cookie.txt               optional Bilibili cookie
-data/databases/               imported or hot-plug databases
-data/exports/                 local export output
-logs/app.jsonl                structured runtime log
-dist/                         frontend build output
+data/comment_danmaku.db       默认 SQLite 数据库
+data/cookie.txt               可选 Bilibili cookie
+data/databases/               导入或热插拔数据库
+data/exports/                 本地导出目录
+logs/app.jsonl                结构化运行日志
+dist/                         前端构建产物
 ```
 
-These paths are ignored by Git.
+这些路径均被 Git 忽略。
 
-## Commands
+## 常用命令
 
 ```powershell
-pnpm test            # backend + frontend tests
+pnpm test            # 后端 + 前端测试
 pnpm test:backend
 pnpm test:frontend
-pnpm build           # tests, typecheck, Vite build
-pnpm server          # Python server on 127.0.0.1:8000
-pnpm dev             # Vite dev server
-pnpm fetch           # CLI single-video archive helper
+pnpm build           # 测试、类型检查、Vite 构建
+pnpm server          # Python 服务，127.0.0.1:8000
+pnpm dev             # Vite 开发服务
+pnpm fetch           # 单视频 CLI 抓取辅助
 ```
 
-Python compile check:
+Python 编译检查：
 
 ```powershell
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend/bilibili_comment_danmaku/storage.py backend/bilibili_comment_danmaku/danmaku.py backend/bilibili_comment_danmaku/scraper.py backend/bilibili_comment_danmaku/url_utils.py backend/bilibili_comment_danmaku/__init__.py backend/task_queue.py backend/space_archive.py backend/video_tasks.py
+python -B -m py_compile backend/server.py backend/http_utils.py backend/fetch_bilibili_comment_danmaku.py backend/bilibili_comment_danmaku/storage.py backend/bilibili_comment_danmaku/danmaku.py backend/bilibili_comment_danmaku/scraper.py backend/bilibili_comment_danmaku/wbi.py backend/bilibili_comment_danmaku/url_utils.py backend/bilibili_comment_danmaku/__init__.py backend/task_queue.py backend/space_archive.py backend/video_tasks.py
 ```
 
-## Control API
+## 控制 API
 
-External local integrations should prefer the stable control namespace:
+外部本地集成优先使用稳定控制命名空间：
 
 ```text
 GET  /api/v1/control
@@ -88,7 +88,7 @@ GET  /api/v1/control/progress
 POST /api/v1/control/actions
 ```
 
-Example:
+示例：
 
 ```json
 {
@@ -101,21 +101,21 @@ Example:
 }
 ```
 
-Action metadata and schemas are generated from `backend/control_api.py`.
+动作元数据和 schema 来自 `backend/control_api.py`。
 
-## Project Map
+## 项目结构
 
 ```text
-backend/       Python server, task queue, Bilibili scraping, SQLite storage
-frontend/      Vite + React + TypeScript UI
-tests/         backend unittest and frontend Vitest coverage
-AGENTS.md      development rules for coding agents
+backend/       Python 服务、任务队列、Bilibili 抓取、SQLite 存储
+frontend/      Vite + React + TypeScript 页面
+tests/         后端 unittest 和前端 Vitest
+AGENTS.md      agent 开发规则
 ```
 
-## Design Principles
+## 设计原则
 
-- Local-first. Do not expose the server to the public internet.
-- SQLite-first. Keep database migrations compatible with existing user data.
-- One clear path. Remove old scripts and duplicate abstractions when the app has a better maintained path.
-- Observable tasks. Long-running work should be visible through progress and queue APIs.
-- No secret drift. Never commit cookies, databases, logs, or generated output.
+- 本地优先：不要把服务直接暴露到公网。
+- SQLite 优先：迁移必须兼容用户已有数据。
+- 单一路径：有维护良好的主路径时，删除旧脚本和重复抽象。
+- 任务可观测：长任务必须能通过进度和队列 API 查看。
+- 不漂移秘密：cookie、数据库、日志、构建产物永不提交。

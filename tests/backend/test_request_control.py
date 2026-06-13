@@ -23,7 +23,7 @@ from database_registry import (  # noqa: E402
 )
 from errors import BadRequestError  # noqa: E402
 from progress_state import progress_percent, progress_stats  # noqa: E402
-from server import parse_json_object_body  # noqa: E402
+from http_utils import parse_json_object_body  # noqa: E402
 from space_archive import (  # noqa: E402
     api_error_response,
     extract_space_mid,

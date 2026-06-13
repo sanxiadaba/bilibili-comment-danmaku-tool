@@ -1,17 +1,17 @@
-# Agent Handbook
+# Agent 开发手册
 
-This project is a local Bilibili comment and danmaku archive tool. Keep it small, explicit, and boring. When a choice is unclear, prefer the option with fewer moving parts.
+这个项目是本地运行的 Bilibili 评论、楼中楼、弹幕归档和查看工具。原则很简单：少即是多，保留一条清楚的主路径，删除没有维护价值的旁路。
 
-## Non-Negotiables
+## 硬规则
 
-- Work on a branch for every requested change. Start from `main`, push the branch, and merge only after the user explicitly asks.
-- Git and GitHub traffic should use `http://127.0.0.1:7890`.
-- Bilibili scraping should not use the proxy by default.
-- Never commit local data or secrets: `data/`, `logs/`, `dist/`, `node_modules/`, `cookie.txt`, `*.db`, `*.sqlite*`, `__pycache__/`, `*.pyc`, `.env*`.
-- Before committing, run `git status --short --ignored` and confirm generated or sensitive files are only shown as ignored.
-- Prefer `pnpm` for frontend commands and `uv` when Python dependency management is needed.
+- 每个需求先从 `main` 新建分支，提交并推送；只有用户明确说“合并”后才合并回 `main`。
+- Git / GitHub 使用代理：`http://127.0.0.1:7890`。
+- Bilibili 抓取默认不走代理。
+- 不提交本地数据和秘密：`data/`、`logs/`、`dist/`、`node_modules/`、`cookie.txt`、`*.db`、`*.sqlite*`、`__pycache__/`、`*.pyc`、`.env*`。
+- 提交前必须运行 `git status --short --ignored`，确认敏感文件只在 ignored 区域。
+- 前端优先 `pnpm`；Python 依赖管理需要时优先 `uv`。
 
-## Commands
+## 常用命令
 
 ```powershell
 pnpm install
@@ -21,72 +21,73 @@ pnpm server
 pnpm dev
 ```
 
-Focused checks:
+专项检查：
 
 ```powershell
 pnpm test:backend
 pnpm test:frontend
-python -B -m py_compile backend/server.py backend/fetch_bilibili_comment_danmaku.py backend/bilibili_comment_danmaku/storage.py backend/bilibili_comment_danmaku/danmaku.py backend/bilibili_comment_danmaku/scraper.py backend/bilibili_comment_danmaku/url_utils.py backend/bilibili_comment_danmaku/__init__.py backend/task_queue.py backend/space_archive.py backend/video_tasks.py
+python -B -m py_compile backend/server.py backend/http_utils.py backend/fetch_bilibili_comment_danmaku.py backend/bilibili_comment_danmaku/storage.py backend/bilibili_comment_danmaku/danmaku.py backend/bilibili_comment_danmaku/scraper.py backend/bilibili_comment_danmaku/wbi.py backend/bilibili_comment_danmaku/url_utils.py backend/bilibili_comment_danmaku/__init__.py backend/task_queue.py backend/space_archive.py backend/video_tasks.py
 git status --short --ignored
 ```
 
-Local app:
+本地地址：
 
 ```text
 http://127.0.0.1:8000/
 ```
 
-## Shape Of The Code
+## 目录地图
 
 ```text
 backend/
-  server.py                         HTTP API, static files, control dispatch
-  task_queue.py                     persistent in-memory task queue
-  video_tasks.py                    single-video parse tasks
-  space_archive.py                  UP-owner archive tasks
-  progress_state.py                 progress snapshot and polling state
-  database_registry.py              database import/export/catalog paths
-  control_api.py                    /api/v1/control capability metadata
+  server.py                         HTTP API、静态文件、控制接口调度
+  http_utils.py                     JSON 请求、静态文件、HTTP 日志等基础能力
+  task_queue.py                     可持久化任务队列
+  video_tasks.py                    单视频抓取任务
+  space_archive.py                  UP 主视频归档任务
+  progress_state.py                 进度快照和轮询状态
+  database_registry.py              数据库导入、导出、目录扫描
+  control_api.py                    /api/v1/control 契约元数据
   bilibili_comment_danmaku/
-    scraper.py                      video info, comments, WBI signing
-    danmaku.py                      danmaku XML and like counts
-    storage.py                      SQLite schema, persistence, read models
-    archive.py                      JSON/SQLite archive import/export
-    url_utils.py                    BV parsing
+    scraper.py                      视频信息、评论抓取编排
+    wbi.py                          WBI 签名、mixin key、签名缓存
+    danmaku.py                      弹幕 XML 和点赞数
+    storage.py                      SQLite schema、保存、读取模型
+    archive.py                      JSON / SQLite 归档导入导出
+    url_utils.py                    BV 号解析
 
 frontend/src/
-  pages/                            route-level state and layouts
-  components/comments/              comment UI
-  components/danmaku/               danmaku UI
-  components/video-library/         library, tasks, database management
-  components/ui/                    small shared UI primitives
-  api/client.ts                     typed fetch wrappers
+  pages/                            页面级状态和布局
+  components/comments/              评论领域 UI
+  components/danmaku/               弹幕领域 UI
+  components/video-library/         视频库、任务、数据库管理
+  components/ui/                    小型通用 UI
+  api/client.ts                     typed fetch 封装
   hooks/                            React hooks
-  lib/                              pure helpers
-  types.ts                          frontend/backend JSON contracts
+  lib/                              纯函数工具
+  types.ts                          前后端 JSON 契约
 
 tests/
-  backend/                          unittest coverage for storage, scraping, queue, control API
-  frontend/                         Vitest coverage for API, UI components, helpers
+  backend/                          unittest
+  frontend/                         Vitest
 ```
 
-## Core Invariants
+## 核心不变量
 
-- SQLite is the source of truth. The default database is `data/comment_danmaku.db`.
-- `data/comments.db` may be copied forward only as a compatibility migration when the default DB is missing.
-- Comment refresh marks old comments as `is_deleted = 1` before upserting newly returned comments. Do not delete missing comments during refresh.
-- Danmaku refresh must not replace existing local danmaku with an empty remote result.
-- Task state must survive service restart when persistence is enabled. Pause/stop flags must be visible inside long-running fetch loops.
-- `/api/videos` is paginated. Do not restore full-library aggregation on the homepage path.
-- Export formats are exclusive: JSON export writes JSON only; SQLite export writes DB only.
-- `user_hash` is internal. Do not show it in the UI.
-- Danmaku colors should be shown as readable names and swatches, not raw hashes.
+- SQLite 是事实来源，默认库是 `data/comment_danmaku.db`。
+- 旧 `data/comments.db` 只允许在默认库缺失时自动复制迁移。
+- 评论刷新时先把旧评论标为 `is_deleted = 1`，再恢复本次返回的评论；不要删除“本次未返回”的历史评论。
+- 弹幕刷新遇到远端 0 条结果时，如果本地已有弹幕，必须保留旧档案。
+- 任务启用持久化时，服务重启后仍要能继续运行。
+- pause / stop 标记必须能被长时间抓取循环看到。
+- `/api/videos` 必须分页；首页不要恢复全库聚合查询。
+- 导出格式互斥：JSON 只写 JSON，SQLite 只写数据库。
+- `user_hash` 是内部字段，不在 UI 展示。
+- 弹幕颜色用中文名和色块展示，不展示裸 hash。
 
-## Public Interfaces
+## 公共接口
 
-UI-oriented endpoints live under `/api/*`.
-
-Automation should prefer:
+UI 接口在 `/api/*`。外部自动化优先用稳定控制接口：
 
 ```text
 GET  /api/v1/control
@@ -96,32 +97,33 @@ GET  /api/v1/control/progress
 POST /api/v1/control/actions
 ```
 
-Supported control actions are declared in `backend/control_api.py`. Keep that file as the contract source instead of duplicating detailed API docs elsewhere.
+控制动作以 `backend/control_api.py` 为准。不要在文档里重复维护大段 API schema。
 
-## Frontend Rules
+## 前端原则
 
-- Keep page files responsible for orchestration; move reusable display logic into domain components.
-- Use `VirtualList` for large comments or danmaku lists.
-- Keep control surfaces dense and local-tool-like. Avoid marketing sections.
-- Use lucide icons for buttons when there is a standard icon.
-- Text must fit on small screens. Use `min-w-0`, wrapping, and overflow rules deliberately.
+- 页面负责串联状态和布局；可复用展示逻辑放到领域组件。
+- 评论、弹幕大列表必须使用虚拟滚动。
+- 工具界面保持紧凑、清晰，不做营销式页面。
+- 有标准图标时用 lucide 图标。
+- 移动端和窄屏必须避免文字溢出；优先使用 `min-w-0`、换行和明确的 overflow。
+- 注意：`VideoLibraryPage.tsx` 存在历史中文编码损伤。重构前先单独修复编码，避免整文件重写放大问题。
 
-## Backend Rules
+## 后端原则
 
-- Prefer standard-library Python unless a dependency clearly removes more code than it adds.
-- Keep Bilibili client behavior centralized in `scraper.py` and `danmaku.py`.
-- Keep storage migrations compatible with existing user databases.
-- Add indexes only for observed query paths.
-- Log important API/task events through `app_logging.py`; do not log cookies, tokens, or raw secrets.
+- 优先标准库 Python；只有依赖能明显减少复杂度时才引入。
+- Bilibili HTTP 行为集中在 `scraper.py` 和 `danmaku.py`；WBI 签名基础能力放在 `wbi.py`。
+- SQLite migration 必须兼容用户已有数据库。
+- 只为真实查询路径加索引。
+- 重要 API / 任务事件走 `app_logging.py`；不要记录 cookie、token、密码或完整敏感正文。
 
-## Testing Expectations
+## 验证策略
 
-- Small doc-only changes: at least inspect `git diff` and `git status --short --ignored`.
-- Code changes: run `pnpm test` or the relevant focused tests plus Python compile.
-- Frontend behavior/layout changes: run `pnpm test:frontend` and verify the local page in a browser when practical.
-- Build-affecting changes: run `pnpm build`.
+- 文档小改：检查 diff 和 `git status --short --ignored`。
+- 代码改动：运行 `pnpm test`，或相关专项测试加 Python 编译。
+- 前端行为改动：运行 `pnpm test:frontend`，实际页面可用时用浏览器验一遍。
+- 影响构建：运行 `pnpm build`。
 
-## Git Flow
+## Git 流程
 
 ```powershell
 git status --short --branch
@@ -135,4 +137,4 @@ git commit -m "<imperative summary>"
 git push origin codex/<short-purpose>
 ```
 
-Only merge after the user says to merge. After merge, delete the feature branch locally and remotely.
+用户确认后再合并；合并后删除本地和远端分支。
