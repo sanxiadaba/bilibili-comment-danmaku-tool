@@ -192,6 +192,34 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(page["videos"][0]["comment_total_count"], 2)
             self.assertEqual(page["videos"][0]["danmaku_count"], 2)
 
+    def test_video_page_owner_summaries_use_full_database_not_current_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            for index in range(3):
+                archive = make_archive(f"2024-01-0{index + 1}T00:00:00+00:00", [make_comment(f"owner-{index}", 1, "comment")])
+                archive["metadata"] = {
+                    **archive["metadata"],
+                    "bvid": f"BVowner{index:05d}",
+                    "aid": 100 + index,
+                    "source_url": f"https://www.bilibili.com/video/BVowner{index:05d}",
+                }
+                archive["video_raw"] = {**archive["video_raw"], "owner": {"mid": "42", "name": "Owner", "face": ""}}
+                save_comments_to_sqlite(archive, db_path, replace=True)
+
+            other = make_archive("2024-01-04T00:00:00+00:00", [make_comment("other", 1, "comment")])
+            other["metadata"] = {**other["metadata"], "bvid": "BVother0001", "aid": 200, "source_url": "https://www.bilibili.com/video/BVother0001"}
+            other["video_raw"] = {**other["video_raw"], "owner": {"mid": "100", "name": "Other", "face": ""}}
+            save_comments_to_sqlite(other, db_path, replace=True)
+
+            page = list_video_summaries_page(db_path, limit=1, offset=0)
+            owners = {owner["owner_mid"]: owner for owner in page["owners"]}
+
+            self.assertEqual(len(page["videos"]), 1)
+            self.assertEqual(page["total"], 4)
+            self.assertEqual(owners["42"]["video_count"], 3)
+            self.assertEqual(owners["42"]["comment_count"], 3)
+            self.assertEqual(owners["100"]["video_count"], 1)
+
     def test_delete_video_removes_related_archive_rows_and_keeps_other_videos(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"

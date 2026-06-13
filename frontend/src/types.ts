@@ -204,8 +204,18 @@ export type VideoSummary = {
   latest_danmaku_fetched_at?: string;
 };
 
+export type OwnerSummary = {
+  key: string;
+  name: string;
+  owner_mid: string;
+  video_count: number;
+  comment_count: number;
+  danmaku_count: number;
+};
+
 export type VideoListResponse = {
   videos: VideoSummary[];
+  owners?: OwnerSummary[];
   database?: DatabaseInfo;
   total?: number;
   limit?: number;

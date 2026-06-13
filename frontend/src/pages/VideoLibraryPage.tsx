@@ -29,12 +29,13 @@ import type { DeleteTarget, ExportFormat, ExportTarget, LibraryView, ManagementV
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
-import type { CookieStatus, DatabaseInfo, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
+import type { CookieStatus, DatabaseInfo, OwnerSummary, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
 
 const VIDEO_PAGE_SIZE = 40;
 
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
+  const [ownerSummaries, setOwnerSummaries] = useState<OwnerSummary[]>([]);
   const [videoTotal, setVideoTotal] = useState(0);
   const [hasMoreVideos, setHasMoreVideos] = useState(false);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
@@ -120,6 +121,7 @@ export function VideoLibraryPage() {
       const offset = options?.offset || 0;
       const payload = await fetchVideos(activeDbId, { limit: VIDEO_PAGE_SIZE, offset });
       setVideos((current) => (options?.append ? mergeVideosByBvid(current, payload.videos) : payload.videos));
+      setOwnerSummaries(payload.owners || []);
       setVideoTotal(payload.total ?? payload.videos.length);
       setHasMoreVideos(Boolean(payload.has_more));
     } catch (reason: unknown) {
@@ -164,8 +166,19 @@ export function VideoLibraryPage() {
   }, [hasSpaceQueueWork, loadDatabases, loadVideos]);
 
   const ownerGroups = useMemo(() => {
-    const groups = new Map<string, OwnerGroup>();
+    if (ownerSummaries.length) {
+      return ownerSummaries.map((owner) => ({
+        bvids: videos.filter((video) => ownerKey(video) === owner.key).map((video) => video.bvid),
+        key: owner.key,
+        name: owner.name,
+        ownerMid: owner.owner_mid,
+        videoCount: owner.video_count,
+        commentCount: owner.comment_count,
+        danmakuCount: owner.danmaku_count,
+      }));
+    }
 
+    const groups = new Map<string, OwnerGroup>();
     for (const video of videos) {
       const key = ownerKey(video);
       const existing = groups.get(key);
@@ -192,7 +205,7 @@ export function VideoLibraryPage() {
       if (second.commentCount !== first.commentCount) return second.commentCount - first.commentCount;
       return first.name.localeCompare(second.name, "zh-Hans-CN");
     });
-  }, [videos]);
+  }, [ownerSummaries, videos]);
 
   useEffect(() => {
     if (ownerFilter === "all") return;
@@ -418,8 +431,17 @@ export function VideoLibraryPage() {
       setOwnerFilter("all");
       setLibraryView("tasks");
       setManagementView("queue");
-      setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
-      setVideoTotal((current) => Math.max(0, current - removedBvids.size));
+      setVideos((current) =>
+        target.kind === "owner"
+          ? current.filter((video) => ownerKey(video) !== target.owner.key)
+          : current.filter((video) => !removedBvids.has(video.bvid)),
+      );
+      setOwnerSummaries((current) =>
+        target.kind === "owner"
+          ? current.filter((owner) => owner.key !== target.owner.key)
+          : current.map((owner) => (owner.key === ownerKey(target.video) ? { ...owner, video_count: Math.max(0, owner.video_count - 1) } : owner)),
+      );
+      setVideoTotal((current) => Math.max(0, current - (target.kind === "owner" ? target.owner.videoCount : 1)));
       setMessage(payload.message || `删除任务已加入队列：${payload.task_id || "等待执行"}`);
       setNotice({
         kind: "success",

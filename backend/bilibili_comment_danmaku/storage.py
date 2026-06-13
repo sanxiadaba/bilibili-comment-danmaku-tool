@@ -798,6 +798,7 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
         videos = [video_summary_from_row(row) for row in rows]
         return {
             "videos": videos,
+            "owners": list_owner_summaries(conn),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -805,6 +806,69 @@ def list_video_summaries_page(db_path, limit=40, offset=0):
         }
     finally:
         conn.close()
+
+
+def list_owner_summaries(conn):
+    rows = conn.execute(
+        """
+        WITH owner_videos AS (
+            SELECT
+                CASE
+                    WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
+                END AS owner_key,
+                MAX(COALESCE(NULLIF(owner_mid, ''), '')) AS owner_mid,
+                COALESCE(NULLIF(owner_name, ''), 'Unknown') AS owner_name,
+                COUNT(*) AS video_count
+            FROM videos
+            GROUP BY owner_key, owner_name
+        ),
+        comment_counts AS (
+            SELECT
+                CASE
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                END AS owner_key,
+                COUNT(c.rpid) AS comment_count
+            FROM videos v
+            LEFT JOIN comments c ON c.bvid = v.bvid
+            GROUP BY owner_key
+        ),
+        danmaku_counts AS (
+            SELECT
+                CASE
+                    WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN v.owner_mid
+                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                END AS owner_key,
+                COUNT(d.dmid) AS danmaku_count
+            FROM videos v
+            LEFT JOIN danmaku d ON d.bvid = v.bvid
+            GROUP BY owner_key
+        )
+        SELECT
+            owner_videos.owner_key,
+            owner_videos.owner_mid,
+            owner_videos.owner_name,
+            owner_videos.video_count,
+            COALESCE(comment_counts.comment_count, 0) AS comment_count,
+            COALESCE(danmaku_counts.danmaku_count, 0) AS danmaku_count
+        FROM owner_videos
+        LEFT JOIN comment_counts ON comment_counts.owner_key = owner_videos.owner_key
+        LEFT JOIN danmaku_counts ON danmaku_counts.owner_key = owner_videos.owner_key
+        ORDER BY owner_videos.video_count DESC, comment_count DESC, owner_videos.owner_name ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "key": row["owner_key"],
+            "name": row["owner_name"],
+            "owner_mid": value_or_empty(row["owner_mid"]),
+            "video_count": value_or_zero(row["video_count"]),
+            "comment_count": value_or_zero(row["comment_count"]),
+            "danmaku_count": value_or_zero(row["danmaku_count"]),
+        }
+        for row in rows
+    ]
 
 
 def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=None):
