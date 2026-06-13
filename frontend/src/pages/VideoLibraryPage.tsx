@@ -24,7 +24,7 @@ import type { ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeSta
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
-import type { DatabaseInfo, VideoSummary } from "../types";
+import type { DatabaseInfo, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
 
 export function VideoLibraryPage() {
   const [videos, setVideos] = useState<VideoSummary[]>([]);
@@ -63,7 +63,9 @@ export function VideoLibraryPage() {
     return saved ? Number(saved) || 0.35 : 0.35;
   });
   const spaceQueue = spaceProgress?.queue;
+  const taskQueue = useMemo(() => mergeProgressIntoQueue(spaceQueue, spaceProgress), [spaceQueue, spaceProgress]);
   const hasSpaceQueueWork = Boolean(spaceQueue?.active || spaceQueue?.queued?.length);
+  const hasTaskWork = Boolean(taskQueue.active || taskQueue.queued.length || taskQueue.recent.length);
   const isTaskBusy = isParsing || hasSpaceQueueWork;
   const activeDatabase = useMemo(
     () => databases.find((database) => database.id === activeDbId) || databases.find((database) => database.id === "main"),
@@ -329,6 +331,7 @@ export function VideoLibraryPage() {
       delay: parseDelay,
       source: duplicateVideo ? "duplicate_confirm" : "form",
     });
+    setLibraryView("tasks");
     setIsParsing(true);
     setDuplicateVideo(null);
     setPendingParseTarget("");
@@ -582,8 +585,8 @@ export function VideoLibraryPage() {
       <LibraryTabs
         active={libraryView}
         databaseCount={databases.length}
-        hasTaskWork={hasSpaceQueueWork}
-        queuedCount={spaceQueue?.queued?.length || 0}
+        hasTaskWork={hasTaskWork}
+        queuedCount={(taskQueue.active ? 1 : 0) + taskQueue.queued.length}
         videoCount={videos.length}
         onChange={setLibraryView}
       />
@@ -649,7 +652,7 @@ export function VideoLibraryPage() {
       )}
 
       {libraryView === "tasks" && (
-        <TaskManagementPanel isControlling={isControllingTask} queue={spaceQueue} onControl={(action, taskId) => void controlTasks(action, taskId)} />
+        <TaskManagementPanel isControlling={isControllingTask} queue={taskQueue} onControl={(action, taskId) => void controlTasks(action, taskId)} />
       )}
 
       {libraryView === "databases" && (
@@ -689,4 +692,53 @@ export function VideoLibraryPage() {
       {notice && <NoticeDialog notice={notice} onClose={() => setNotice(null)} />}
     </main>
   );
+}
+
+function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: ProgressState | null): ProgressQueue {
+  const base: ProgressQueue = {
+    active: queue?.active || null,
+    queued: queue?.queued || [],
+    recent: queue?.recent || [],
+  };
+  const progressTask = progressToTask(progress);
+  if (!progressTask) return base;
+
+  if (progressTask.status === "running" || progressTask.status === "waiting") {
+    return {
+      ...base,
+      active: progressTask,
+    };
+  }
+
+  const alreadyInRecent = base.recent.some((task) => task.id === progressTask.id);
+  return {
+    ...base,
+    recent: alreadyInRecent ? base.recent : [progressTask, ...base.recent],
+  };
+}
+
+function progressToTask(progress: ProgressState | null): ProgressTask | null {
+  if (!progress || !["parse", "comments", "danmaku"].includes(progress.kind)) return null;
+  const bvid = progress.bvid || "";
+  const taskKindLabel = progress.kind === "parse" ? "视频抓取" : progress.kind === "comments" ? "评论刷新" : "弹幕刷新";
+  const status = progress.active ? "running" : progress.error ? "failed" : progress.done ? "finished" : "queued";
+  return {
+    id: `${progress.kind}:${bvid || progress.started_at || "latest"}`,
+    kind: progress.kind,
+    mid: "",
+    owner_ref: taskKindLabel,
+    status,
+    message: progress.message || taskKindLabel,
+    created_at: progress.started_at,
+    updated_at: progress.updated_at,
+    started_at: progress.started_at,
+    finished_at: progress.done ? progress.updated_at : "",
+    progress: progress.percent || 0,
+    current_bvid: bvid,
+    total: 1,
+    complete: progress.done && !progress.error ? 1 : 0,
+    archived: progress.done && !progress.error ? 1 : 0,
+    skipped: 0,
+    failed: progress.error ? 1 : 0,
+  };
 }

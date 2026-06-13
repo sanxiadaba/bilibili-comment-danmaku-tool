@@ -46,6 +46,33 @@ describe("video library management components", () => {
     expect(html).toContain("paused task");
   });
 
+  it("shows single-video progress tasks without archive controls", () => {
+    const html = renderToStaticMarkup(
+      <TaskManagementPanel
+        isControlling={false}
+        queue={{
+          active: makeProgressTask({
+            id: "parse:BV1xx411c7mD",
+            kind: "parse",
+            mid: "",
+            owner_ref: "视频抓取",
+            status: "running",
+            message: "正在抓取评论",
+            current_bvid: "BV1xx411c7mD",
+          }),
+          queued: [],
+          recent: [],
+        }}
+        onControl={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("视频抓取");
+    expect(html).toContain("BV1xx411c7mD");
+    expect(html).not.toContain("等待暂停");
+    expect(html).not.toContain("等待停止");
+  });
+
   it("renders database management cards and import controls", () => {
     const html = renderToStaticMarkup(
       <ManagementPanel

@@ -76,7 +76,7 @@ function QueueTaskRow({
   const percent = Math.max(0, Math.min(100, Math.round(task.progress || 0)));
   const status = taskStatusLabel(task);
   const title = task.mid ? `UP ${task.mid}` : task.owner_ref || task.id;
-  const canControl = Boolean(onControl) && tone !== "recent";
+  const canControl = Boolean(onControl) && tone !== "recent" && (task.kind === "space" || task.kind === "space_archive");
   const isPaused = task.status === "paused";
   return (
     <div
