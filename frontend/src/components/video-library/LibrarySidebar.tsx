@@ -4,7 +4,7 @@ import { InfoRow } from "../common";
 import { cn, formatNumber } from "../../lib/utils";
 import type { CookieStatus, DatabaseInfo, VideoSummary } from "../../types";
 import { OwnerFilterButton } from "./OwnerFilterButton";
-import type { OwnerGroup } from "./types";
+import type { ExportFormat, OwnerGroup } from "./types";
 
 type LibrarySidebarProps = {
   activeDatabase?: DatabaseInfo;
@@ -28,6 +28,7 @@ type LibrarySidebarProps = {
   videoCount: number;
   onDuplicateOpen: (video: VideoSummary) => void;
   onDuplicateReparse: () => void;
+  onOwnerExport: (owner: OwnerGroup, format: ExportFormat) => void;
   onOwnerFilterChange: (ownerKey: string, owner?: OwnerGroup) => void;
   onOwnerRefChange: (value: string) => void;
   onParseDelayChange: (value: number) => void;
@@ -55,6 +56,7 @@ export function LibrarySidebar({
   videoCount,
   onDuplicateOpen,
   onDuplicateReparse,
+  onOwnerExport,
   onOwnerFilterChange,
   onOwnerRefChange,
   onParseDelayChange,
@@ -156,6 +158,7 @@ export function LibrarySidebar({
         ownerGroups={ownerGroups}
         totals={totals}
         videoCount={videoCount}
+        onExport={onOwnerExport}
         onSelect={onOwnerFilterChange}
       />
     </aside>
@@ -242,6 +245,7 @@ type OwnerFilterListProps = {
     danmaku: number;
   };
   videoCount: number;
+  onExport: (owner: OwnerGroup, format: ExportFormat) => void;
   onSelect: (ownerKey: string, owner?: OwnerGroup) => void;
 };
 
@@ -250,6 +254,7 @@ function OwnerFilterList({
   ownerGroups,
   totals,
   videoCount,
+  onExport,
   onSelect,
 }: OwnerFilterListProps) {
   const allOwnerTotals = ownerGroups.reduce(
@@ -297,6 +302,8 @@ function OwnerFilterList({
                 name={owner.name}
                 storageBytes={owner.storageBytes}
                 videoCount={owner.videoCount}
+                onExportJson={() => onExport(owner, "json")}
+                onExportSqlite={() => onExport(owner, "sqlite")}
                 onClick={() => onSelect(owner.key, owner)}
               />
             ))}

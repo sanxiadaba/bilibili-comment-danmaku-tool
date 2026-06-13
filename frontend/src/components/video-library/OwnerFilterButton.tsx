@@ -1,4 +1,4 @@
-import { Download, Trash2 } from "lucide-react";
+import { Database, Download, Trash2 } from "lucide-react";
 import { cn, formatNumber } from "../../lib/utils";
 import { formatBytes } from "../../lib/videoLibrary";
 
@@ -12,7 +12,8 @@ type OwnerFilterButtonProps = {
   storageBytes?: number;
   videoCount: number;
   onDelete?: () => void;
-  onExport?: () => void;
+  onExportJson?: () => void;
+  onExportSqlite?: () => void;
   onClick: () => void;
 };
 
@@ -26,9 +27,12 @@ export function OwnerFilterButton({
   storageBytes,
   videoCount,
   onDelete,
-  onExport,
+  onExportJson,
+  onExportSqlite,
   onClick,
 }: OwnerFilterButtonProps) {
+  const hasActions = onExportSqlite || onExportJson || onDelete;
+
   return (
     <div
       className={cn(
@@ -48,19 +52,32 @@ export function OwnerFilterButton({
           <span className="text-xs text-muted">估算占用 {formatBytes(storageBytes)}</span>
         )}
       </button>
-      {(onExport || onDelete) && (
+      {hasActions && (
         <div className="grid w-20 border-l border-line bg-white/80">
-          {onExport && (
+          {onExportSqlite && (
             <button
               className="inline-flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium text-muted transition hover:bg-white hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
               type="button"
-              aria-label={`导出 ${name} 的UP主数据库`}
-              title={`导出 ${name} 的UP主数据库`}
+              aria-label={`导出 ${name} 的 SQLite 数据库`}
+              title={`导出 ${name} 的 SQLite 数据库`}
               disabled={exportDisabled}
-              onClick={onExport}
+              onClick={onExportSqlite}
+            >
+              <Database className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
+              DB
+            </button>
+          )}
+          {onExportJson && (
+            <button
+              className="inline-flex items-center justify-center gap-1 border-t border-line px-2 py-1.5 text-xs font-medium text-muted transition hover:bg-white hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+              type="button"
+              aria-label={`导出 ${name} 的 JSON 文件`}
+              title={`导出 ${name} 的 JSON 文件`}
+              disabled={exportDisabled}
+              onClick={onExportJson}
             >
               <Download className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
-              导出
+              JSON
             </button>
           )}
           {onDelete && (

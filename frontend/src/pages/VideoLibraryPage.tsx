@@ -843,6 +843,7 @@ export function VideoLibraryPage() {
               });
               void runParse(pendingParseTarget);
             }}
+            onOwnerExport={(owner, format) => void exportOwnerDatabase(owner, format)}
             onOwnerFilterChange={(key, owner) => {
               logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
                 owner: owner?.name || "all",

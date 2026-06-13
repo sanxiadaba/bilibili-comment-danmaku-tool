@@ -153,6 +153,7 @@ describe("video library components", () => {
         videoCount={0}
         onDuplicateOpen={() => undefined}
         onDuplicateReparse={() => undefined}
+        onOwnerExport={() => undefined}
         onOwnerFilterChange={() => undefined}
         onOwnerRefChange={() => undefined}
         onParseDelayChange={() => undefined}
@@ -166,6 +167,51 @@ describe("video library components", () => {
     expect(html).toContain("SESSDATA");
     expect(html).toContain("DedeUserID");
     expect(html).toContain("短期票据过期");
+  });
+
+  it("renders direct DB and JSON export actions for owner groups", () => {
+    const html = renderToStaticMarkup(
+      <LibrarySidebar
+        cookieStatus={makeCookieStatus()}
+        duplicateVideo={null}
+        hasSpaceQueueWork={false}
+        hotplugDir="data/databases"
+        isParsing={false}
+        isSubmittingSpace={false}
+        isTaskBusy={false}
+        ownerFilter="all"
+        ownerGroups={[
+          {
+            bvids: ["BV1xx411c7mD"],
+            key: "mid:42",
+            name: "Owner",
+            ownerMid: "42",
+            videoCount: 1,
+            commentCount: 20,
+            danmakuCount: 8,
+          },
+        ]}
+        ownerRef=""
+        parseDelay={1}
+        showSettings={false}
+        totals={{ comments: 20, danmaku: 8 }}
+        url=""
+        videoCount={1}
+        onDuplicateOpen={() => undefined}
+        onDuplicateReparse={() => undefined}
+        onOwnerExport={() => undefined}
+        onOwnerFilterChange={() => undefined}
+        onOwnerRefChange={() => undefined}
+        onParseDelayChange={() => undefined}
+        onSubmitParse={(event) => event.preventDefault()}
+        onSubmitSpaceArchive={(event) => event.preventDefault()}
+        onUrlChange={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Owner");
+    expect(html).toContain("DB");
+    expect(html).toContain("JSON");
   });
 
   it("renders an export notice action for opening the output folder", () => {

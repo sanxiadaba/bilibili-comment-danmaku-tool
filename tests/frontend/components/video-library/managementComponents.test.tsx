@@ -230,7 +230,8 @@ describe("video library management components", () => {
         videoCount={owner.videoCount}
         onClick={onClick}
         onDelete={() => undefined}
-        onExport={() => undefined}
+        onExportJson={() => undefined}
+        onExportSqlite={() => undefined}
       />,
     );
     expect(ownerHtml).toContain("Owner");
@@ -238,6 +239,8 @@ describe("video library management components", () => {
     expect(ownerHtml).toContain("8");
     expect(ownerHtml).toContain("估算占用");
     expect(ownerHtml).toContain("12 MB");
+    expect(ownerHtml).toContain("DB");
+    expect(ownerHtml).toContain("JSON");
     expect(ownerHtml).toContain("删除");
 
     const dialogHtml = renderToStaticMarkup(
