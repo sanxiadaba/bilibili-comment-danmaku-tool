@@ -6,25 +6,33 @@ import type { VideoSummary } from "../../types";
 import type { ExportFormat, OwnerGroup } from "./types";
 
 type BatchManagementPanelProps = {
+  backendTotalVideoCount: number;
   disabled: boolean;
+  hasMoreVideos: boolean;
+  isLoadingVideos: boolean;
   ownerGroups: OwnerGroup[];
   videos: VideoSummary[];
   onDeleteOwners: (owners: OwnerGroup[]) => void;
   onDeleteVideos: (videos: VideoSummary[]) => void;
   onExportOwners: (owners: OwnerGroup[], format: ExportFormat) => void;
   onExportVideos: (videos: VideoSummary[], format: ExportFormat) => void;
+  onLoadMoreVideos: () => void;
 };
 
 type Mode = "owners" | "videos";
 
 export function BatchManagementPanel({
+  backendTotalVideoCount,
   disabled,
+  hasMoreVideos,
+  isLoadingVideos,
   ownerGroups,
   videos,
   onDeleteOwners,
   onDeleteVideos,
   onExportOwners,
   onExportVideos,
+  onLoadMoreVideos,
 }: BatchManagementPanelProps) {
   const [mode, setMode] = useState<Mode>("owners");
   const [query, setQuery] = useState("");
@@ -48,13 +56,19 @@ export function BatchManagementPanel({
   const owners = ownerGroups.filter((owner) => selectedOwners.has(owner.key));
   const selectedVideoRows = videos.filter((video) => selectedVideos.has(video.bvid));
   const selectedCount = mode === "owners" ? owners.length : selectedVideoRows.length;
+  const totalOwnerVideos = ownerGroups.reduce((sum, owner) => sum + owner.videoCount, 0);
+  const loadedVideoCount = videos.length;
+  const totalVideoCount = backendTotalVideoCount || loadedVideoCount;
 
   return (
     <section className="surface-card mx-auto grid max-w-[1540px] gap-4 rounded-md px-4 py-4 lg:px-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-ink">批量管理</h2>
-          <div className="mt-1 text-sm text-muted">集中处理导出和删除，视频列表保持清爽。</div>
+          <div className="mt-1 text-sm text-muted">
+            UP 共 {formatNumber(ownerGroups.length)} 位 / {formatNumber(totalOwnerVideos)} 个视频；视频已加载{" "}
+            {formatNumber(loadedVideoCount)} / {formatNumber(totalVideoCount)}。
+          </div>
         </div>
         <div className="inline-flex rounded-md border border-line bg-[#f6f9fc]/90 p-1">
           <ModeButton active={mode === "owners"} icon={Users} label="UP主" onClick={() => setMode("owners")} />
@@ -101,6 +115,17 @@ export function BatchManagementPanel({
           ),
         )}
       </div>
+
+      {mode === "videos" && hasMoreVideos && (
+        <button
+          className="btn-quiet h-10 rounded-md px-3 text-sm font-medium disabled:cursor-wait disabled:opacity-70"
+          type="button"
+          disabled={isLoadingVideos}
+          onClick={onLoadMoreVideos}
+        >
+          加载更多视频（已加载 {formatNumber(loadedVideoCount)} / {formatNumber(totalVideoCount)}）
+        </button>
+      )}
 
       <div className="sticky bottom-3 z-10 flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-white/95 p-3 shadow-lg backdrop-blur">
         <div className="text-sm text-muted">已选择 {selectedCount} 项</div>

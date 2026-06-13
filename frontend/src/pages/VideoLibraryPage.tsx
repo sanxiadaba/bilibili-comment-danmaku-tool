@@ -170,7 +170,7 @@ export function VideoLibraryPage() {
   const ownerGroups = useMemo(() => {
     if (ownerSummaries.length) {
       return ownerSummaries.map((owner) => ({
-        bvids: videos.filter((video) => ownerKey(video) === owner.key).map((video) => video.bvid),
+        bvids: owner.owner_mid ? [] : videos.filter((video) => ownerKey(video) === owner.key).map((video) => video.bvid),
         key: owner.key,
         name: owner.name,
         ownerMid: owner.owner_mid,
@@ -319,7 +319,10 @@ export function VideoLibraryPage() {
   }
 
   async function exportOwnerDatabase(owner = selectedOwner, format: ExportFormat) {
-    if (!owner || !owner.bvids.length) return;
+    if (!owner || (!owner.ownerMid && !owner.bvids.length)) {
+      setNotice({ kind: "error", title: "UP 主导出失败", message: "这个 UP 主缺少 mid，且当前未加载到可导出的视频列表。" });
+      return;
+    }
     setExportingKey(`owner:${owner.key}`);
     setExportTarget(null);
     setError("");
@@ -351,7 +354,7 @@ export function VideoLibraryPage() {
       logClientEvent("client.user.database_export.owner_error", text, {
         owner: owner.name,
         owner_mid: owner.ownerMid,
-        video_count: owner.bvids.length,
+        video_count: owner.videoCount,
       });
     } finally {
       setExportingKey("");
@@ -421,6 +424,14 @@ export function VideoLibraryPage() {
       await exportOwnerDatabase(owners[0], format);
       return;
     }
+    if (owners.some((owner) => owner.ownerMid)) {
+      setNotice({
+        kind: "warning",
+        title: "批量 UP 导出需要逐个执行",
+        message: "带 mid 的 UP 主可以完整导出，但多个 UP 合并导出需要展开为视频列表。请一次导出一个 UP，或先加载更多视频后再合并导出。",
+      });
+      return;
+    }
     const bvids = Array.from(new Set(owners.flatMap((owner) => owner.bvids)));
     if (!bvids.length || bvids.length < owners.reduce((sum, owner) => sum + owner.videoCount, 0)) {
       setNotice({ kind: "warning", title: "批量导出需要完整视频列表", message: "多个 UP 合并导出依赖已加载的视频；请先加载更多视频，或一次导出一个 UP。" });
@@ -455,6 +466,14 @@ export function VideoLibraryPage() {
 
   function queueBatchOwnerDelete(owners: OwnerGroup[]) {
     if (!owners.length) return;
+    if (owners.length > 1 && owners.some((owner) => owner.ownerMid)) {
+      setNotice({
+        kind: "warning",
+        title: "批量删除请逐个 UP 执行",
+        message: "为避免误删过大范围的数据，带 mid 的 UP 主请一次删除一个；不需要先加载完整视频列表。",
+      });
+      return;
+    }
     if (owners.length > 1 && owners.some((owner) => owner.bvids.length < owner.videoCount)) {
       setNotice({ kind: "warning", title: "批量删除需要完整视频列表", message: "多个 UP 同时删除依赖已加载的视频列表；请先加载更多视频，或一次删除一个 UP。" });
       return;
@@ -810,7 +829,7 @@ export function VideoLibraryPage() {
         active={libraryView}
         databaseCount={databases.length}
         hasTaskWork={hasTaskWork}
-        manageCount={ownerGroups.length + videos.length}
+        manageCount={ownerGroups.length + (videoTotal || videos.length)}
         queuedCount={(taskQueue.active ? 1 : 0) + taskQueue.queued.length}
         videoCount={videoTotal || videos.length}
         onChange={setLibraryView}
@@ -879,13 +898,17 @@ export function VideoLibraryPage() {
 
       {libraryView === "manage" && (
         <BatchManagementPanel
+          backendTotalVideoCount={videoTotal}
           disabled={Boolean(exportingKey || deletingKey)}
+          hasMoreVideos={hasMoreVideos}
+          isLoadingVideos={isLoading}
           ownerGroups={ownerGroups}
           videos={videos}
           onDeleteOwners={queueBatchOwnerDelete}
           onDeleteVideos={queueBatchVideoDelete}
           onExportOwners={(owners, format) => void exportBatchOwners(owners, format)}
           onExportVideos={(selectedVideos, format) => void exportBatchVideos(selectedVideos, format)}
+          onLoadMoreVideos={() => void loadMoreVideos()}
         />
       )}
 
