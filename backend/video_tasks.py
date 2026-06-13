@@ -11,6 +11,7 @@ from bilibili_comment_danmaku import (
 )
 from progress_state import fail_progress, finish_progress, make_progress_logger, parse_float, start_progress, update_progress
 from space_archive import api_error_response
+from space_archive import TaskCancelled
 from task_queue import InMemoryTaskQueue
 
 
@@ -97,6 +98,38 @@ class VideoParseTaskService:
             return True
         return False
 
+    def cancellation_logger(self, task, bvid, logs, progress):
+        base_log = make_progress_logger("parse", bvid, logs)
+
+        def log(message):
+            if task.get("stop_requested"):
+                self.queue.update(
+                    task,
+                    status="stopped",
+                    message="已停止",
+                    finished_at=utc_now(),
+                    current_bvid=bvid,
+                    progress=progress,
+                    pause_requested=False,
+                    stop_requested=False,
+                )
+                finish_progress("parse", bvid, "视频抓取已停止")
+                raise TaskCancelled("stop")
+            if task.get("pause_requested"):
+                self.queue.update(
+                    task,
+                    status="paused",
+                    message="已暂停，可继续",
+                    finished_at="",
+                    current_bvid=bvid,
+                    progress=progress,
+                )
+                update_progress("parse", bvid, "视频抓取已暂停")
+                raise TaskCancelled("pause")
+            base_log(message)
+
+        return log
+
     def run_parse_task(self, task):
         db_path = task["db_path"]
         video_ref = task["video_ref"]
@@ -121,7 +154,7 @@ class VideoParseTaskService:
                 existing_comment_count=before,
             )
             start_progress("parse", bvid, "准备解析视频并抓取评论")
-            log = make_progress_logger("parse", bvid, logs)
+            log = self.cancellation_logger(task, bvid, logs, 80)
 
             if self.stop_or_pause_requested(task, bvid, 5):
                 return
@@ -145,10 +178,11 @@ class VideoParseTaskService:
                 return
             self.queue.update(task, current_bvid=bvid, message="正在抓取弹幕", progress=88)
             update_progress("parse", bvid, "正在抓取弹幕")
+            danmaku_log = self.cancellation_logger(task, bvid, logs, 88)
             danmaku_result = scrape_danmaku(
                 bvid,
                 output_data["video_raw"],
-                logger=log,
+                logger=danmaku_log,
             )
             if len(danmaku_result.get("items") or []) > 0:
                 self.queue.update(task, message="正在保存弹幕", progress=94)
@@ -190,6 +224,8 @@ class VideoParseTaskService:
                 danmaku_count=len(danmaku_result.get("items") or []),
             )
         except Exception as exc:
+            if isinstance(exc, TaskCancelled):
+                return
             payload, status = api_error_response(exc)
             self.queue.update(
                 task,

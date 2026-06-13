@@ -578,6 +578,65 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual([item for item in calls if item[0] == "mixin"], [("mixin", True), ("mixin", True), ("mixin", True)])
         self.assertEqual([item for item in calls if item[0] == "sleep"], [("sleep", 1), ("sleep", 2), ("sleep", 3)])
 
+    def test_space_archive_stop_interrupts_active_video_logger(self):
+        import space_archive
+
+        original_fetch_space_videos = space_archive.fetch_space_videos
+        original_db_status = space_archive.db_status
+        original_scrape_comments = space_archive.scrape_comments
+        original_save_comments = space_archive.save_comments_to_sqlite
+        original_cookie_status = space_archive.inspect_cookie_status
+
+        service = space_archive.SpaceArchiveService(
+            cookie_file=Path("missing-cookie.txt"),
+            cache_dir=Path("."),
+            refresh_lock=threading.Lock(),
+        )
+        task = {
+            "id": "space-1",
+            "kind": "space",
+            "mid": "42",
+            "owner_ref": "42",
+            "db_path": "archive.db",
+            "options": {"delay": 0, "between_videos_min": 0, "between_videos_max": 0, "no_cache": True},
+            "status": "running",
+            "message": "",
+            "created_at": "old",
+            "updated_at": "old",
+            "started_at": "old",
+            "finished_at": "",
+            "progress": 0,
+            "current_bvid": "",
+            "total": 0,
+            "complete": 0,
+            "archived": 0,
+            "skipped": 0,
+            "failed": 0,
+        }
+
+        def fake_scrape_comments(*args, logger=None, **kwargs):
+            task["stop_requested"] = True
+            logger("main page 1: got=20")
+            raise AssertionError("logger should interrupt before scrape continues")
+
+        try:
+            space_archive.fetch_space_videos = lambda *args, **kwargs: [{"bvid": "BV1xx411c7mD"}]
+            space_archive.db_status = lambda *args, **kwargs: {}
+            space_archive.scrape_comments = fake_scrape_comments
+            space_archive.save_comments_to_sqlite = lambda *args, **kwargs: None
+            space_archive.inspect_cookie_status = lambda *args, **kwargs: {"nav_checked": False}
+            service.run_archive_task(task)
+        finally:
+            space_archive.fetch_space_videos = original_fetch_space_videos
+            space_archive.db_status = original_db_status
+            space_archive.scrape_comments = original_scrape_comments
+            space_archive.save_comments_to_sqlite = original_save_comments
+            space_archive.inspect_cookie_status = original_cookie_status
+
+        self.assertEqual(task["status"], "stopped")
+        self.assertEqual(task["message"], "已停止")
+        self.assertEqual(task["current_bvid"], "BV1xx411c7mD")
+
     def test_active_task_returning_paused_goes_back_to_queue(self):
         active_started = threading.Event()
         release_active = threading.Event()

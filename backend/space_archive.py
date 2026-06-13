@@ -27,6 +27,12 @@ SPACE_DM_IMG_STR = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
 SPACE_DM_COVER_IMG_STR = "QU5HTEUgKEludGVsLCBJbnRlbChSKSBVSEQgR3JhcGhpY3MgRGlyZWN0M0QxMSB2c181XzAgcHNfNV8wLCBEM0QxMSk"
 
 
+class TaskCancelled(RuntimeError):
+    def __init__(self, action):
+        self.action = action
+        super().__init__(f"task_{action}_requested")
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -263,6 +269,38 @@ class SpaceArchiveService:
     def update_task(self, task, **fields):
         self.queue.update(task, **fields)
 
+    def cancellation_logger(self, task, bvid, index, total):
+        def log(message):
+            if task.get("stop_requested"):
+                self.update_task(
+                    task,
+                    status="stopped",
+                    message="已停止",
+                    finished_at=utc_now(),
+                    current_bvid=bvid,
+                    total=total,
+                    progress=space_task_percent(index, total),
+                    pause_requested=False,
+                    stop_requested=False,
+                )
+                finish_progress("space", bvid, f"UP 视频抓取已停止 {index}/{total}")
+                raise TaskCancelled("stop")
+            if task.get("pause_requested"):
+                self.update_task(
+                    task,
+                    status="paused",
+                    message="已暂停，可继续",
+                    finished_at="",
+                    current_bvid=bvid,
+                    total=total,
+                    progress=space_task_percent(index, total),
+                )
+                update_progress("space", bvid, f"UP 视频抓取已暂停 {index}/{total}")
+                raise TaskCancelled("pause")
+            log_space_video_progress(bvid, message)
+
+        return log
+
     def can_retry_task(self, task):
         return bool(task.get("db_path") and task.get("mid") and task.get("options"))
 
@@ -386,12 +424,13 @@ class SpaceArchiveService:
                     f"UP视频抓取 {index}/{total} complete={complete} archived={archived} skipped={skipped} failed={failed} bvid={current_bvid}",
                 )
                 try:
+                    video_logger = self.cancellation_logger(task, current_bvid, index, total)
                     comments = scrape_comments(
                         current_bvid,
                         cookie=cookie,
                         cookie_file=str(self.cookie_file),
                         delay=options.get("delay", 1.0),
-                        logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
+                        logger=video_logger,
                         max_main_pages=None,
                         fetch_children=True,
                     )
@@ -404,7 +443,7 @@ class SpaceArchiveService:
                         current_bvid,
                         comments.get("video_raw"),
                         headers=headers,
-                        logger=lambda message, bvid=current_bvid: log_space_video_progress(bvid, message),
+                        logger=video_logger,
                         fetch_likes=True,
                     )
                     if danmaku_result.get("items"):
@@ -444,6 +483,8 @@ class SpaceArchiveService:
                         failed=failed,
                     )
                 except Exception as exc:
+                    if isinstance(exc, TaskCancelled):
+                        return
                     if should_abort_space_archive(exc):
                         raise
                     failed += 1
