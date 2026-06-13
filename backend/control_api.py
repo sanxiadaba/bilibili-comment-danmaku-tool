@@ -83,13 +83,13 @@ CONTROL_ACTIONS = {
     "space.tasks.control": {
         "method": "POST",
         "endpoint": f"{CONTROL_NAMESPACE}/space/tasks/control",
-        "description": "Pause, resume or stop queued UP-owner archive tasks. Omitting task_id applies to all current queue work.",
+        "description": "Pause, resume, stop, retry or clear task records. Omitting task_id applies to all current queue work or all history for clear.",
         "async": False,
         "schema": {
             "type": "object",
             "required": ["action"],
             "properties": {
-                "action": {"type": "string", "enum": ["pause", "resume", "stop"]},
+                "action": {"type": "string", "enum": ["pause", "resume", "stop", "retry", "clear"]},
                 "task_id": {"type": "string", "description": "Optional task id from /api/v1/control/progress."},
             },
         },

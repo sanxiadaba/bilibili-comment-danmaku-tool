@@ -1,11 +1,12 @@
 import { Pause, Play, Square } from "lucide-react";
+import type { TaskControlAction } from "../../api/client";
 import type { ProgressQueue } from "../../types";
 import { ProgressQueuePanel } from "./ProgressQueuePanel";
 
 type TaskManagementPanelProps = {
   isControlling: boolean;
   queue?: ProgressQueue;
-  onControl: (action: "pause" | "resume" | "stop", taskId?: string) => void;
+  onControl: (action: TaskControlAction, taskId?: string) => void;
 };
 
 export function TaskManagementPanel({ isControlling, queue, onControl }: TaskManagementPanelProps) {

@@ -22,7 +22,7 @@ class VideoParseTaskService:
     def __init__(self, cookie_file, refresh_lock, state_path=None):
         self.cookie_file = cookie_file
         self.refresh_lock = refresh_lock
-        self.queue = InMemoryTaskQueue("parse", self.run_queue_task, state_path=state_path)
+        self.queue = InMemoryTaskQueue("parse", self.run_queue_task, state_path=state_path, retry_validator=self.can_retry_task)
 
     def enqueue(self, db_path, video_ref, delay, request_id=""):
         bvid = extract_bvid(video_ref)
@@ -45,8 +45,17 @@ class VideoParseTaskService:
     def start_pending_tasks(self):
         self.queue.start_pending_worker()
 
-    def control_tasks(self, action, task_id=None):
-        return self.queue.control(action, task_id=task_id)
+    def control_tasks(self, action, task_id=None, retry_defaults=None):
+        defaults = {"cookie_file": str(self.cookie_file)}
+        defaults.update(dict(retry_defaults or {}))
+        return self.queue.control(
+            action,
+            task_id=task_id,
+            retry_defaults=defaults,
+        )
+
+    def can_retry_task(self, task):
+        return bool(task.get("db_path") and (task.get("video_ref") or task.get("bvid")))
 
     def run_queue_task(self, task):
         self.refresh_lock.acquire()

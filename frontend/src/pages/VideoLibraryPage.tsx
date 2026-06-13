@@ -10,6 +10,7 @@ import {
   importDatabaseFiles,
   logClientEvent,
   parseVideo,
+  type TaskControlAction,
 } from "../api/client";
 import { DatabaseManagementSection } from "../components/video-library/DatabaseManagementSection";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
@@ -406,12 +407,12 @@ export function VideoLibraryPage() {
     }
   }
 
-  async function controlTasks(action: "pause" | "resume" | "stop", taskId?: string) {
+  async function controlTasks(action: TaskControlAction, taskId?: string) {
     setIsControllingTask(true);
     setError("");
     try {
       await controlSpaceTasks(action, taskId);
-      const actionLabel = action === "pause" ? "暂停" : action === "resume" ? "继续" : "停止";
+      const actionLabel = taskActionLabel(action);
       setMessage(taskId ? `任务已请求${actionLabel}` : `全部任务已请求${actionLabel}`);
       logClientEvent("client.user.space_task.control", "space task control requested", {
         action,
@@ -720,6 +721,14 @@ function queueHasMatchingTask(queue: ProgressQueue, task: ProgressTask) {
     const taskBvid = task.bvid || task.current_bvid;
     return Boolean(existingBvid && taskBvid && existing.kind === task.kind && existingBvid === taskBvid);
   });
+}
+
+function taskActionLabel(action: TaskControlAction) {
+  if (action === "pause") return "暂停";
+  if (action === "resume") return "继续";
+  if (action === "stop") return "停止";
+  if (action === "retry") return "重试";
+  return "清除";
 }
 
 function progressToTask(progress: ProgressState | null): ProgressTask | null {

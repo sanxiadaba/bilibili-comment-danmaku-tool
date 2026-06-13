@@ -18,6 +18,7 @@ SPACE_PAGE_SIZE = 20
 SPACE_PAGE_TIMEOUT_SECONDS = 20
 SPACE_PAGE_HARD_TIMEOUT_SECONDS = 35
 SPACE_PAGE_RETRIES = 2
+SPACE_BACKOFF_STATE_PATH = "data/space_cache/space_backoff_state.json"
 
 
 def utc_now():
@@ -40,7 +41,7 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
     }
     if cookie:
         headers["Cookie"] = cookie
-    client = scraper.BilibiliClient(headers, use_proxy=False)
+    client = scraper.BilibiliClient(headers, use_proxy=False, backoff=space_request_backoff())
     mixin = scraper.get_wbi_mixin_key(client, lambda message: update_progress("space", mid, message))
     endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
     items = []
@@ -116,6 +117,15 @@ def fetch_space_page(client, endpoint, params, page, mid):
             request_url = f"{url}&{cache_buster}"
             update_progress("space", mid, f"UP视频列表 page={page} 超时，重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
             time.sleep(random.uniform(2.0, 4.0))
+
+
+def space_request_backoff():
+    return scraper.RequestBackoff(
+        min_interval=0.6,
+        interval_jitter=(0.2, 0.8),
+        state_path=SPACE_BACKOFF_STATE_PATH,
+        persist=True,
+    )
 
 
 def db_status(db_path, mid):
@@ -196,7 +206,7 @@ class SpaceArchiveService:
         self.cookie_file = cookie_file
         self.cache_dir = cache_dir
         self.refresh_lock = refresh_lock
-        self.queue = InMemoryTaskQueue("space", self.run_queue_task, state_path=state_path)
+        self.queue = InMemoryTaskQueue("space", self.run_queue_task, state_path=state_path, retry_validator=self.can_retry_task)
 
     def enqueue(self, db_path, mid, owner_ref, options, request_id=""):
         return self.queue.enqueue(
@@ -215,11 +225,20 @@ class SpaceArchiveService:
     def start_pending_tasks(self):
         self.queue.start_pending_worker()
 
-    def control_tasks(self, action, task_id=None):
-        return self.queue.control(action, task_id=task_id)
+    def control_tasks(self, action, task_id=None, retry_defaults=None):
+        defaults = {"cookie_file": str(self.cookie_file)}
+        defaults.update(dict(retry_defaults or {}))
+        return self.queue.control(
+            action,
+            task_id=task_id,
+            retry_defaults=defaults,
+        )
 
     def update_task(self, task, **fields):
         self.queue.update(task, **fields)
+
+    def can_retry_task(self, task):
+        return bool(task.get("db_path") and task.get("mid") and task.get("options"))
 
     def run_queue_task(self, task):
         self.refresh_lock.acquire()

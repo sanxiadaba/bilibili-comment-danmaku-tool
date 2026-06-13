@@ -254,6 +254,7 @@ class TaskQueueTests(unittest.TestCase):
             self.assertIsNone(persisted["active"])
             self.assertEqual(persisted["queued"], [])
             self.assertEqual([task["mid"] for task in persisted["history"]], ["2", "1"])
+            self.assertTrue(queue.wait_until_idle())
 
     def test_queue_can_pause_resume_and_stop_queued_tasks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -287,8 +288,61 @@ class TaskQueueTests(unittest.TestCase):
                 if len(queue.snapshot()["recent"]) == 2:
                     break
                 time.sleep(0.01)
+            self.assertTrue(queue.wait_until_idle())
 
             self.assertEqual(events, ["1"])
+            self.assertTrue(queue.wait_until_idle())
+
+    def test_queue_can_clear_and_retry_history(self):
+        events = []
+
+        def runner(task):
+            events.append(task["mid"])
+            queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+        queue = InMemoryTaskQueue(
+            "space",
+            runner,
+            retry_validator=lambda task: bool(task.get("db_path") and task.get("mid")),
+        )
+        queue.history = [
+            {
+                "id": "space-1",
+                "kind": "space",
+                "status": "failed",
+                "message": "failed",
+                "created_at": "old",
+                "updated_at": "old",
+                "started_at": "old",
+                "finished_at": "old",
+                "progress": 5,
+                "current_bvid": "",
+                "total": 0,
+                "complete": 0,
+                "archived": 0,
+                "skipped": 0,
+                "failed": 1,
+                "mid": "42",
+                "owner_ref": "42",
+                "db_path": "archive.db",
+                "options": {"delay": 1},
+            }
+        ]
+
+        retried = queue.control("retry", task_id="space-1")
+        self.assertEqual(retried["changed"][0]["status"], "queued")
+        self.assertEqual(retried["changed"][0]["mid"], "42")
+
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if queue.snapshot()["recent"][0]["status"] == "finished":
+                break
+            time.sleep(0.01)
+        self.assertEqual(events, ["42"])
+
+        cleared = queue.control("clear")
+        self.assertGreaterEqual(len(cleared["changed"]), 1)
+        self.assertEqual(queue.snapshot()["recent"], [])
 
     def test_queue_pause_and_stop_active_are_visible_to_runner(self):
         active_started = threading.Event()

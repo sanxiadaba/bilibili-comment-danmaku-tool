@@ -113,7 +113,9 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
   );
 }
 
-export async function controlSpaceTasks(action: "pause" | "resume" | "stop", taskId?: string) {
+export type TaskControlAction = "pause" | "resume" | "stop" | "retry" | "clear";
+
+export async function controlSpaceTasks(action: TaskControlAction, taskId?: string) {
   return requestJson<{ ok: boolean; action: string; queue: ProgressState["queue"] }>(
     "space.control",
     `/api/space/tasks/control?ts=${Date.now()}`,

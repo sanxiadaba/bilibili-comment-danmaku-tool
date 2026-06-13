@@ -13,10 +13,11 @@ describe("video library management components", () => {
   it("renders queue progress across active, queued and recent tasks", () => {
     const html = renderToStaticMarkup(
       <ProgressQueuePanel
+        onControl={() => undefined}
         queue={{
           active: makeProgressTask({ progress: 55, message: "active task" }),
           queued: [makeProgressTask({ id: "task-2", status: "queued", queue_position: 1, message: "queued task" })],
-          recent: [makeProgressTask({ id: "task-3", status: "finished", progress: 100, message: "done task" })],
+          recent: [makeProgressTask({ id: "task-3", status: "failed", progress: 100, message: "done task" })],
         }}
       />,
     );
@@ -26,6 +27,9 @@ describe("video library management components", () => {
     expect(html).toContain("queued task");
     expect(html).toContain("done task");
     expect(html).toContain("抓取队列");
+    expect(html).toContain("重试");
+    expect(html).toContain("清除");
+    expect(html).toContain("清空记录");
   });
 
   it("renders task controls for active and paused queue work", () => {

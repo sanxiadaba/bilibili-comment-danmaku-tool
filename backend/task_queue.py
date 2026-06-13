@@ -1,11 +1,31 @@
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 DEFAULT_HISTORY_LIMIT = 10
+RUNTIME_TASK_FIELDS = {
+    "id",
+    "status",
+    "message",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+    "progress",
+    "current_bvid",
+    "total",
+    "complete",
+    "archived",
+    "skipped",
+    "failed",
+    "pause_requested",
+    "stop_requested",
+    "queue_position",
+}
 
 
 def utc_now():
@@ -13,11 +33,12 @@ def utc_now():
 
 
 class InMemoryTaskQueue:
-    def __init__(self, kind, runner, history_limit=DEFAULT_HISTORY_LIMIT, state_path=None):
+    def __init__(self, kind, runner, history_limit=DEFAULT_HISTORY_LIMIT, state_path=None, retry_validator=None):
         self.kind = kind
         self.runner = runner
         self.history_limit = history_limit
         self.state_path = Path(state_path) if state_path else None
+        self.retry_validator = retry_validator
         self.condition = threading.Condition()
         self.queued = []
         self.active = None
@@ -27,27 +48,8 @@ class InMemoryTaskQueue:
         self.load_state()
 
     def enqueue(self, fields):
-        now = utc_now()
         with self.condition:
-            self.next_id += 1
-            task = {
-                "id": f"{self.kind}-{self.next_id}",
-                "kind": self.kind,
-                "status": "queued",
-                "message": "queued",
-                "created_at": now,
-                "updated_at": now,
-                "started_at": "",
-                "finished_at": "",
-                "progress": 0,
-                "current_bvid": "",
-                "total": 0,
-                "complete": 0,
-                "archived": 0,
-                "skipped": 0,
-                "failed": 0,
-                **fields,
-            }
+            task = self.make_queued_task_locked(fields)
             self.queued.append(task)
             queue_position = len(self.queued)
             self.persist_locked()
@@ -55,15 +57,50 @@ class InMemoryTaskQueue:
             self.condition.notify_all()
             return self.public_task(task, queue_position)
 
+    def make_queued_task_locked(self, fields):
+        now = utc_now()
+        self.next_id += 1
+        return {
+            "id": f"{self.kind}-{self.next_id}",
+            "kind": self.kind,
+            "status": "queued",
+            "message": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "started_at": "",
+            "finished_at": "",
+            "progress": 0,
+            "current_bvid": "",
+            "total": 0,
+            "complete": 0,
+            "archived": 0,
+            "skipped": 0,
+            "failed": 0,
+            **fields,
+        }
+
     def start_pending_worker(self):
         with self.condition:
             if self.queued:
                 self.start_worker_locked()
                 self.condition.notify_all()
 
-    def control(self, action, task_id=None):
+    def wait_until_idle(self, timeout=2.0):
+        try:
+            end_at = time.time() + float(timeout)
+        except (TypeError, ValueError):
+            end_at = time.time() + 2.0
+        with self.condition:
+            while self.worker_running or self.active is not None:
+                remaining = end_at - time.time()
+                if remaining <= 0:
+                    return False
+                self.condition.wait(remaining)
+        return True
+
+    def control(self, action, task_id=None, retry_defaults=None):
         action = (action or "").strip().lower()
-        if action not in {"pause", "resume", "stop"}:
+        if action not in {"pause", "resume", "stop", "clear", "retry"}:
             raise ValueError("unsupported task control action")
         with self.condition:
             changed = []
@@ -98,15 +135,48 @@ class InMemoryTaskQueue:
                 for task in self.queued:
                     if self.matches_task(task, task_id):
                         self.update_locked(task, status="stopped", message="stopped", finished_at=utc_now(), stop_requested=True)
-                        self.history.insert(0, self.public_task(task))
+                        self.history.insert(0, dict(task))
                         changed.append(self.public_task(task))
                     else:
                         kept.append(task)
                 self.queued = kept
                 del self.history[self.history_limit :]
+            elif action == "clear":
+                kept_history = []
+                for task in self.history:
+                    if self.matches_task(task, task_id):
+                        changed.append(self.public_task(task))
+                    else:
+                        kept_history.append(task)
+                self.history = kept_history
+            elif action == "retry":
+                retry_defaults = dict(retry_defaults or {})
+                for task in list(self.history):
+                    if not self.matches_task(task, task_id):
+                        continue
+                    if task.get("status") not in {"failed", "stopped"}:
+                        continue
+                    retry_fields = self.retry_fields(task, retry_defaults)
+                    if self.retry_validator and not self.retry_validator(retry_fields):
+                        continue
+                    retry_task = self.make_queued_task_locked(retry_fields)
+                    self.queued.append(retry_task)
+                    changed.append(self.public_task(retry_task, len(self.queued)))
+                if changed:
+                    self.start_worker_locked()
             self.persist_locked()
             self.condition.notify_all()
             return {"ok": True, "action": action, "changed": changed, "queue": self.snapshot_unlocked()}
+
+    def retry_fields(self, task, defaults):
+        fields = {
+            key: value
+            for key, value in task.items()
+            if key not in RUNTIME_TASK_FIELDS and value not in (None, "")
+        }
+        fields.update({key: value for key, value in defaults.items() if value not in (None, "")})
+        fields["retry_of"] = task.get("id", "")
+        return fields
 
     def matches_task(self, task, task_id):
         return not task_id or task.get("id") == task_id
@@ -182,7 +252,7 @@ class InMemoryTaskQueue:
         return {
             "active": self.public_task(self.active) if self.active else None,
             "queued": queued,
-            "recent": list(self.history),
+            "recent": [self.public_task(task) for task in self.history],
         }
 
     def public_task(self, task, queue_position=None):
@@ -274,7 +344,7 @@ class InMemoryTaskQueue:
             "next_id": self.next_id,
             "active": dict(self.active) if self.active else None,
             "queued": [dict(task) for task in self.queued],
-            "history": list(self.history[: self.history_limit]),
+            "history": [dict(task) for task in self.history[: self.history_limit]],
             "updated_at": utc_now(),
         }
         temp_path = None

@@ -519,14 +519,17 @@ class CommentDanmakuServer(BaseHTTPRequestHandler):
         body = self.read_json_body()
         action = str(body.get("action") or "").strip().lower()
         task_id = str(body.get("task_id") or "").strip() or None
+        retry_defaults = {
+            "db_path": str(self.resolve_db_path_from_body(body)),
+        }
         try:
             if task_id and task_id.startswith("parse-"):
-                payload = video_parse_service.control_tasks(action, task_id=task_id)
+                payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
             elif task_id and task_id.startswith("space-"):
-                payload = space_archive_service.control_tasks(action, task_id=task_id)
+                payload = space_archive_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
             else:
-                space_payload = space_archive_service.control_tasks(action, task_id=task_id)
-                video_payload = video_parse_service.control_tasks(action, task_id=task_id)
+                space_payload = space_archive_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
+                video_payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
                 payload = {
                     "ok": True,
                     "action": action,

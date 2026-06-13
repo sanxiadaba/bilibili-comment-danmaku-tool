@@ -1,13 +1,14 @@
-import { Pause, Play, RefreshCcw, Square } from "lucide-react";
+import { Pause, Play, RefreshCcw, RotateCcw, Square, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
+import type { TaskControlAction } from "../../api/client";
 import type { ProgressQueue, ProgressTask } from "../../types";
 
 type ProgressQueuePanelProps = {
   embedded?: boolean;
   isControlling?: boolean;
   queue?: ProgressQueue;
-  onControl?: (action: "pause" | "resume" | "stop", taskId?: string) => void;
+  onControl?: (action: TaskControlAction, taskId?: string) => void;
 };
 
 export function ProgressQueuePanel({ embedded = false, isControlling = false, queue, onControl }: ProgressQueuePanelProps) {
@@ -45,9 +46,22 @@ export function ProgressQueuePanel({ embedded = false, isControlling = false, qu
         {queued.length === 0 && !active && recent.length === 0 && <div className="text-sm text-muted">暂无排队任务</div>}
         {recent.length > 0 && (
           <div className="grid gap-2 border-t border-line pt-3">
-            <div className="text-xs font-medium uppercase tracking-normal text-muted">最近完成</div>
-            {recent.slice(0, 3).map((task) => (
-              <QueueTaskRow key={task.id} task={task} tone="recent" />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-medium uppercase tracking-normal text-muted">最近完成</div>
+              {onControl && (
+                <button
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-white px-2 text-xs font-medium text-muted transition hover:border-bilibili hover:text-bilibili disabled:cursor-wait disabled:opacity-60"
+                  disabled={isControlling}
+                  type="button"
+                  onClick={() => onControl("clear")}
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                  清空记录
+                </button>
+              )}
+            </div>
+            {recent.slice(0, 10).map((task) => (
+              <QueueTaskRow isControlling={isControlling} key={task.id} onControl={onControl} task={task} tone="recent" />
             ))}
           </div>
         )}
@@ -69,7 +83,7 @@ function QueueTaskRow({
   tone,
 }: {
   isControlling?: boolean;
-  onControl?: (action: "pause" | "resume" | "stop", taskId?: string) => void;
+  onControl?: (action: TaskControlAction, taskId?: string) => void;
   task: ProgressTask;
   tone: "active" | "queued" | "recent";
 }) {
@@ -77,6 +91,8 @@ function QueueTaskRow({
   const status = taskStatusLabel(task);
   const title = taskTitle(task);
   const canControl = Boolean(onControl) && tone !== "recent" && isControllableTaskKind(task.kind);
+  const canManageHistory = Boolean(onControl) && tone === "recent";
+  const canRetry = task.status === "failed" || task.status === "stopped";
   const isPaused = task.status === "paused";
   return (
     <div
@@ -115,6 +131,12 @@ function QueueTaskRow({
             <TaskButton disabled={isControlling || task.pause_requested} icon={Pause} label={task.pause_requested ? "等待暂停" : "暂停"} onClick={() => onControl?.("pause", task.id)} />
           )}
           <TaskButton disabled={isControlling || task.stop_requested} icon={Square} label={task.stop_requested ? "等待停止" : "停止"} onClick={() => onControl?.("stop", task.id)} />
+        </div>
+      )}
+      {canManageHistory && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {canRetry && <TaskButton disabled={isControlling} icon={RotateCcw} label="重试" onClick={() => onControl?.("retry", task.id)} />}
+          <TaskButton disabled={isControlling} icon={Trash2} label="清除" onClick={() => onControl?.("clear", task.id)} />
         </div>
       )}
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">

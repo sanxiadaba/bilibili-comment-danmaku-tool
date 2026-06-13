@@ -69,7 +69,7 @@ class RequestParsingTests(unittest.TestCase):
         self.assertIn("/api/v1/control/actions", payload["paths"])
         self.assertEqual(export_schema["properties"]["format"]["enum"], ["sqlite", "json"])
         task_control_schema = payload["paths"]["/api/v1/control/space/tasks/control"]["post"]["requestBody"]["content"]["application/json"]["schema"]
-        self.assertEqual(task_control_schema["properties"]["action"]["enum"], ["pause", "resume", "stop"])
+        self.assertEqual(task_control_schema["properties"]["action"]["enum"], ["pause", "resume", "stop", "retry", "clear"])
 
     def test_control_action_payload_normalizes_params(self):
         action, params = normalize_control_action_payload(
