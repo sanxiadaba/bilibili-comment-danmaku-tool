@@ -143,6 +143,7 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual([task["status"] for task in snapshot["recent"]], ["finished", "failed"])
         self.assertEqual(snapshot["recent"][1]["message"], "boom")
         self.assertEqual(snapshot["recent"][1]["failed"], 0)
+        self.assertEqual(queue.history[1]["owner_ref"], "1")
 
     def test_queue_persists_and_recovers_pending_tasks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -445,17 +446,59 @@ class TaskQueueTests(unittest.TestCase):
 
         try:
             space_archive.scraper.call_with_hard_timeout = fake_hard_timeout
-            payload = fetch_space_page(FakeClient(), "https://example.test/list", {"pn": 1}, 1, "434377496")
+            payload, mixin = fetch_space_page(FakeClient(), "https://example.test/list", {"pn": 1}, 1, "434377496", "a" * 32)
         finally:
             space_archive.scraper.call_with_hard_timeout = original_timeout
 
         self.assertEqual(payload["code"], 0)
+        self.assertEqual(mixin, "a" * 32)
         self.assertEqual(calls[0], ("wait", True, 1.0))
         self.assertEqual(calls[1][0], "timeout")
         self.assertEqual(calls[1][1], space_archive.SPACE_PAGE_HARD_TIMEOUT_SECONDS)
         self.assertEqual(calls[2][0], "request")
         self.assertFalse(calls[2][2]["wait_for_backoff"])
         self.assertFalse(calls[2][2]["wait_for_spacing"])
+
+    def test_space_page_refreshes_signature_after_risk_control(self):
+        import space_archive
+
+        calls = []
+        original_timeout = space_archive.scraper.call_with_hard_timeout
+        original_mixin = space_archive.scraper.get_wbi_mixin_key
+
+        class FakeBackoff:
+            def wait(self, include_spacing=True, spacing_factor=1.0):
+                return 0
+
+        class FakeClient:
+            def __init__(self):
+                self.backoff = FakeBackoff()
+
+            def request_json(self, url, **kwargs):
+                calls.append(("request", url, kwargs))
+                if len([item for item in calls if item[0] == "request"]) == 1:
+                    raise scraper.BilibiliRequestError("API code=-352 message=risk", api_code=-352)
+                return {"code": 0, "data": {"list": {"vlist": []}, "page": {"count": 0}}}
+
+        def fake_hard_timeout(func, _timeout_seconds, _timeout_message):
+            return func()
+
+        def fake_mixin(_client, _log, force_refresh=False):
+            calls.append(("mixin", force_refresh))
+            return "b" * 32
+
+        try:
+            space_archive.scraper.call_with_hard_timeout = fake_hard_timeout
+            space_archive.scraper.get_wbi_mixin_key = fake_mixin
+            payload, mixin = fetch_space_page(FakeClient(), "https://example.test/list", {"pn": 1}, 1, "403943112", "a" * 32)
+        finally:
+            space_archive.scraper.call_with_hard_timeout = original_timeout
+            space_archive.scraper.get_wbi_mixin_key = original_mixin
+
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(mixin, "b" * 32)
+        self.assertEqual([item[0] for item in calls].count("request"), 2)
+        self.assertIn(("mixin", True), calls)
 
     def test_active_task_returning_paused_goes_back_to_queue(self):
         active_started = threading.Event()

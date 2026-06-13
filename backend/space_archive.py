@@ -19,6 +19,9 @@ SPACE_PAGE_TIMEOUT_SECONDS = 20
 SPACE_PAGE_HARD_TIMEOUT_SECONDS = 35
 SPACE_PAGE_RETRIES = 2
 SPACE_BACKOFF_STATE_PATH = "data/space_cache/space_backoff_state.json"
+SPACE_DM_IMG_LIST = "[]"
+SPACE_DM_IMG_STR = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
+SPACE_DM_COVER_IMG_STR = "QU5HTEUgKEludGVsLCBJbnRlbChSKSBVSEQgR3JhcGhpY3MgRGlyZWN0M0QxMSB2c181XzAgcHNfNV8wLCBEM0QxMSk"
 
 
 def utc_now():
@@ -42,25 +45,14 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
     if cookie:
         headers["Cookie"] = cookie
     client = scraper.BilibiliClient(headers, use_proxy=False, backoff=space_request_backoff())
-    mixin = scraper.get_wbi_mixin_key(client, lambda message: update_progress("space", mid, message))
+    log = lambda message: update_progress("space", mid, message)
+    mixin = scraper.get_wbi_mixin_key(client, log)
     endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
     items = []
     page = 1
     while True:
-        params = scraper.sign_wbi_params(
-            {
-                "mid": mid,
-                "pn": page,
-                "ps": SPACE_PAGE_SIZE,
-                "tid": 0,
-                "order": "pubdate",
-                "platform": "web",
-                "web_location": 1550101,
-            },
-            mixin,
-        )
         update_progress("space", mid, f"UP视频列表请求 page={page}")
-        payload = fetch_space_page(client, endpoint, params, page, mid)
+        payload, mixin = fetch_space_page(client, endpoint, make_space_page_params(mid, page), page, mid, mixin, log)
         data = payload.get("data") or {}
         vlist = ((data.get("list") or {}).get("vlist") or [])
         total = (data.get("page") or {}).get("count") or 0
@@ -89,33 +81,57 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
     return items
 
 
-def fetch_space_page(client, endpoint, params, page, mid):
+def make_space_page_params(mid, page):
+    return {
+        "mid": mid,
+        "pn": page,
+        "ps": SPACE_PAGE_SIZE,
+        "tid": 0,
+        "order": "pubdate",
+        "platform": "web",
+        "web_location": 1550101,
+        "dm_img_list": SPACE_DM_IMG_LIST,
+        "dm_img_str": SPACE_DM_IMG_STR,
+        "dm_cover_img_str": SPACE_DM_COVER_IMG_STR,
+    }
+
+
+def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
+    log = log or (lambda message: update_progress("space", mid, message))
     backoff_wait = client.backoff.wait(include_spacing=True, spacing_factor=1.0)
     if backoff_wait >= 5:
-        update_progress("space", mid, f"等待 Bilibili 请求冷却 {backoff_wait:.0f}s 后读取 page={page}")
+        log(f"等待 Bilibili 请求冷却 {backoff_wait:.0f}s 后读取 page={page}")
 
-    url = scraper.build_url(endpoint, params)
+    url = scraper.build_url(endpoint, scraper.sign_wbi_params(params, mixin_key))
     request_url = url
     for attempt in range(1, SPACE_PAGE_RETRIES + 1):
         try:
-            return scraper.call_with_hard_timeout(
+            payload = scraper.call_with_hard_timeout(
                 lambda: client.request_json(
                     request_url,
                     timeout=SPACE_PAGE_TIMEOUT_SECONDS,
                     retries=1,
                     wait_for_backoff=False,
                     wait_for_spacing=False,
-                    logger=lambda message: update_progress("space", mid, message),
+                    logger=log,
                 ),
                 SPACE_PAGE_HARD_TIMEOUT_SECONDS,
                 f"space_video_list_timeout page={page} attempt={attempt}",
             )
+            return payload, mixin_key
+        except BilibiliRequestError as exc:
+            if exc.api_code != -352 or attempt >= SPACE_PAGE_RETRIES:
+                raise
+            log(f"UP视频列表 page={page} 遇到风控校验，刷新签名后重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
+            mixin_key = scraper.get_wbi_mixin_key(client, log, force_refresh=True)
+            request_url = scraper.build_url(endpoint, scraper.sign_wbi_params(params, mixin_key))
+            time.sleep(random.uniform(3.0, 6.0))
         except TimeoutError:
             if attempt >= SPACE_PAGE_RETRIES:
                 raise
             cache_buster = urlencode({"_": int(time.time() * 1000), "retry": attempt})
             request_url = f"{url}&{cache_buster}"
-            update_progress("space", mid, f"UP视频列表 page={page} 超时，重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
+            log(f"UP视频列表 page={page} 超时，重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
             time.sleep(random.uniform(2.0, 4.0))
 
 
@@ -226,7 +242,7 @@ class SpaceArchiveService:
         self.queue.start_pending_worker()
 
     def control_tasks(self, action, task_id=None, retry_defaults=None):
-        defaults = {"cookie_file": str(self.cookie_file)}
+        defaults = {"cookie_file": str(self.cookie_file), "options": normalize_space_archive_options({})}
         defaults.update(dict(retry_defaults or {}))
         return self.queue.control(
             action,

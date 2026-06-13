@@ -227,7 +227,7 @@ class InMemoryTaskQueue:
                         message="finished",
                         finished_at=utc_now(),
                     )
-                self.history.insert(0, self.public_task(task))
+                self.history.insert(0, dict(task))
                 del self.history[self.history_limit :]
                 self.active = None
                 self.persist_locked()
