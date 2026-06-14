@@ -28,8 +28,8 @@ export function VideoListPanel({
   onQueryChange,
 }: VideoListPanelProps) {
   return (
-    <section className="surface-card flex min-w-0 flex-col rounded-md">
-      <div className="border-b border-line/80 bg-white/45 p-4">
+    <section className="surface-card flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md">
+      <div className="shrink-0 border-b border-line/80 bg-white/45 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
             <ListTree size={18} aria-hidden="true" />
@@ -50,7 +50,7 @@ export function VideoListPanel({
         </div>
       </div>
 
-      <div className="grid content-start gap-3 p-4">
+      <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto p-4 pr-3">
         {isLoading && <div className="p-6 text-center text-sm text-muted">正在载入视频库</div>}
         {!isLoading &&
           videos.map((video) => (

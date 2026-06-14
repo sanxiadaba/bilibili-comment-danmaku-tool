@@ -855,7 +855,7 @@ export function VideoLibraryPage() {
       />
 
       {libraryView === "videos" && (
-        <section className="mx-auto grid max-w-[1540px] gap-4 px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:px-6">
+        <section className="mx-auto grid h-[calc(100vh-250px)] min-h-[420px] max-w-[1540px] grid-rows-[minmax(0,220px)_minmax(0,1fr)] gap-4 overflow-hidden px-4 pb-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:grid-rows-1 lg:px-6">
           <LibrarySidebar
             activeDatabase={activeDatabase}
             cookieStatus={cookieStatus}
