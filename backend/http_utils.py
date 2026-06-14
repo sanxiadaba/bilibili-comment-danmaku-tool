@@ -1,3 +1,4 @@
+import gzip
 import json
 import mimetypes
 import time
@@ -90,9 +91,16 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
 
     def send_json(self, payload, status=200):
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        accepts_gzip = "gzip" in (self.headers.get("Accept-Encoding", "").lower())
+        use_gzip = accepts_gzip and len(content) >= 1024
+        if use_gzip:
+            content = gzip.compress(content, compresslevel=5)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)

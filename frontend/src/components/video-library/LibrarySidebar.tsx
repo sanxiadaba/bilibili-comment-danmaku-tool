@@ -65,7 +65,7 @@ export function LibrarySidebar({
   onUrlChange,
 }: LibrarySidebarProps) {
   return (
-    <aside className="surface-card self-start rounded-md p-4">
+    <aside className="surface-card min-h-0 overflow-y-auto rounded-md p-4">
       <h2 className="inline-flex items-center gap-2 text-base font-semibold text-ink">
         <PlusCircle size={18} aria-hidden="true" />
         解析新视频

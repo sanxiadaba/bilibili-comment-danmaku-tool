@@ -357,7 +357,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             query = parse_qs(urlparse(self.path).query)
             limit = first_query_int(query, "limit", 40)
             offset = first_query_int(query, "offset", 0)
-            page = list_video_summaries_page(db_path, limit=limit, offset=offset)
+            include_meta = query.get("include_meta", ["1"])[0] not in {"0", "false", "False"}
+            page = list_video_summaries_page(db_path, limit=limit, offset=offset, include_owners=include_meta)
             log_event(
                 "api.videos.list",
                 "listed local videos",
@@ -371,7 +372,20 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json(
                 {
                     **page,
-                    "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
+                    **(
+                        {
+                            "database": public_database_info(
+                                database_info_for_path(
+                                    db_path,
+                                    self.db_path,
+                                    self.database_dir,
+                                    include_details=False,
+                                )
+                            )
+                        }
+                        if include_meta
+                        else {}
+                    ),
                 }
             )
         except Exception as exc:
@@ -379,17 +393,20 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=500)
 
     def handle_databases_api(self):
-        databases = list_database_catalog(self.db_path, self.database_dir)
+        query = parse_qs(urlparse(self.path).query)
+        include_details = query.get("include_details", ["1"])[0] not in {"0", "false", "False"}
+        databases = list_database_catalog(self.db_path, self.database_dir, include_details=include_details)
         log_event(
             "api.databases.list",
             "listed local databases",
             request_id=getattr(self, "request_id", ""),
             database_count=len(databases),
+            include_details=include_details,
         )
         self.send_json(
             {
                 "databases": databases,
-                "active_id": parse_qs(urlparse(self.path).query).get("db_id", ["main"])[0] or "main",
+                "active_id": query.get("db_id", ["main"])[0] or "main",
                 "hotplug_dir": str(self.database_dir),
                 "legacy_export_dir": str(LEGACY_EXPORT_DIR),
             }

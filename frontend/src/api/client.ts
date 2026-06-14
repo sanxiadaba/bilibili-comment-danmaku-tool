@@ -16,8 +16,9 @@ import type {
 
 type LogFields = Record<string, string | number | boolean | null | undefined>;
 
-export async function fetchDatabases(activeId = "main") {
+export async function fetchDatabases(activeId = "main", options: { includeDetails?: boolean } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
+  if (options.includeDetails === false) query.set("include_details", "0");
   return requestJson<DatabaseListResponse>("databases.list", `/api/databases?${query.toString()}`, { cache: "no-store" });
 }
 
@@ -111,19 +112,21 @@ export async function fetchCommentData(bvid?: string, dbId = "main") {
   return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId });
 }
 
-export async function fetchVideos(dbId = "main", options: { limit?: number; offset?: number } = {}) {
+export async function fetchVideos(dbId = "main", options: { includeMeta?: boolean; limit?: number; offset?: number } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (options.limit) query.set("limit", String(options.limit));
   if (options.offset) query.set("offset", String(options.offset));
+  if (options.includeMeta === false) query.set("include_meta", "0");
   appendDbId(query, dbId);
   return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store" }, { db_id: dbId, limit: options.limit, offset: options.offset });
 }
 
-export async function fetchDanmakuData(bvid?: string, dbId = "main") {
+export async function fetchDanmakuData(bvid?: string, dbId = "main", options: { limit?: number | null } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
+  if (options.limit !== undefined && options.limit !== null) query.set("limit", String(options.limit));
   appendDbId(query, dbId);
-  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId });
+  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId, limit: options.limit });
 }
 
 export async function refreshDanmakuData(bvid?: string, dbId = "main") {
