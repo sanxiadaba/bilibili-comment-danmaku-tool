@@ -7,7 +7,10 @@ from urllib.parse import parse_qs, urlparse
 
 from app_logging import log_event, log_exception, new_request_id
 from database_registry import resolve_database_path
-from errors import BadRequestError
+from errors import BadRequestError, RequestTooLargeError
+
+
+MAX_JSON_BODY_BYTES = 1024 * 1024
 
 
 class JsonStaticRequestHandler(BaseHTTPRequestHandler):
@@ -76,6 +79,8 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
         self.response_status = code
         super().send_response(code, message)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
 
     def send_error(self, code, message=None, explain=None):
         self.response_status = code
@@ -108,9 +113,11 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
     def read_json_body(self):
         if getattr(self, "_json_body_override", None) is not None:
             return dict(self._json_body_override)
-        length = int(self.headers.get("Content-Length") or 0)
+        length = parse_content_length(self.headers.get("Content-Length"))
         if length <= 0:
             return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise RequestTooLargeError(f"请求体过大，JSON 上限为 {MAX_JSON_BODY_BYTES} 字节")
         raw = self.rfile.read(length)
         return parse_json_object_body(raw)
 
@@ -140,6 +147,18 @@ def parse_json_object_body(raw):
     if not isinstance(payload, dict):
         raise BadRequestError("请求体 JSON 必须是对象")
     return payload
+
+
+def parse_content_length(value):
+    if value in (None, ""):
+        return 0
+    try:
+        length = int(value)
+    except (TypeError, ValueError) as exc:
+        raise BadRequestError("Content-Length 必须是非负整数") from exc
+    if length < 0:
+        raise BadRequestError("Content-Length 必须是非负整数")
+    return length
 
 
 def safe_print(message):

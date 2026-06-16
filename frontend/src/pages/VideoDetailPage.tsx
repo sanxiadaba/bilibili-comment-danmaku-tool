@@ -52,6 +52,8 @@ import {
 } from "../lib/utils";
 import type { CommentData, CommentNode, LevelFilter, SortMode } from "../types";
 
+const COMMENT_PAGE_SIZE = 500;
+
 export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
   const [data, setData] = useState<CommentData | null>(null);
@@ -65,12 +67,25 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [location, setLocation] = useState("all");
   const [minLikes, setMinLikes] = useState(0);
   const [selectedId, setSelectedId] = useState("");
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
-  const applyPayload = useCallback((payload: CommentData) => {
-    setData(payload);
+  const applyPayload = useCallback((payload: CommentData, mode: "replace" | "append" = "replace") => {
+    setData((current) => {
+      if (mode === "append" && current?.metadata.bvid === payload.metadata.bvid) {
+        const seen = new Set(current.comment_items.map((comment) => comment.normalized.rpid));
+        const nextItems = payload.comment_items.filter((comment) => !seen.has(comment.normalized.rpid));
+        return {
+          ...payload,
+          comments: [...current.comments, ...payload.comments],
+          comment_items: [...current.comment_items, ...nextItems],
+        };
+      }
+      return payload;
+    });
     setSelectedId((current) => {
+      if (mode === "append" && current) return current;
       const currentExists = payload.comment_items.some((comment) => comment.normalized.rpid === current);
       return currentExists ? current : payload.comment_items[0]?.normalized.rpid || "";
     });
@@ -122,22 +137,38 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }, [applyPayload, bvid, data?.metadata.bvid, dbId]);
 
   useEffect(() => {
-    let mounted = true;
-    fetchCommentData(bvid, dbId)
+    const controller = new AbortController();
+    fetchCommentData(bvid, dbId, { limit: COMMENT_PAGE_SIZE, signal: controller.signal })
       .then((payload) => {
-        if (!mounted) return;
         applyPayload(payload);
         setError("");
         setRefreshMessage("");
       })
       .catch((reason: unknown) => {
-        if (!mounted) return;
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
         setError(reason instanceof Error ? reason.message : String(reason));
       });
     return () => {
-      mounted = false;
+      controller.abort();
     };
   }, [applyPayload, bvid, dbId]);
+
+  const loadMoreComments = useCallback(async () => {
+    if (!data?.metadata.has_more || isLoadingMore) return;
+    setIsLoadingMore(true);
+    setError("");
+    try {
+      const payload = await fetchCommentData(data.metadata.bvid, dbId, {
+        limit: COMMENT_PAGE_SIZE,
+        offset: data.comment_items.length,
+      });
+      applyPayload(payload, "append");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [applyPayload, data, dbId, isLoadingMore]);
 
   const allComments = data?.comment_items || [];
   const topLevelComments = data?.comments || [];
@@ -512,6 +543,21 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               />
             )}
           />
+          {data.metadata.has_more && (
+            <div className="border-t border-line p-3">
+              <button
+                className="btn-secondary flex h-10 w-full items-center justify-center gap-2 rounded-md px-3 text-sm font-medium"
+                type="button"
+                disabled={isLoadingMore}
+                onClick={() => void loadMoreComments()}
+              >
+                <RefreshCcw className={cn(isLoadingMore && "animate-spin")} size={16} aria-hidden="true" />
+                {isLoadingMore
+                  ? "加载中"
+                  : `加载更多 ${formatNumber(allComments.length)} / ${formatNumber(data.metadata.comment_total_count)}`}
+              </button>
+            </div>
+          )}
         </aside>
 
         <section className="grid min-w-0 gap-4">

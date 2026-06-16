@@ -45,6 +45,8 @@ import { cn, formatFullDateTime, formatNumber } from "../lib/utils";
 import { dbPath } from "../lib/videoLibrary";
 import type { DanmakuData } from "../types";
 
+const DANMAKU_PAGE_SIZE = 2000;
+
 export function DanmakuPage({ bvid }: { bvid?: string }) {
   const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
   const [danmaku, setDanmaku] = useState<DanmakuData | null>(null);
@@ -57,12 +59,23 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const deferredQuery = useDeferredValue(query);
   const danmakuProgress = useProgressPolling(isRefreshing, "danmaku");
 
-  const applyDanmakuPayload = useCallback((payload: DanmakuData) => {
-    setDanmaku(payload);
+  const applyDanmakuPayload = useCallback((payload: DanmakuData, mode: "replace" | "append" = "replace") => {
+    setDanmaku((current) => {
+      if (mode === "append" && current?.metadata.bvid === payload.metadata.bvid) {
+        const seen = new Set(current.items.map((item) => item.dmid));
+        return {
+          ...payload,
+          items: [...current.items, ...payload.items.filter((item) => !seen.has(item.dmid))],
+        };
+      }
+      return payload;
+    });
     setSelectedId((current) => {
+      if (mode === "append" && current) return current;
       const currentExists = payload.items.some((item) => item.dmid === current);
       return currentExists ? current : payload.items[0]?.dmid || "";
     });
@@ -72,7 +85,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
     setIsLoading(true);
     setError("");
     try {
-      const payload = await fetchDanmakuData(bvid, dbId);
+      const payload = await fetchDanmakuData(bvid, dbId, { limit: DANMAKU_PAGE_SIZE });
       applyDanmakuPayload(payload);
       setMessage("");
     } catch (reason: unknown) {
@@ -85,6 +98,23 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   useEffect(() => {
     void loadDanmaku();
   }, [loadDanmaku]);
+
+  const loadMoreDanmaku = useCallback(async () => {
+    if (!danmaku?.metadata.has_more || isLoadingMore) return;
+    setIsLoadingMore(true);
+    setError("");
+    try {
+      const payload = await fetchDanmakuData(danmaku.metadata.bvid, dbId, {
+        limit: DANMAKU_PAGE_SIZE,
+        offset: danmaku.items.length,
+      });
+      applyDanmakuPayload(payload, "append");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [applyDanmakuPayload, danmaku, dbId, isLoadingMore]);
 
   const allItems = danmaku?.items || [];
   const maxProgress = Math.max(0, danmaku?.metadata.max_progress || 0);
@@ -425,6 +455,21 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               />
             )}
           />
+          {danmaku?.metadata.has_more && (
+            <div className="border-t border-line p-3">
+              <button
+                className="btn-secondary flex h-10 w-full items-center justify-center gap-2 rounded-md px-3 text-sm font-medium"
+                type="button"
+                disabled={isLoadingMore}
+                onClick={() => void loadMoreDanmaku()}
+              >
+                <RefreshCcw className={cn(isLoadingMore && "animate-spin")} size={16} aria-hidden="true" />
+                {isLoadingMore
+                  ? "加载中"
+                  : `加载更多 ${formatNumber(allItems.length)} / ${formatNumber(danmaku.metadata.total_count)}`}
+              </button>
+            </div>
+          )}
         </aside>
 
         <section className="grid min-w-0 gap-4">

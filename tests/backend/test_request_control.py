@@ -23,7 +23,7 @@ from database_registry import (  # noqa: E402
 )
 from errors import BadRequestError  # noqa: E402
 from progress_state import progress_percent, progress_stats  # noqa: E402
-from http_utils import parse_json_object_body  # noqa: E402
+from http_utils import MAX_JSON_BODY_BYTES, parse_content_length, parse_json_object_body  # noqa: E402
 from space_archive import (  # noqa: E402
     api_error_response,
     extract_space_mid,
@@ -46,7 +46,7 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     save_danmaku_to_sqlite,
 )
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
-from server import ensure_openable_local_path  # noqa: E402
+from server import ensure_importable_database_path, ensure_openable_local_path, is_local_host, is_local_origin  # noqa: E402
 class RequestParsingTests(unittest.TestCase):
     def test_control_capabilities_describe_machine_callable_actions(self):
         payload = control_capabilities()
@@ -101,6 +101,24 @@ class RequestParsingTests(unittest.TestCase):
         with self.assertRaises(BadRequestError):
             parse_json_object_body("{}".encode("utf-16"))
 
+    def test_content_length_validation_rejects_invalid_values(self):
+        self.assertEqual(parse_content_length(None), 0)
+        self.assertEqual(parse_content_length("12"), 12)
+        with self.assertRaises(BadRequestError):
+            parse_content_length("-1")
+        with self.assertRaises(BadRequestError):
+            parse_content_length("many")
+        self.assertGreater(MAX_JSON_BODY_BYTES, 0)
+
+    def test_local_origin_and_host_validation(self):
+        self.assertTrue(is_local_origin(""))
+        self.assertTrue(is_local_origin("http://127.0.0.1:8000"))
+        self.assertTrue(is_local_origin("http://localhost:5173"))
+        self.assertFalse(is_local_origin("https://evil.example"))
+        self.assertTrue(is_local_host("127.0.0.1:8000"))
+        self.assertTrue(is_local_host("localhost:8000"))
+        self.assertFalse(is_local_host("evil.example"))
+
     def test_openable_local_path_accepts_allowed_file_or_directory_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             allowed = Path(tmp) / "data"
@@ -115,3 +133,15 @@ class RequestParsingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ensure_openable_local_path(outside, [allowed])
 
+    def test_importable_database_path_is_limited_to_allowed_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            allowed = Path(tmp) / "data"
+            allowed.mkdir()
+            source = allowed / "archive.db"
+            source.write_text("sqlite", encoding="utf-8")
+            outside = Path(tmp) / "outside.db"
+            outside.write_text("sqlite", encoding="utf-8")
+
+            self.assertEqual(ensure_importable_database_path(source, [allowed]), source.resolve())
+            with self.assertRaises(ValueError):
+                ensure_importable_database_path(outside, [allowed])

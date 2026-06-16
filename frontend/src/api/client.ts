@@ -15,6 +15,9 @@ import type {
 } from "../types";
 
 type LogFields = Record<string, string | number | boolean | null | undefined>;
+type RequestOptions = RequestInit & { signal?: AbortSignal };
+
+const MUTATING_REQUEST_HEADER = "X-Bilibili-Tool-Request";
 
 export async function fetchDatabases(activeId = "main", options: { includeDetails?: boolean } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
@@ -105,28 +108,31 @@ export async function importDatabaseFiles(files: File[]) {
   );
 }
 
-export async function fetchCommentData(bvid?: string, dbId = "main") {
+export async function fetchCommentData(bvid?: string, dbId = "main", options: { limit?: number; offset?: number; signal?: AbortSignal } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
+  if (options.limit) query.set("limit", String(options.limit));
+  if (options.offset) query.set("offset", String(options.offset));
   appendDbId(query, dbId);
-  return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId });
+  return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store", signal: options.signal }, { bvid, db_id: dbId });
 }
 
-export async function fetchVideos(dbId = "main", options: { includeMeta?: boolean; limit?: number; offset?: number } = {}) {
+export async function fetchVideos(dbId = "main", options: { includeMeta?: boolean; limit?: number; offset?: number; signal?: AbortSignal } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (options.limit) query.set("limit", String(options.limit));
   if (options.offset) query.set("offset", String(options.offset));
   if (options.includeMeta === false) query.set("include_meta", "0");
   appendDbId(query, dbId);
-  return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store" }, { db_id: dbId, limit: options.limit, offset: options.offset });
+  return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store", signal: options.signal }, { db_id: dbId, limit: options.limit, offset: options.offset });
 }
 
-export async function fetchDanmakuData(bvid?: string, dbId = "main", options: { limit?: number | null } = {}) {
+export async function fetchDanmakuData(bvid?: string, dbId = "main", options: { limit?: number | null; offset?: number; signal?: AbortSignal } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
   if (options.limit !== undefined && options.limit !== null) query.set("limit", String(options.limit));
+  if (options.offset) query.set("offset", String(options.offset));
   appendDbId(query, dbId);
-  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store" }, { bvid, db_id: dbId, limit: options.limit });
+  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store", signal: options.signal }, { bvid, db_id: dbId, limit: options.limit });
 }
 
 export async function refreshDanmakuData(bvid?: string, dbId = "main") {
@@ -300,14 +306,14 @@ export function logClientEvent(event: string, message = "", fields: LogFields = 
   }
 }
 
-async function requestJson<T>(event: string, url: string, init?: RequestInit, fields: LogFields = {}) {
+async function requestJson<T>(event: string, url: string, init?: RequestOptions, fields: LogFields = {}) {
   const startedAt = performance.now();
   const method = init?.method || "GET";
   const path = summarizeApiPath(url);
   logClientEvent(`client.api.${event}.start`, "API request started", { ...fields, method, path });
 
   try {
-    const response = await fetch(url, init);
+    const response = await fetch(url, withMutatingRequestHeader(init));
     const payload = await parseJsonResponse<T>(response);
     logClientEvent(`client.api.${event}.success`, "API request succeeded", {
       ...fields,
@@ -326,6 +332,14 @@ async function requestJson<T>(event: string, url: string, init?: RequestInit, fi
     });
     throw reason;
   }
+}
+
+function withMutatingRequestHeader(init?: RequestOptions): RequestInit | undefined {
+  const method = (init?.method || "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return init;
+  const headers = new Headers(init?.headers);
+  headers.set(MUTATING_REQUEST_HEADER, "1");
+  return { ...init, headers };
 }
 
 async function parseJsonResponse<T>(response: Response) {

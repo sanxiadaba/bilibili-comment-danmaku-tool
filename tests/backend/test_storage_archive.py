@@ -197,6 +197,60 @@ class StorageTests(unittest.TestCase):
             self.assertNotIn("owners", fast_page)
             self.assertEqual([video["bvid"] for video in fast_page["videos"]], ["BV2222222222"])
 
+    def test_comment_loader_supports_paged_items_with_full_metadata_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            comments = [make_comment(str(index), 1, f"comment {index}", ctime=1700000000 + index) for index in range(5)]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", comments), db_path, replace=True)
+
+            page = load_comment_data(db_path, bvid=BVID, limit=2, offset=2)
+
+            self.assertEqual(page["metadata"]["comment_total_count"], 5)
+            self.assertEqual(page["metadata"]["limit"], 2)
+            self.assertEqual(page["metadata"]["offset"], 2)
+            self.assertTrue(page["metadata"]["has_more"])
+            self.assertEqual([item["normalized"]["rpid"] for item in page["comment_items"]], ["2", "3"])
+
+    def test_danmaku_loader_supports_offset_pagination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), db_path, replace=True)
+            save_danmaku_to_sqlite(
+                {
+                    "bvid": BVID,
+                    "cid": "456",
+                    "items": [
+                        {
+                            "bvid": BVID,
+                            "cid": "456",
+                            "dmid": f"dm-{index}",
+                            "progress": float(index),
+                            "mode": 1,
+                            "font_size": 25,
+                            "color": 0xFFFFFF,
+                            "ctime": 1700000000 + index,
+                            "pool": 0,
+                            "user_hash": "hash",
+                            "weight": 1,
+                            "like_count": 0,
+                            "content": f"danmaku {index}",
+                            "fetched_at": "2024-01-01T00:00:00+00:00",
+                        }
+                        for index in range(5)
+                    ],
+                },
+                db_path,
+                replace=True,
+            )
+
+            page = load_danmaku_data(db_path, bvid=BVID, limit=2, offset=2)
+
+            self.assertEqual(page["metadata"]["total_count"], 5)
+            self.assertEqual(page["metadata"]["limit"], 2)
+            self.assertEqual(page["metadata"]["offset"], 2)
+            self.assertTrue(page["metadata"]["has_more"])
+            self.assertEqual([item["dmid"] for item in page["items"]], ["dm-2", "dm-3"])
+
     def test_video_page_owner_summaries_use_full_database_not_current_page(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"

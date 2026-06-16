@@ -72,6 +72,8 @@ export function VideoLibraryPage() {
   const [hiddenTaskKeys, setHiddenTaskKeys] = useState<Set<string>>(() => new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const videosRequestRef = useRef(0);
+  const videosAbortRef = useRef<AbortController | null>(null);
   const parseProgress = useProgressPolling(isParsing, "parse");
   const spaceProgress = useProgressPolling(true);
   const [parseDelay, setParseDelay] = useState(() => {
@@ -115,6 +117,11 @@ export function VideoLibraryPage() {
   );
 
   const loadVideos = useCallback(async (options?: { append?: boolean; includeMeta?: boolean; offset?: number; quiet?: boolean }) => {
+    videosAbortRef.current?.abort();
+    const controller = new AbortController();
+    videosAbortRef.current = controller;
+    const requestId = videosRequestRef.current + 1;
+    videosRequestRef.current = requestId;
     if (!options?.quiet) {
       setIsLoading(true);
     }
@@ -125,7 +132,9 @@ export function VideoLibraryPage() {
         includeMeta: options?.includeMeta ?? !options?.append,
         limit: VIDEO_PAGE_SIZE,
         offset,
+        signal: controller.signal,
       });
+      if (videosRequestRef.current !== requestId) return;
       setVideos((current) => (options?.append ? mergeVideosByBvid(current, payload.videos) : payload.videos));
       if (payload.owners) {
         setOwnerSummaries(payload.owners);
@@ -133,9 +142,13 @@ export function VideoLibraryPage() {
       setVideoTotal(payload.total ?? payload.videos.length);
       setHasMoreVideos(Boolean(payload.has_more));
     } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (videosRequestRef.current !== requestId) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setIsLoading(false);
+      if (videosRequestRef.current === requestId) {
+        setIsLoading(false);
+      }
     }
   }, [activeDbId]);
 

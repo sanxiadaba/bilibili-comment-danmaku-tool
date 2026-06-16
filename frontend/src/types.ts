@@ -95,6 +95,9 @@ export type CommentData = {
     comment_total_count: number;
     active_comment_count?: number;
     deleted_comment_count?: number;
+    limit?: number;
+    offset?: number;
+    has_more?: boolean;
     child_fetch_summary: Array<Record<string, unknown>>;
     notes: string[];
   };
@@ -163,6 +166,8 @@ export type DanmakuData = {
     min_progress?: number;
     max_progress?: number;
     limit: number;
+    offset?: number;
+    has_more?: boolean;
   };
   items: DanmakuItem[];
   buckets: Array<{

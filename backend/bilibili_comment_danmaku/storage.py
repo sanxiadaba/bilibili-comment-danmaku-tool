@@ -567,7 +567,10 @@ def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
         conn.close()
 
 
-def load_danmaku_data(db_path, bvid=None, limit=None):
+def load_danmaku_data(db_path, bvid=None, limit=None, offset=0):
+    if offset is None:
+        offset = 0
+    offset = max(0, int(offset or 0))
     conn = connect(db_path)
     try:
         ensure_schema(conn)
@@ -602,15 +605,16 @@ def load_danmaku_data(db_path, bvid=None, limit=None):
                 (video["bvid"],),
             ).fetchall()
         else:
+            limit = max(0, min(int(limit or 0), 10000))
             rows = conn.execute(
                 """
                 SELECT *
                 FROM danmaku
                 WHERE bvid = ?
                 ORDER BY progress ASC, dmid ASC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (video["bvid"], limit),
+                (video["bvid"], limit, offset),
             ).fetchall()
         buckets = conn.execute(
             """
@@ -633,6 +637,8 @@ def load_danmaku_data(db_path, bvid=None, limit=None):
                 "min_progress": stats["min_progress"],
                 "max_progress": stats["max_progress"],
                 "limit": limit if limit is not None else value_or_zero(stats["total_count"]),
+                "offset": offset,
+                "has_more": offset + len(rows) < value_or_zero(stats["total_count"]),
             },
             "items": [danmaku_from_row(row) for row in rows],
             "buckets": [
@@ -680,7 +686,10 @@ def danmaku_user_hash(mid):
     return format(binascii.crc32(str(mid).encode("utf-8")) & 0xFFFFFFFF, "08x")
 
 
-def load_comment_data(db_path, bvid=None):
+def load_comment_data(db_path, bvid=None, limit=None, offset=0):
+    if offset is None:
+        offset = 0
+    offset = max(0, int(offset or 0))
     conn = connect(db_path)
     try:
         ensure_schema(conn)
@@ -692,22 +701,13 @@ def load_comment_data(db_path, bvid=None):
         if not video:
             raise LookupError("video not found")
 
-        rows = conn.execute(
-            """
-            SELECT
-                c.*,
-                u.uname AS user_uname,
-                u.sex AS user_sex,
-                u.sign AS user_sign,
-                u.avatar AS user_avatar,
-                u.level AS user_level
-            FROM comments c
-            LEFT JOIN users u ON u.mid = c.mid
-            WHERE c.bvid = ?
-            ORDER BY ctime ASC, rpid ASC
-            """,
-            (video["bvid"],),
-        ).fetchall()
+        if limit is None:
+            rows = select_comment_rows(conn, video["bvid"])
+            metadata = metadata_from_video(video, rows)
+        else:
+            limit = max(1, min(int(limit or 1), 1000))
+            rows = select_comment_rows(conn, video["bvid"], limit=limit, offset=offset)
+            metadata = metadata_from_comment_stats(video, comment_stats_for_video(conn, video["bvid"]))
 
         pictures_by_rpid = load_pictures_by_rpid(conn, video["bvid"])
         emotes_by_rpid = load_emotes_by_rpid(conn, video["bvid"])
@@ -745,7 +745,12 @@ def load_comment_data(db_path, bvid=None):
             node["replies"].sort(key=node_sort_key)
 
         return {
-            "metadata": metadata_from_video(video, rows),
+            "metadata": {
+                **metadata,
+                "limit": limit if limit is not None else len(rows),
+                "offset": offset,
+                "has_more": offset + len(rows) < metadata["comment_total_count"],
+            },
             "video_raw": video_raw_from_video(video),
             "comments": top_level,
             "comment_items": sorted(nodes, key=node_sort_key),
@@ -1385,11 +1390,71 @@ def normalized_from_row(row):
     }
 
 
+def select_comment_rows(conn, bvid, limit=None, offset=0):
+    pagination = ""
+    params = [bvid]
+    if limit is not None:
+        pagination = " LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset or 0)])
+    return conn.execute(
+        f"""
+        SELECT
+            c.*,
+            u.uname AS user_uname,
+            u.sex AS user_sex,
+            u.sign AS user_sign,
+            u.avatar AS user_avatar,
+            u.level AS user_level
+        FROM comments c
+        LEFT JOIN users u ON u.mid = c.mid
+        WHERE c.bvid = ?
+        ORDER BY ctime ASC, rpid ASC
+        {pagination}
+        """,
+        tuple(params),
+    ).fetchall()
+
+
+def comment_stats_for_video(conn, bvid):
+    return conn.execute(
+        """
+        SELECT
+            COUNT(*) AS comment_total_count,
+            SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END) AS top_level_comment_count,
+            SUM(CASE WHEN level = 2 THEN 1 ELSE 0 END) AS nested_comment_count,
+            SUM(CASE WHEN is_deleted = 1 THEN 1 ELSE 0 END) AS deleted_comment_count
+        FROM comments
+        WHERE bvid = ?
+        """,
+        (bvid,),
+    ).fetchone()
+
+
 def metadata_from_video(video, comment_rows):
     top_level_comment_count = sum(1 for row in comment_rows if row["level"] == 1)
     nested_comment_count = sum(1 for row in comment_rows if row["level"] == 2)
     comment_total_count = len(comment_rows)
     deleted_count = sum(1 for row in comment_rows if row["is_deleted"])
+    return metadata_from_comment_counts(
+        video,
+        comment_total_count,
+        top_level_comment_count,
+        nested_comment_count,
+        deleted_count,
+    )
+
+
+def metadata_from_comment_stats(video, stats):
+    return metadata_from_comment_counts(
+        video,
+        value_or_zero(stats["comment_total_count"] if stats else 0),
+        value_or_zero(stats["top_level_comment_count"] if stats else 0),
+        value_or_zero(stats["nested_comment_count"] if stats else 0),
+        value_or_zero(stats["deleted_comment_count"] if stats else 0),
+    )
+
+
+def metadata_from_comment_counts(video, comment_total_count, top_level_comment_count, nested_comment_count, deleted_count):
     return {
         "source_url": video["source_url"],
         "bvid": video["bvid"],

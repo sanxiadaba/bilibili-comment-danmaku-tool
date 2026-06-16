@@ -54,7 +54,7 @@ describe("API client", () => {
     const payload = await fetchVideos("archive 1", { limit: 40, offset: 80 });
 
     expect(payload.videos).toEqual([]);
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/videos?"), { cache: "no-store" });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/videos?"), expect.objectContaining({ cache: "no-store" }));
     expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive+1");
     expect(fetchMock.mock.calls[0][0]).toContain("limit=40");
     expect(fetchMock.mock.calls[0][0]).toContain("offset=80");
@@ -120,7 +120,7 @@ describe("API client", () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true })));
     globalThis.fetch = fetchMock;
 
-    await fetchCommentData("BV1xx411c7mD", "archive");
+    await fetchCommentData("BV1xx411c7mD", "archive", { limit: 500, offset: 100 });
     await refreshCommentData("BV1xx411c7mD", "archive");
     await fetchDanmakuData("BV1xx411c7mD", "archive");
     await refreshDanmakuData("BV1xx411c7mD", "archive");
@@ -128,8 +128,11 @@ describe("API client", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/comments?");
     expect(fetchMock.mock.calls[0][0]).toContain("bvid=BV1xx411c7mD");
     expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive");
+    expect(fetchMock.mock.calls[0][0]).toContain("limit=500");
+    expect(fetchMock.mock.calls[0][0]).toContain("offset=100");
     expect(fetchMock.mock.calls[1][0]).toContain("/api/refresh?");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
+    expect((fetchMock.mock.calls[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
     expect(fetchMock.mock.calls[2][0]).toContain("/api/danmaku?");
     expect(fetchMock.mock.calls[2][0]).not.toContain("limit=");
     expect(fetchMock.mock.calls[3][0]).toContain("/api/danmaku/refresh?");
@@ -144,6 +147,17 @@ describe("API client", () => {
 
     expect(fetchMock.mock.calls[0][0]).toContain("/api/danmaku?");
     expect(fetchMock.mock.calls[0][0]).toContain("limit=2000");
+  });
+
+  it("adds the local browser guard header to mutating requests", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true, bvid: "BV1xx411c7mD" })));
+    globalThis.fetch = fetchMock;
+
+    await parseVideo("BV1xx411c7mD", 0.5, "main");
+    await importDatabaseFiles([new File(["payload"], "archive.json")]);
+
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
+    expect((fetchMock.mock.calls[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
   });
 
   it("uploads selected database files as multipart form data", async () => {

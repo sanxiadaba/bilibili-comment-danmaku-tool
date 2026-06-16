@@ -40,8 +40,8 @@ from database_registry import (
     relative_to_root,
 )
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload
-from errors import BadRequestError
-from http_utils import JsonStaticRequestHandler, first_query_int, parse_optional_int, safe_print
+from errors import BadRequestError, RequestTooLargeError
+from http_utils import JsonStaticRequestHandler, first_query_int, parse_content_length, parse_optional_int, safe_print
 from progress_state import (
     fail_progress,
     finish_progress,
@@ -67,6 +67,11 @@ DEFAULT_STATIC = ROOT / "dist"
 DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
+MAX_MULTIPART_BODY_BYTES = 512 * 1024 * 1024
+DEFAULT_COMMENT_PAGE_SIZE = 500
+DEFAULT_DANMAKU_PAGE_SIZE = 2000
+LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
@@ -179,6 +184,21 @@ def ensure_openable_local_path(raw_path, allowed_dirs):
     return path
 
 
+def ensure_importable_database_path(raw_path, allowed_dirs):
+    if not raw_path:
+        raise ValueError("缺少要导入的文件路径")
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve()
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"导入文件不存在：{path}")
+    allowed = [Path(item).resolve() for item in allowed_dirs]
+    if not any(is_path_relative_to(path, directory) for directory in allowed):
+        raise ValueError("路径导入只允许项目 data、数据库或导出目录内的文件；其它位置请使用文件上传")
+    return path
+
+
 def is_path_relative_to(path, directory):
     try:
         Path(path).resolve().relative_to(Path(directory).resolve())
@@ -195,6 +215,22 @@ def open_local_directory(path):
         subprocess.Popen(["open", str(path)])
         return
     subprocess.Popen(["xdg-open", str(path)])
+
+
+def is_local_origin(origin):
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return (parsed.hostname or "").lower() in LOCAL_HOSTNAMES
+
+
+def is_local_host(host):
+    if not host:
+        return True
+    parsed = urlparse(f"//{host}")
+    return (parsed.hostname or "").lower() in LOCAL_HOSTNAMES
 
 
 def schedule_database_vacuum(db_path, request_id=""):
@@ -263,7 +299,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 self.handle_progress_api()
                 return
             if parsed.path == "/api/refresh":
-                self.handle_refresh_api(parsed)
+                self.send_json({"error": "评论刷新只支持 POST /api/refresh"}, status=405)
                 return
             if parsed.path == "/api/health":
                 self.handle_health_api()
@@ -285,6 +321,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.start_request_log("POST")
         parsed = urlparse(self.path)
         try:
+            if not self.check_mutating_request(parsed):
+                return
             if parsed.path.startswith("/api/v1/control"):
                 self.handle_control_post_api(parsed)
                 return
@@ -344,11 +382,45 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 level="warning",
             )
             self.send_json({"error": str(exc)}, status=400)
+        except RequestTooLargeError as exc:
+            log_event(
+                "http.request.too_large",
+                str(exc),
+                request_id=getattr(self, "request_id", ""),
+                method=getattr(self, "command", ""),
+                path=parsed.path,
+                level="warning",
+            )
+            self.send_json({"error": str(exc)}, status=413)
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
             raise
         finally:
             self.finish_request_log(parsed.path)
+
+
+    def check_mutating_request(self, parsed):
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin", "")
+        has_origin = bool(origin)
+        has_browser_guard = self.headers.get(LOCAL_BROWSER_REQUEST_HEADER) == "1"
+        if not is_local_host(host):
+            self.send_json({"error": "只接受本机 Host 的状态变更请求"}, status=403)
+            return False
+        if has_origin and (not is_local_origin(origin) or not has_browser_guard):
+            log_event(
+                "http.request.rejected_origin",
+                "rejected mutating request with untrusted browser origin",
+                request_id=getattr(self, "request_id", ""),
+                path=parsed.path,
+                host=host,
+                origin=origin,
+                has_browser_guard=has_browser_guard,
+                level="warning",
+            )
+            self.send_json({"error": "浏览器状态变更请求必须来自本机页面"}, status=403)
+            return False
+        return True
 
 
     def handle_videos_api(self):
@@ -1080,11 +1152,14 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if not source_value:
             self.send_json({"error": "请输入要导入的 SQLite 数据库或 JSON 归档路径"}, status=400)
             return
-        source_path = Path(source_value).expanduser().resolve()
         try:
+            source_path = ensure_importable_database_path(
+                source_value,
+                allowed_dirs=[ROOT / "data", self.database_dir, DEFAULT_EXPORT_DIR, LEGACY_EXPORT_DIR],
+            )
             target_path = import_database_file(source_path, self.database_dir)
             info = public_database_info(database_info_for_path(target_path, self.db_path, self.database_dir))
-        except (LookupError, ValueError) as exc:
+        except (FileNotFoundError, LookupError, ValueError) as exc:
             self.send_json({"error": str(exc)}, status=400)
             return
         except Exception as exc:
@@ -1108,8 +1183,16 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_database_import_file_api(self):
         try:
-            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            length = parse_content_length(self.headers.get("Content-Length"))
+            if length <= 0:
+                raise ValueError("上传请求体为空")
+            if length > MAX_MULTIPART_BODY_BYTES:
+                raise RequestTooLargeError(f"上传文件过大，上限为 {MAX_MULTIPART_BODY_BYTES} 字节")
+            raw = self.rfile.read(length)
             files = parse_multipart_files(raw, self.headers.get("Content-Type", ""))
+        except RequestTooLargeError as exc:
+            self.send_json({"error": str(exc)}, status=413)
+            return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)
             return
@@ -1152,9 +1235,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
     def handle_comments_api(self, parsed):
         query = parse_qs(parsed.query)
         bvid = query.get("bvid", [None])[0]
+        limit = first_query_int(query, "limit", DEFAULT_COMMENT_PAGE_SIZE)
+        offset = first_query_int(query, "offset", 0)
         db_path = self.resolve_db_path_from_query(parsed)
         try:
-            payload = load_comment_data(db_path, bvid=bvid)
+            payload = load_comment_data(db_path, bvid=bvid, limit=limit, offset=offset)
             log_event(
                 "api.comments.load",
                 "loaded comment data",
@@ -1164,6 +1249,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 comment_count=payload["metadata"]["comment_total_count"],
                 active_count=payload["metadata"].get("active_comment_count"),
                 deleted_count=payload["metadata"].get("deleted_comment_count"),
+                limit=payload["metadata"].get("limit"),
+                offset=payload["metadata"].get("offset"),
             )
         except LookupError as exc:
             log_event(
@@ -1185,9 +1272,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         query = parse_qs(parsed.query)
         bvid = query.get("bvid", [None])[0]
         limit = parse_optional_int(query.get("limit", [None])[0])
+        if limit is None:
+            limit = DEFAULT_DANMAKU_PAGE_SIZE
+        offset = first_query_int(query, "offset", 0)
         db_path = self.resolve_db_path_from_query(parsed)
         try:
-            payload = load_danmaku_data(db_path, bvid=bvid, limit=limit)
+            payload = load_danmaku_data(db_path, bvid=bvid, limit=limit, offset=offset)
             log_event(
                 "api.danmaku.load",
                 "loaded danmaku data",
@@ -1196,6 +1286,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=payload["metadata"]["bvid"],
                 total_count=payload["metadata"]["total_count"],
                 limit=limit,
+                offset=offset,
             )
         except LookupError as exc:
             log_event(
