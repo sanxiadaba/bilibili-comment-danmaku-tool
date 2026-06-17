@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Pause, Play, RefreshCcw, RotateCcw, Square, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
-import type { TaskControlAction } from "../../api/client";
-import type { ProgressQueue, ProgressTask } from "../../types";
+import type { ProgressQueue, ProgressTask, TaskControlAction } from "../../types";
+import { isControllableTaskKind, isTerminalTaskStatus, taskStatusLabel, taskTitle } from "./taskUtils";
 
 type ProgressQueuePanelProps = {
   embedded?: boolean;
@@ -188,31 +188,4 @@ function TaskButton({
       {label}
     </button>
   );
-}
-
-function taskTitle(task: ProgressTask) {
-  const bvid = task.bvid || task.current_bvid;
-  if (task.kind === "delete") return task.owner_ref || (bvid ? `删除 ${bvid}` : "删除本地档案");
-  if (task.kind === "parse") return bvid ? `视频 ${bvid}` : "视频抓取";
-  if (task.mid) return `UP ${task.mid}`;
-  return task.owner_ref || task.id;
-}
-
-function taskStatusLabel(task: ProgressTask) {
-  if (task.status === "running") return "运行中";
-  if (task.status === "waiting") return "等待当前任务";
-  if (task.status === "queued") return "排队中";
-  if (task.status === "paused") return "已暂停";
-  if (task.status === "stopped") return "已停止";
-  if (task.status === "finished") return "已完成";
-  if (task.status === "failed") return "失败";
-  return task.status || "未知";
-}
-
-function isControllableTaskKind(kind: string) {
-  return kind === "space" || kind === "space_archive" || kind === "parse" || kind === "delete";
-}
-
-function isTerminalTaskStatus(status: string) {
-  return status === "finished" || status === "failed" || status === "stopped";
 }

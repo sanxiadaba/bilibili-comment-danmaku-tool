@@ -220,6 +220,17 @@ export type OwnerSummary = {
   storage_bytes?: number;
 };
 
+export type OwnerGroup = {
+  bvids: string[];
+  key: string;
+  name: string;
+  ownerMid: string;
+  videoCount: number;
+  commentCount: number;
+  danmakuCount: number;
+  storageBytes?: number;
+};
+
 export type VideoListResponse = {
   videos: VideoSummary[];
   owners?: OwnerSummary[];
@@ -423,6 +434,8 @@ export type ProgressTask = {
   pause_requested?: boolean;
   stop_requested?: boolean;
 };
+
+export type TaskControlAction = "pause" | "resume" | "stop" | "retry" | "clear";
 
 export type ProgressQueue = {
   active: ProgressTask | null;

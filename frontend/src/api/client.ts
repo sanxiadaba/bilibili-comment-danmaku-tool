@@ -11,6 +11,7 @@ import type {
   ParseVideoResponse,
   ProgressState,
   SpaceArchiveResponse,
+  TaskControlAction,
   VideoListResponse,
 } from "../types";
 
@@ -181,8 +182,6 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
     { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay, db_id: options.dbId || "main" },
   );
 }
-
-export type TaskControlAction = "pause" | "resume" | "stop" | "retry" | "clear";
 
 export async function controlSpaceTasks(action: TaskControlAction, taskId?: string) {
   return requestJson<{ ok: boolean; action: string; queue: ProgressState["queue"] }>(

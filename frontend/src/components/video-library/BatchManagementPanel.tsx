@@ -3,7 +3,8 @@ import { useMemo, useState } from "react";
 import { cn, formatNumber } from "../../lib/utils";
 import { formatBytes } from "../../lib/videoLibrary";
 import type { VideoSummary } from "../../types";
-import type { ExportFormat, OwnerGroup } from "./types";
+import type { OwnerGroup } from "../../types";
+import type { ExportFormat } from "./types";
 
 type BatchManagementPanelProps = {
   backendTotalVideoCount: number;

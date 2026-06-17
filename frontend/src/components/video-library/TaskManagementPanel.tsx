@@ -1,7 +1,7 @@
 import { Pause, Play, Square } from "lucide-react";
-import type { TaskControlAction } from "../../api/client";
-import type { ProgressQueue } from "../../types";
+import type { ProgressQueue, TaskControlAction } from "../../types";
 import { ProgressQueuePanel } from "./ProgressQueuePanel";
+import { isControllableTaskKind, isTerminalTaskStatus } from "./taskUtils";
 
 type TaskManagementPanelProps = {
   isControlling: boolean;
@@ -48,12 +48,4 @@ export function TaskManagementPanel({ isControlling, queue, onControl }: TaskMan
       </div>
     </section>
   );
-}
-
-function isControllableTaskKind(kind: string) {
-  return kind === "space" || kind === "space_archive" || kind === "parse" || kind === "delete";
-}
-
-function isTerminalTaskStatus(status: string) {
-  return status === "finished" || status === "failed" || status === "stopped";
 }

@@ -1,19 +1,8 @@
-import type { DatabaseInfo, VideoSummary } from "../../types";
+import type { DatabaseInfo, OwnerGroup, VideoSummary } from "../../types";
 
 export type ManagementView = "queue" | "database" | "auth";
 export type LibraryView = "videos" | "manage" | "tasks" | "databases" | "auth";
 export type ExportFormat = "sqlite" | "json";
-
-export type OwnerGroup = {
-  bvids: string[];
-  key: string;
-  name: string;
-  ownerMid: string;
-  videoCount: number;
-  commentCount: number;
-  danmakuCount: number;
-  storageBytes?: number;
-};
 
 export type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
 

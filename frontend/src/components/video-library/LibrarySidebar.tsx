@@ -4,7 +4,8 @@ import { InfoRow } from "../common";
 import { cn, formatNumber } from "../../lib/utils";
 import type { CookieStatus, DatabaseInfo, VideoSummary } from "../../types";
 import { OwnerFilterButton } from "./OwnerFilterButton";
-import type { ExportFormat, OwnerGroup } from "./types";
+import type { OwnerGroup } from "../../types";
+import type { ExportFormat } from "./types";
 
 type LibrarySidebarProps = {
   activeDatabase?: DatabaseInfo;
