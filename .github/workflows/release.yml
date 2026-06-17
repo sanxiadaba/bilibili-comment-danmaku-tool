@@ -62,7 +62,7 @@ jobs:
             } else {
               $version = "v1.0.0"
             }
-            while ((git tag --list $version).Trim()) {
+            while (@(git tag --list $version).Count -gt 0) {
               if ($version -notmatch '^v(\d+)\.(\d+)\.(\d+)$') {
                 throw "Cannot increment generated release tag: $version"
               }
