@@ -24,13 +24,16 @@ from server import (
 
 def app_root():
     if getattr(sys, "frozen", False) or "__compiled__" in globals():
-        return Path(sys.argv[0]).resolve().parent
+        exe_dir = Path(sys.argv[0]).resolve().parent
+        return exe_dir.parent if exe_dir.name == "_internal" else exe_dir
     return Path(__file__).resolve().parent.parent
 
 
 def bundled_static_dir(root):
     candidates = [
         root / "dist",
+        root / "_internal" / "dist",
+        Path(__file__).resolve().parent / "dist",
         Path(__file__).resolve().parent.parent / "dist",
         DEFAULT_STATIC,
     ]

@@ -4,8 +4,10 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $releaseRoot = Join-Path $root "release"
 $appName = "bilibili-comment-danmaku-tool"
 $outputDir = Join-Path $releaseRoot $appName
+$internalDir = Join-Path $outputDir "_internal"
 $entry = Join-Path $root "backend\desktop_entry.py"
 $distDir = Join-Path $root "dist"
+$outputExe = Join-Path $outputDir "$appName.exe"
 
 Set-Location $root
 
@@ -53,20 +55,61 @@ if (-not (Test-Path $generatedDir)) {
     throw "Nuitka output was not found: $generatedDir"
 }
 
-Move-Item -Force -LiteralPath $generatedDir -Destination $outputDir
+New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+Move-Item -Force -LiteralPath $generatedDir -Destination $internalDir
+
+$launcherSource = Join-Path $releaseRoot "launcher.cs"
+$launcherCode = @"
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+
+class Launcher
+{
+    static int Main(string[] args)
+    {
+        string root = AppDomain.CurrentDomain.BaseDirectory;
+        string target = Path.Combine(root, "_internal", "$appName.exe");
+        if (!File.Exists(target))
+        {
+            Console.Error.WriteLine("Missing runtime executable: " + target);
+            return 1;
+        }
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = target,
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            Arguments = string.Join(" ", args.Select(Quote)),
+        };
+        using (var process = Process.Start(startInfo))
+        {
+            process.WaitForExit();
+            return process.ExitCode;
+        }
+    }
+
+    static string Quote(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "\"\"";
+        if (value.IndexOfAny(new[] { ' ', '\t', '\n', '\r', '"' }) < 0) return value;
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    }
+}
+"@
+$launcherCode | Set-Content -Encoding UTF8 $launcherSource
+Add-Type -TypeDefinition $launcherCode -OutputAssembly $outputExe -OutputType ConsoleApplication
+Remove-Item -Force -LiteralPath $launcherSource
 
 New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "data") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "logs") | Out-Null
 
-$readme = @(
-    "# Bilibili Comment Danmaku Tool",
-    "",
-    "Double-click $appName.exe to start the local service. It opens:",
-    "",
-    "http://127.0.0.1:8000/",
-    "",
-    "This is a portable build. Data, cookies, and logs are stored in data/ and logs/ next to the exe."
-)
-$readme | Set-Content -Encoding UTF8 (Join-Path $outputDir "README.txt")
+foreach ($leftover in @("desktop_entry.build", "desktop_entry.dist", "desktop_entry.onefile-build", "data")) {
+    $leftoverPath = Join-Path $releaseRoot $leftover
+    if (Test-Path $leftoverPath) {
+        Remove-Item -Recurse -Force -LiteralPath $leftoverPath
+    }
+}
 
 Write-Host "Built release folder: $outputDir"

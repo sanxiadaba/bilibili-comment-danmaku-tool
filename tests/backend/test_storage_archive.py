@@ -19,9 +19,11 @@ from control_api import control_capabilities, control_openapi_document, normaliz
 from database_registry import (  # noqa: E402
     export_database_path,
     import_database_file,
+    list_all_video_summaries_page,
     list_database_catalog,
     parse_multipart_files,
     resolve_database_path,
+    video_database_path,
 )
 from errors import BadRequestError  # noqa: E402
 from progress_state import progress_percent, progress_stats  # noqa: E402
@@ -581,57 +583,97 @@ class StorageTests(unittest.TestCase):
             root = Path(tmp)
             main_db = root / "comment_danmaku.db"
             hotplug_dir = root / "databases"
-            hotplug_db = hotplug_dir / "owner_archive.db"
+            hotplug_db = hotplug_dir / "Owner_42" / f"{BVID}.db"
             save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), main_db, replace=True)
             export_archive_to_sqlite(main_db, hotplug_db, bvids=[BVID])
 
             catalog = list_database_catalog(main_db, hotplug_dir)
             by_id = {item["id"]: item for item in catalog}
 
-            self.assertIn("main", by_id)
-            self.assertIn("db:owner_archive.db", by_id)
-            self.assertEqual(by_id["db:owner_archive.db"]["video_count"], 1)
-            self.assertTrue(by_id["db:owner_archive.db"]["ok"])
-            self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
+            self.assertNotIn("main", by_id)
+            self.assertIn(f"db:Owner_42/{BVID}.db", by_id)
+            self.assertEqual(by_id[f"db:Owner_42/{BVID}.db"]["video_count"], 1)
+            self.assertTrue(by_id[f"db:Owner_42/{BVID}.db"]["ok"])
+            self.assertEqual(resolve_database_path(f"db:Owner_42/{BVID}.db", main_db, hotplug_dir), hotplug_db.resolve())
+
+    def test_video_database_path_uses_one_database_per_bvid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotplug_dir = Path(tmp) / "databases"
+
+            path = video_database_path(BVID, hotplug_dir, owner_mid="42", owner_name="Owner")
+
+            self.assertEqual(path, hotplug_dir.resolve() / "Owner_42" / f"{BVID}.db")
+            self.assertTrue(hotplug_dir.exists())
+
+    def test_default_video_listing_aggregates_single_video_databases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            first_db = video_database_path("BV1111111111", hotplug_dir, owner_mid="42", owner_name="Owner")
+            second_db = video_database_path("BV2222222222", hotplug_dir, owner_mid="42", owner_name="Owner")
+            first = make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "first")])
+            first["metadata"] = {
+                **first["metadata"],
+                "bvid": "BV1111111111",
+                "source_url": "https://www.bilibili.com/video/BV1111111111",
+            }
+            second = make_archive("2024-01-02T00:00:00+00:00", [make_comment("2", 1, "second")])
+            second["metadata"] = {
+                **second["metadata"],
+                "bvid": "BV2222222222",
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            save_comments_to_sqlite(first, first_db, replace=True)
+            save_comments_to_sqlite(second, second_db, replace=True)
+
+            page = list_all_video_summaries_page(main_db, hotplug_dir, limit=10)
+
+            self.assertEqual(page["total"], 2)
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222", "BV1111111111"])
+            self.assertEqual([video["db_id"] for video in page["videos"]], ["db:Owner_42/BV2222222222.db", "db:Owner_42/BV1111111111.db"])
+            self.assertEqual(page["owners"][0]["video_count"], 2)
 
     def test_database_catalog_reports_storage_and_top_owners(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             main_db = root / "comment_danmaku.db"
             hotplug_dir = root / "databases"
+            video_db = video_database_path(BVID, hotplug_dir, owner_mid="42", owner_name="Owner")
             top = make_comment("1", 1, "top comment", mid="100", like=8)
             reply = make_comment("2", 2, "reply comment", root="1", parent="1", mid="101", like=3)
             top["replies"] = [reply]
-            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), video_db, replace=True)
 
             catalog = list_database_catalog(main_db, hotplug_dir)
-            main = {item["id"]: item for item in catalog}["main"]
+            database = {item["id"]: item for item in catalog}[f"db:Owner_42/{BVID}.db"]
 
-            self.assertGreater(main["page_count"], 0)
-            self.assertGreater(main["page_size"], 0)
-            self.assertGreaterEqual(main["used_bytes"], 0)
-            self.assertGreaterEqual(main["reclaimable_bytes"], 0)
-            self.assertIn("storage_message", main)
-            self.assertEqual(main["top_owners"][0]["owner_mid"], "42")
-            self.assertEqual(main["top_owners"][0]["video_count"], 1)
-            self.assertEqual(main["top_owners"][0]["comment_count"], 2)
+            self.assertGreater(database["page_count"], 0)
+            self.assertGreater(database["page_size"], 0)
+            self.assertGreaterEqual(database["used_bytes"], 0)
+            self.assertGreaterEqual(database["reclaimable_bytes"], 0)
+            self.assertIn("storage_message", database)
+            self.assertEqual(database["top_owners"][0]["owner_mid"], "42")
+            self.assertEqual(database["top_owners"][0]["video_count"], 1)
+            self.assertEqual(database["top_owners"][0]["comment_count"], 2)
 
     def test_database_catalog_can_skip_expensive_details(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             main_db = root / "comment_danmaku.db"
             hotplug_dir = root / "databases"
+            video_db = video_database_path(BVID, hotplug_dir, owner_mid="42", owner_name="Owner")
             top = make_comment("1", 1, "top comment", mid="100", like=8)
-            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), main_db, replace=True)
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [top]), video_db, replace=True)
 
             catalog = list_database_catalog(main_db, hotplug_dir, include_details=False)
-            main = {item["id"]: item for item in catalog}["main"]
+            database = {item["id"]: item for item in catalog}[f"db:Owner_42/{BVID}.db"]
 
-            self.assertTrue(main["ok"])
-            self.assertEqual(main["video_count"], 1)
-            self.assertEqual(main["comment_count"], 1)
-            self.assertEqual(main["top_owners"], [])
-            self.assertEqual(main["coverage_status"], "unique")
+            self.assertTrue(database["ok"])
+            self.assertEqual(database["video_count"], 1)
+            self.assertEqual(database["comment_count"], 1)
+            self.assertEqual(database["top_owners"], [])
+            self.assertEqual(database["coverage_status"], "unique")
 
     def test_database_catalog_ignores_hotplug_json_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -648,7 +690,7 @@ class StorageTests(unittest.TestCase):
 
             self.assertFalse(converted_db.exists())
             self.assertNotIn("db:video_archive.db", by_id)
-            self.assertIn("main", by_id)
+            self.assertNotIn("main", by_id)
 
     def test_database_catalog_marks_duplicate_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -703,6 +745,8 @@ class StorageTests(unittest.TestCase):
                 resolve_database_path("db:../comment_danmaku.db", main_db, hotplug_dir)
             with self.assertRaises(BadRequestError):
                 resolve_database_path("db:notes.txt", main_db, hotplug_dir)
+            with self.assertRaises(BadRequestError):
+                resolve_database_path("legacy:owner_archive.db", main_db, hotplug_dir)
 
     def test_export_database_path_uses_readable_label_before_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:

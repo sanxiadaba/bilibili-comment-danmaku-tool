@@ -185,6 +185,7 @@ export type DanmakuData = {
 };
 
 export type VideoSummary = {
+  db_id?: string;
   bvid: string;
   aid: number;
   title: string;
@@ -232,6 +233,8 @@ export type VideoListResponse = {
 export type ParseVideoResponse = {
   ok?: boolean;
   bvid: string;
+  db_id?: string;
+  database?: DatabaseInfo;
   task_id?: string;
   queue_position?: number;
   message?: string;
@@ -342,7 +345,7 @@ export type ArchiveDeleteResponse = {
 
 export type DatabaseInfo = {
   id: string;
-  role: "main" | "hotplug" | "legacy_export" | string;
+  role: "hotplug" | string;
   name: string;
   file_name: string;
   path: string;
@@ -386,7 +389,6 @@ export type DatabaseListResponse = {
   databases: DatabaseInfo[];
   active_id: string;
   hotplug_dir: string;
-  legacy_export_dir: string;
 };
 
 export type DatabaseImportResponse = {

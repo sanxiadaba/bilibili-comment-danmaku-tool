@@ -3,6 +3,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlencode
 
 from app_logging import log_event, log_exception
@@ -11,6 +12,7 @@ from bilibili_comment_danmaku import scraper
 from bilibili_comment_danmaku.scraper import inspect_cookie_status
 from bilibili_comment_danmaku.scraper import BilibiliRequestError
 from bilibili_comment_danmaku.storage import connect, ensure_schema
+from database_registry import find_video_database_path, video_database_path_from_archive
 from progress_state import clamp_float, first_int, parse_float, start_progress, update_progress, finish_progress, fail_progress
 from task_queue import InMemoryTaskQueue
 
@@ -207,6 +209,54 @@ def db_status(db_path, mid):
         conn.close()
 
 
+def db_status_for_bvid(db_path, bvid):
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return {}
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT
+                v.bvid,
+                v.fetched_at,
+                v.video_cid,
+                v.api_comment_count,
+                v.stat_reply,
+                v.stat_danmaku,
+                (SELECT COUNT(*) FROM comments WHERE comments.bvid = v.bvid) AS comments,
+                (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = v.bvid) AS danmaku
+            FROM videos v
+            WHERE v.bvid = ?
+            """,
+            (str(bvid),),
+        ).fetchone()
+        if not row:
+            return {}
+        return {
+            row["bvid"]: {
+                "fetched_at": row["fetched_at"],
+                "video_cid": row["video_cid"],
+                "api_comment_count": row["api_comment_count"],
+                "stat_reply": row["stat_reply"],
+                "stat_danmaku": row["stat_danmaku"],
+                "comments": row["comments"] or 0,
+                "danmaku": row["danmaku"] or 0,
+            }
+        }
+    finally:
+        conn.close()
+
+
+def database_dir_for_task(task):
+    if task.get("database_dir"):
+        return Path(task["database_dir"])
+    parent = Path(task["db_path"]).parent
+    return parent if parent.name == "databases" else parent / "databases"
+
+
 def is_complete(item, status):
     bvid = item.get("bvid")
     saved = status.get(bvid or "")
@@ -240,13 +290,13 @@ class SpaceArchiveService:
         self.refresh_lock = refresh_lock
         self.queue = InMemoryTaskQueue("space", self.run_queue_task, state_path=state_path, retry_validator=self.can_retry_task)
 
-    def enqueue(self, db_path, mid, owner_ref, options, request_id=""):
+    def enqueue(self, database_dir, mid, owner_ref, options, request_id=""):
         return self.queue.enqueue(
             {
                 "mid": str(mid),
                 "owner_ref": owner_ref,
                 "request_id": request_id,
-                "db_path": str(db_path),
+                "database_dir": str(database_dir),
                 "options": dict(options),
             }
         )
@@ -302,7 +352,7 @@ class SpaceArchiveService:
         return log
 
     def can_retry_task(self, task):
-        return bool(task.get("db_path") and task.get("mid") and task.get("options"))
+        return bool((task.get("database_dir") or task.get("db_path")) and task.get("mid") and task.get("options"))
 
     def run_queue_task(self, task):
         self.refresh_lock.acquire()
@@ -319,7 +369,7 @@ class SpaceArchiveService:
             self.refresh_lock.release()
 
     def run_archive_task(self, task):
-        db_path = task["db_path"]
+        database_dir = database_dir_for_task(task)
         mid = task["mid"]
         options = task["options"]
         request_id = task.get("request_id", "")
@@ -353,8 +403,8 @@ class SpaceArchiveService:
             total = len(items)
             self.update_task(task, total=total, message=f"视频列表完成，共 {total} 个视频")
             update_progress("space", mid, f"UP视频列表完成 total={total} complete=0 archived=0 skipped=0 failed=0")
-            status = db_status(db_path, mid)
-            complete = sum(1 for video in items if is_complete(video, status))
+            status = {}
+            complete = 0
             for index, item in enumerate(items, start=1):
                 if task.get("stop_requested"):
                     self.update_task(
@@ -387,8 +437,13 @@ class SpaceArchiveService:
                     update_progress("space", current_bvid or mid, f"UP视频归档已暂停 complete={complete} total={total}")
                     return
                 current_bvid = item.get("bvid") or ""
-                if is_complete(item, status):
+                current_db_path = find_video_database_path(current_bvid, database_dir) if current_bvid else None
+                if current_db_path is None:
+                    current_db_path = database_dir / "unknown_owner" / f"{current_bvid or 'unknown'}.db"
+                current_status = db_status_for_bvid(current_db_path, current_bvid)
+                if is_complete(item, current_status):
                     skipped += 1
+                    complete += 1
                     self.update_task(
                         task,
                         current_bvid=current_bvid,
@@ -434,9 +489,10 @@ class SpaceArchiveService:
                         max_main_pages=None,
                         fetch_children=True,
                     )
+                    current_db_path = video_database_path_from_archive(comments, database_dir)
                     self.update_task(task, message=f"正在保存评论 {index}/{total}")
                     update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
-                    save_comments_to_sqlite(comments, db_path, replace=False)
+                    save_comments_to_sqlite(comments, current_db_path, replace=True)
 
                     headers = scraper.make_headers(current_bvid, cookie)
                     danmaku_result = scrape_danmaku(
@@ -449,7 +505,7 @@ class SpaceArchiveService:
                     if danmaku_result.get("items"):
                         self.update_task(task, message=f"正在保存弹幕 {index}/{total}")
                         update_progress("space", current_bvid, f"UP视频保存弹幕 {index}/{total} bvid={current_bvid}")
-                        save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
+                        save_danmaku_to_sqlite(danmaku_result, current_db_path, replace=True)
                     else:
                         update_progress("space", current_bvid, f"UP视频弹幕为空已跳过保存 {index}/{total} bvid={current_bvid}")
 
@@ -522,8 +578,7 @@ class SpaceArchiveService:
                     update_progress("space", current_bvid, f"UP视频间隔 {index}/{total} seconds={pause:.1f} next={index + 1}")
                     time.sleep(pause)
 
-            status = db_status(db_path, mid)
-            complete = sum(1 for video in items if is_complete(video, status))
+            complete = archived + skipped
             self.update_task(
                 task,
                 status="finished",

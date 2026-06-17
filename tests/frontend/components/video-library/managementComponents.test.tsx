@@ -156,7 +156,6 @@ describe("video library management components", () => {
         importPath="D:/backup/archive.json"
         isImporting={false}
         isLoading={false}
-        legacyExportDir="D:/data/exports"
         queue={{ active: null, queued: [], recent: [] }}
         view="database"
         onImportPathChange={() => undefined}
@@ -169,7 +168,7 @@ describe("video library management components", () => {
       />,
     );
 
-    expect(html).toContain("Main archive");
+    expect(html).toContain("BV1JogwzEEzD");
     expect(html).toContain("Archive");
     expect(html).toContain("D:/data/hotplug");
     expect(html).toContain("D:/backup/archive.json");
@@ -188,7 +187,6 @@ describe("video library management components", () => {
         importPath=""
         isImporting={false}
         isLoading={false}
-        legacyExportDir="D:/data/exports"
         queue={{ active: null, queued: [], recent: [] }}
         view="auth"
         onCookieStatusChange={() => undefined}
