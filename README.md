@@ -51,10 +51,9 @@ Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
 ## 本地数据
 
 ```text
-data/comment_danmaku.db       默认 SQLite 数据库
+data/databases/<UP主>/<BVID>.db  每个视频一个 SQLite 数据库
 data/cookie.txt               可选 Bilibili cookie
-data/databases/               导入或热插拔数据库
-data/exports/                 本地导出目录
+data/databases/               视频数据库、导入数据库和本地导出目录
 logs/app.jsonl                结构化运行日志
 dist/                         前端构建产物
 ```
@@ -81,6 +80,19 @@ pnpm package:windows
 ```
 
 该命令会先构建前端，再用 Nuitka 生成 `release/bilibili-comment-danmaku-tool/` 文件夹版程序。双击其中的 `bilibili-comment-danmaku-tool.exe` 会启动本地服务并打开网页；数据、Cookie 和日志保存在该 release 文件夹下的 `data/` 与 `logs/`。
+
+GitHub Release 发布：
+
+1. 合并到 `main` 只更新源码，不会自动发布新版。
+2. 在 GitHub Actions 里手动运行 `Release` workflow，输入新的版本号（例如 `v1.0.1`）和目标分支 `main`。
+3. workflow 会创建对应 tag，构建 Windows 免安装包，并上传到 GitHub Release。
+
+也可以本地手动推送 `v*` tag 触发同一个发布流程：
+
+```powershell
+git tag -a v1.0.1 -m "Release v1.0.1"
+git push origin v1.0.1
+```
 
 Python 编译检查：
 
@@ -127,7 +139,7 @@ AGENTS.md      agent 开发规则
 ## 设计原则
 
 - 本地优先：不要把服务直接暴露到公网。
-- SQLite 优先：迁移必须兼容用户已有数据。
+- SQLite 优先：新结构按视频拆分数据库，避免单库无限膨胀。
 - 单一路径：有维护良好的主路径时，删除旧脚本和重复抽象。
 - 任务可观测：长任务必须能通过进度和队列 API 查看。
 - 不漂移秘密：cookie、数据库、日志、构建产物永不提交。

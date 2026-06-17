@@ -4,9 +4,24 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag, for example v1.0.1"
+        required: true
+        type: string
+      target_ref:
+        description: "Branch, tag, or commit to release"
+        required: true
+        default: "main"
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   windows-portable:
@@ -16,6 +31,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        shell: powershell
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}".Trim()
+          } else {
+            $version = "${{ github.ref_name }}".Trim()
+          }
+          if ($version -notmatch '^v\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
+            throw "Release version must look like v1.2.3 or v1.2.3-beta.1. Got: $version"
+          }
+          $targetSha = git rev-parse HEAD
+          "RELEASE_TAG=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TARGET_SHA=$targetSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -46,16 +79,27 @@ jobs:
       - name: Create release archive
         shell: powershell
         run: |
-          $version = "${{ github.ref_name }}"
+          $version = $env:RELEASE_TAG
           $zip = "release/bilibili-comment-danmaku-tool-windows-x64-$version.zip"
           Compress-Archive -Path "release/bilibili-comment-danmaku-tool/*" -DestinationPath $zip -Force
           "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-comment-danmaku-tool-windows-x64-${{ env.RELEASE_TAG }}
+          path: ${{ env.RELEASE_ZIP }}
+          if-no-files-found: error
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ env.RELEASE_TARGET_SHA }}
           files: ${{ env.RELEASE_ZIP }}
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          make_latest: true
           body: |
             Windows x64 portable build.
 
