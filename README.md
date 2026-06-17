@@ -81,6 +81,23 @@ pnpm package:windows
 
 该命令会先构建前端，再用 Nuitka 生成 `release/bilibili-comment-danmaku-tool/` 文件夹版程序。双击其中的 `bilibili-comment-danmaku-tool.exe` 会启动本地服务并打开网页；程序窗口只显示启动地址和日志位置，详细日志保存在该 release 文件夹下的 `logs/`，数据和 Cookie 保存在 `data/`。
 
+打包后的 exe 也可以直接当命令行工具使用：
+
+```powershell
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe serve --port 8001
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli fetch-video BV1xx411c7mD
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli list-space https://space.bilibili.com/1538787344 --max-videos 3
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli archive-space https://space.bilibili.com/1538787344 --max-videos 1
+```
+
+源码模式使用同一套 CLI：
+
+```powershell
+python backend/app_cli.py fetch-video BV1xx411c7mD
+python backend/app_cli.py list-space https://space.bilibili.com/1538787344 --max-videos 3
+python backend/app_cli.py archive-space https://space.bilibili.com/1538787344 --max-videos 1
+```
+
 GitHub Release 发布：
 
 1. 只有合并分支到 `main` 的 merge commit 才会自动发布。

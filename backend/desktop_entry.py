@@ -64,6 +64,12 @@ def initialize_database(db_path):
 
 
 def main():
+    if "--cli" in sys.argv:
+        from app_cli import main as cli_main
+
+        cli_index = sys.argv.index("--cli")
+        raise SystemExit(cli_main(sys.argv[cli_index + 1 :]))
+
     root = app_root()
     parser = argparse.ArgumentParser(description="Run Bilibili comment/danmaku tool as a local desktop app.")
     parser.add_argument("--host", default="127.0.0.1")

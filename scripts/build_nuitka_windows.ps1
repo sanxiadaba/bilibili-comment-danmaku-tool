@@ -8,7 +8,8 @@ $internalDir = Join-Path $outputDir "_internal"
 $entry = Join-Path $root "backend\desktop_entry.py"
 $distDir = Join-Path $root "dist"
 $outputExe = Join-Path $outputDir "$appName.exe"
-$iconPath = Join-Path $releaseRoot "bilibili-tool.ico"
+$iconSource = Join-Path $root "assets\app-icon.png"
+$iconPath = Join-Path $env:TEMP "bilibili-comment-danmaku-tool.ico"
 
 Set-Location $root
 
@@ -34,40 +35,19 @@ if (Test-Path $outputDir) {
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
-function New-BilibiliIcon {
-    param([string]$IconFile)
+function Convert-PngToIcon {
+    param([string]$PngFile, [string]$IconFile)
 
+    if (-not (Test-Path $PngFile)) {
+        throw "Missing icon source: $PngFile"
+    }
+    $source = [System.Drawing.Image]::FromFile($PngFile)
     $bitmap = New-Object System.Drawing.Bitmap 256, 256
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
     $graphics.Clear([System.Drawing.Color]::Transparent)
-
-    $pink = [System.Drawing.Color]::FromArgb(255, 251, 114, 153)
-    $white = [System.Drawing.Color]::White
-    $dark = [System.Drawing.Color]::FromArgb(255, 62, 48, 58)
-    $bodyBrush = New-Object System.Drawing.SolidBrush $pink
-    $whiteBrush = New-Object System.Drawing.SolidBrush $white
-    $darkBrush = New-Object System.Drawing.SolidBrush $dark
-    $pen = New-Object System.Drawing.Pen $white, 14
-    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-
-    $bodyPath = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $diameter = 68
-    $bodyPath.AddArc(34, 58, $diameter, $diameter, 180, 90)
-    $bodyPath.AddArc(154, 58, $diameter, $diameter, 270, 90)
-    $bodyPath.AddArc(154, 132, $diameter, $diameter, 0, 90)
-    $bodyPath.AddArc(34, 132, $diameter, $diameter, 90, 90)
-    $bodyPath.CloseFigure()
-    $graphics.FillPath($bodyBrush, $bodyPath)
-    $graphics.DrawLine($pen, 82, 62, 54, 28)
-    $graphics.DrawLine($pen, 174, 62, 202, 28)
-    $graphics.FillEllipse($whiteBrush, 70, 100, 36, 36)
-    $graphics.FillEllipse($whiteBrush, 150, 100, 36, 36)
-    $graphics.FillEllipse($darkBrush, 84, 114, 10, 10)
-    $graphics.FillEllipse($darkBrush, 164, 114, 10, 10)
-    $graphics.FillRectangle($whiteBrush, 92, 162, 72, 10)
-
+    $graphics.DrawImage($source, 0, 0, 256, 256)
     $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
     $stream = [System.IO.File]::Create($IconFile)
     try {
@@ -75,13 +55,13 @@ function New-BilibiliIcon {
     } finally {
         $stream.Dispose()
         $icon.Dispose()
-        $bodyPath.Dispose()
         $graphics.Dispose()
         $bitmap.Dispose()
+        $source.Dispose()
     }
 }
 
-New-BilibiliIcon -IconFile $iconPath
+Convert-PngToIcon -PngFile $iconSource -IconFile $iconPath
 
 $nuitkaArgs = @(
     "--standalone",
@@ -118,6 +98,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -134,6 +116,9 @@ static class Program
 
 class Launcher
 {
+    [DllImport("kernel32.dll")]
+    static extern bool FreeConsole();
+
     public static int Run(string[] args)
     {
         string root = AppDomain.CurrentDomain.BaseDirectory;
@@ -143,6 +128,12 @@ class Launcher
             MessageBox.Show("Missing runtime executable: " + target, "Bilibili Comment Danmaku Tool", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
+        if (args.Length > 0 && IsCliMode(args[0]))
+        {
+            string[] forwarded = BuildForwardedArgs(args);
+            return RunConsole(target, root, forwarded);
+        }
+        FreeConsole();
         string url = "http://127.0.0.1:8001/";
         string logPath = Path.Combine(root, "logs", "app.jsonl");
         var startInfo = new ProcessStartInfo
@@ -180,6 +171,69 @@ class Launcher
         if (value.IndexOfAny(new[] { ' ', '\t', '\n', '\r', '"' }) < 0) return value;
         return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
     }
+
+    static bool IsCliMode(string value)
+    {
+        string mode = (value ?? "").Trim().ToLowerInvariant();
+        return mode == "cli" || mode == "serve" || mode == "server" || mode == "--help" || mode == "-h";
+    }
+
+    static string[] BuildForwardedArgs(string[] args)
+    {
+        string mode = (args[0] ?? "").Trim().ToLowerInvariant();
+        if (mode == "cli")
+        {
+            return new[] { "--cli" }.Concat(args.Skip(1)).ToArray();
+        }
+        if (mode == "serve" || mode == "server")
+        {
+            return args.Skip(1).ToArray();
+        }
+        return new[] { "--cli", "--help" };
+    }
+
+    static int RunConsole(string target, string root, string[] args)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = target,
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            Arguments = string.Join(" ", args.Select(Quote)),
+        };
+        using (var process = Process.Start(startInfo))
+        {
+            if (process == null) return 1;
+            ConsoleCancelEventHandler cancelHandler = (sender, eventArgs) =>
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill();
+                }
+                catch { }
+            };
+            Console.CancelKeyPress += cancelHandler;
+            try
+            {
+                var stdoutThread = new Thread(() => process.StandardOutput.BaseStream.CopyTo(Console.OpenStandardOutput()));
+                var stderrThread = new Thread(() => process.StandardError.BaseStream.CopyTo(Console.OpenStandardError()));
+                stdoutThread.Start();
+                stderrThread.Start();
+                process.WaitForExit();
+                stdoutThread.Join();
+                stderrThread.Join();
+                return process.ExitCode;
+            }
+            finally
+            {
+                Console.CancelKeyPress -= cancelHandler;
+            }
+        }
+    }
+
 }
 
 class StatusForm : Form
@@ -258,7 +312,7 @@ class StatusForm : Form
         };
         process.ErrorDataReceived += (sender, eventArgs) => { };
 
-        var timer = new Timer { Interval = 1000 };
+        var timer = new System.Windows.Forms.Timer { Interval = 1000 };
         timer.Tick += (sender, eventArgs) =>
         {
             if (process.HasExited)
@@ -292,7 +346,7 @@ if (-not (Test-Path $csc)) {
 if (-not (Test-Path $csc)) {
     throw "C# compiler was not found."
 }
-& $csc /nologo /target:winexe /win32icon:"$iconPath" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:"$outputExe" "$launcherSource"
+& $csc /nologo /target:exe /win32icon:"$iconPath" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /out:"$outputExe" "$launcherSource"
 if ($LASTEXITCODE -ne 0) {
     throw "Launcher compilation failed with exit code $LASTEXITCODE"
 }
