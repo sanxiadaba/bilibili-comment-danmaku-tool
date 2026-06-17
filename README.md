@@ -83,9 +83,10 @@ pnpm package:windows
 
 GitHub Release 发布：
 
-1. 每次推送或合并到 `main` 都会自动运行 `Release` workflow。
-2. 自动发布会读取已有稳定版本 tag，并递增 patch 号，例如从 `v1.0.1` 发布到 `v1.0.2`。
-3. workflow 会构建 Windows 免安装包，并上传到 GitHub Release。
+1. 只有合并分支到 `main` 的 merge commit 才会自动发布。
+2. 自动发布只关注前后端、打包脚本和依赖文件变更；只改 README、文档或 workflow 不会发布。
+3. 自动发布会读取已有稳定版本 tag，并递增 patch 号，例如从 `v1.0.1` 发布到 `v1.0.2`。
+4. workflow 会构建 Windows 免安装包，并上传到 GitHub Release。
 
 需要指定版本时，也可以在 GitHub Actions 里手动运行 `Release` workflow，输入版本号（例如 `v1.1.0`）和目标分支 `main`。
 
