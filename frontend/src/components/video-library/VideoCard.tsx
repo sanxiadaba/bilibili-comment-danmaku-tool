@@ -10,6 +10,7 @@ type VideoCardProps = {
 };
 
 export function VideoCard({ dbId, video }: VideoCardProps) {
+  const targetDbId = video.db_id || dbId;
   return (
     <article className="interactive-card grid gap-3 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
       <div className="relative aspect-video overflow-hidden rounded-md bg-slate-100 shadow-sm">
@@ -37,10 +38,10 @@ export function VideoCard({ dbId, video }: VideoCardProps) {
       <div className="flex flex-wrap items-center gap-2 self-center md:flex-col md:items-stretch">
         <a
           className="btn-quiet inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium"
-          href={dbPath(`/video/${video.bvid}`, dbId)}
+          href={dbPath(`/video/${video.bvid}`, targetDbId)}
           onClick={() =>
             logClientEvent("client.user.video_card.open_comments", "opened comments from video card", {
-              db_id: dbId,
+              db_id: targetDbId,
               bvid: video.bvid,
               title: video.title,
             })
@@ -51,10 +52,10 @@ export function VideoCard({ dbId, video }: VideoCardProps) {
         </a>
         <a
           className="btn-primary inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium"
-          href={dbPath(`/danmaku/${video.bvid}`, dbId)}
+          href={dbPath(`/danmaku/${video.bvid}`, targetDbId)}
           onClick={() =>
             logClientEvent("client.user.video_card.open_danmaku", "opened danmaku from video card", {
-              db_id: dbId,
+              db_id: targetDbId,
               bvid: video.bvid,
               title: video.title,
             })

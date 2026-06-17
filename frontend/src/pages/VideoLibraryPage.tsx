@@ -394,6 +394,7 @@ export function VideoLibraryPage() {
   }
 
   async function exportVideoDatabase(video: VideoSummary, format: ExportFormat) {
+    const targetDbId = video.db_id || activeDbId;
     setExportingKey(`video:${video.bvid}`);
     setExportTarget(null);
     setError("");
@@ -401,7 +402,7 @@ export function VideoLibraryPage() {
     try {
       const payload = await exportDatabaseArchive({
         bvid: video.bvid,
-        db_id: activeDbId,
+        db_id: targetDbId,
         format,
         label: videoExportLabel(video),
       });
@@ -409,7 +410,7 @@ export function VideoLibraryPage() {
       setNotice(exportSuccessNotice(payload, format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
       logClientEvent("client.user.database_export.video_success", "video database exported", {
-        db_id: activeDbId,
+        db_id: targetDbId,
         bvid: video.bvid,
         size_bytes: payload.size_bytes,
       });
@@ -428,13 +429,22 @@ export function VideoLibraryPage() {
   async function exportBatchVideos(selectedVideos: VideoSummary[], format: ExportFormat) {
     const bvids = selectedVideos.map((video) => video.bvid);
     if (!bvids.length) return;
+    const targetDbId = singleDatabaseIdForVideos(selectedVideos, activeDbId);
+    if (!targetDbId) {
+      setNotice({
+        kind: "warning",
+        title: "Cannot batch export across databases",
+        message: "Selected videos are stored in different database files. Export one video at a time, or select videos from one database.",
+      });
+      return;
+    }
     setExportingKey("batch:videos");
     setError("");
     setMessage(`正在导出 ${bvids.length} 个视频`);
     try {
       const payload = await exportDatabaseArchive({
         bvids,
-        db_id: activeDbId,
+        db_id: targetDbId,
         format,
         label: batchExportLabel("批量视频", selectedVideos.map((video) => video.title || video.bvid), bvids.length),
       });
@@ -522,6 +532,12 @@ export function VideoLibraryPage() {
     return { bvids: Array.from(new Set(target.owners.flatMap((owner) => owner.bvids))) };
   }
 
+  function databaseIdForDeleteTarget(target: DeleteTarget) {
+    if (target.kind === "video") return target.video.db_id || activeDbId;
+    if (target.kind === "videos") return singleDatabaseIdForVideos(target.videos, activeDbId);
+    return activeDbId;
+  }
+
   function deleteTargetVideoCount(target: DeleteTarget) {
     if (target.kind === "owner") return target.owner.videoCount;
     if (target.kind === "owners") return target.owners.reduce((sum, owner) => sum + owner.videoCount, 0);
@@ -533,12 +549,21 @@ export function VideoLibraryPage() {
     if (!deleteTarget) return;
     const target = deleteTarget;
     const payloadTarget = deletePayloadForTarget(target);
+    const targetDbId = databaseIdForDeleteTarget(target);
+    if (!targetDbId) {
+      setNotice({
+        kind: "warning",
+        title: "Cannot batch delete across databases",
+        message: "Selected videos are stored in different database files. Delete one video at a time, or select videos from one database.",
+      });
+      return;
+    }
     const removedBvids = new Set(payloadTarget.bvids || []);
     setDeletingKey(`delete:${target.kind}`);
     setError("");
     setMessage("");
     try {
-      const payload = await deleteArchiveData({ db_id: activeDbId, ...payloadTarget });
+      const payload = await deleteArchiveData({ db_id: targetDbId, ...payloadTarget });
       setDeleteTarget(null);
       setOwnerFilter("all");
       setLibraryView("tasks");
@@ -561,7 +586,7 @@ export function VideoLibraryPage() {
         void loadDatabases({ quiet: true, selectId: activeDbId });
       }, 8000);
       logClientEvent("client.user.archive_delete.success", "archive delete task queued", {
-        db_id: activeDbId,
+        db_id: targetDbId,
         target: target.kind,
         task_id: payload.task_id,
         queue_position: payload.queue_position,
@@ -708,12 +733,13 @@ export function VideoLibraryPage() {
   }
 
   function openVideo(video: VideoSummary) {
+    const targetDbId = video.db_id || activeDbId;
     logClientEvent("client.user.video.open_existing", "opened existing local archive", {
-      db_id: activeDbId,
+      db_id: targetDbId,
       bvid: video.bvid,
       title: video.title,
     });
-    window.history.pushState({}, "", dbPath(`/video/${video.bvid}`, activeDbId));
+    window.history.pushState({}, "", dbPath(`/video/${video.bvid}`, targetDbId));
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
@@ -1114,6 +1140,11 @@ function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummary[]) {
     byBvid.set(video.bvid, video);
   }
   return Array.from(byBvid.values());
+}
+
+function singleDatabaseIdForVideos(videos: VideoSummary[], fallbackDbId: string) {
+  const ids = new Set(videos.map((video) => video.db_id || fallbackDbId));
+  return ids.size === 1 ? Array.from(ids)[0] : "";
 }
 
 function estimateOwnerStorageBytes(commentCount: number, danmakuCount: number, videoCount: number) {

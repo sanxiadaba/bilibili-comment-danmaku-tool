@@ -185,6 +185,7 @@ export type DanmakuData = {
 };
 
 export type VideoSummary = {
+  db_id?: string;
   bvid: string;
   aid: number;
   title: string;
@@ -232,6 +233,8 @@ export type VideoListResponse = {
 export type ParseVideoResponse = {
   ok?: boolean;
   bvid: string;
+  db_id?: string;
+  database?: DatabaseInfo;
   task_id?: string;
   queue_position?: number;
   message?: string;

@@ -19,9 +19,11 @@ from control_api import control_capabilities, control_openapi_document, normaliz
 from database_registry import (  # noqa: E402
     export_database_path,
     import_database_file,
+    list_all_video_summaries_page,
     list_database_catalog,
     parse_multipart_files,
     resolve_database_path,
+    video_database_path,
 )
 from errors import BadRequestError  # noqa: E402
 from progress_state import progress_percent, progress_stats  # noqa: E402
@@ -593,6 +595,44 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(by_id["db:owner_archive.db"]["video_count"], 1)
             self.assertTrue(by_id["db:owner_archive.db"]["ok"])
             self.assertEqual(resolve_database_path("db:owner_archive.db", main_db, hotplug_dir), hotplug_db.resolve())
+
+    def test_video_database_path_uses_one_database_per_bvid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hotplug_dir = Path(tmp) / "databases"
+
+            path = video_database_path(BVID, hotplug_dir, owner_mid="42", owner_name="Owner")
+
+            self.assertEqual(path, hotplug_dir.resolve() / "Owner_42" / f"{BVID}.db")
+            self.assertTrue(hotplug_dir.exists())
+
+    def test_default_video_listing_aggregates_single_video_databases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_db = root / "comment_danmaku.db"
+            hotplug_dir = root / "databases"
+            first_db = video_database_path("BV1111111111", hotplug_dir, owner_mid="42", owner_name="Owner")
+            second_db = video_database_path("BV2222222222", hotplug_dir, owner_mid="42", owner_name="Owner")
+            first = make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "first")])
+            first["metadata"] = {
+                **first["metadata"],
+                "bvid": "BV1111111111",
+                "source_url": "https://www.bilibili.com/video/BV1111111111",
+            }
+            second = make_archive("2024-01-02T00:00:00+00:00", [make_comment("2", 1, "second")])
+            second["metadata"] = {
+                **second["metadata"],
+                "bvid": "BV2222222222",
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            save_comments_to_sqlite(first, first_db, replace=True)
+            save_comments_to_sqlite(second, second_db, replace=True)
+
+            page = list_all_video_summaries_page(main_db, hotplug_dir, limit=10)
+
+            self.assertEqual(page["total"], 2)
+            self.assertEqual([video["bvid"] for video in page["videos"]], ["BV2222222222", "BV1111111111"])
+            self.assertEqual([video["db_id"] for video in page["videos"]], ["db:Owner_42/BV2222222222.db", "db:Owner_42/BV1111111111.db"])
+            self.assertEqual(page["owners"][0]["video_count"], 2)
 
     def test_database_catalog_reports_storage_and_top_owners(self):
         with tempfile.TemporaryDirectory() as tmp:

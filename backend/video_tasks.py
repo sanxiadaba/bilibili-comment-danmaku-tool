@@ -9,6 +9,7 @@ from bilibili_comment_danmaku import (
     scrape_comments,
     scrape_danmaku,
 )
+from database_registry import video_database_path_from_archive
 from progress_state import fail_progress, finish_progress, make_progress_logger, parse_float, start_progress, update_progress
 from space_archive import api_error_response
 from space_archive import TaskCancelled
@@ -25,14 +26,14 @@ class VideoParseTaskService:
         self.refresh_lock = refresh_lock
         self.queue = InMemoryTaskQueue("parse", self.run_queue_task, state_path=state_path, retry_validator=self.can_retry_task)
 
-    def enqueue(self, db_path, video_ref, delay, request_id=""):
+    def enqueue(self, database_dir, video_ref, delay, request_id=""):
         bvid = extract_bvid(video_ref)
         return self.queue.enqueue(
             {
                 "mid": "",
                 "owner_ref": "视频抓取",
                 "request_id": request_id,
-                "db_path": str(db_path),
+                "database_dir": str(database_dir),
                 "video_ref": video_ref,
                 "bvid": bvid,
                 "delay": parse_float(delay, 0.35),
@@ -56,7 +57,7 @@ class VideoParseTaskService:
         )
 
     def can_retry_task(self, task):
-        return bool(task.get("db_path") and (task.get("video_ref") or task.get("bvid")))
+        return bool((task.get("database_dir") or task.get("db_path")) and (task.get("video_ref") or task.get("bvid")))
 
     def run_queue_task(self, task):
         self.refresh_lock.acquire()
@@ -131,23 +132,21 @@ class VideoParseTaskService:
         return log
 
     def run_parse_task(self, task):
-        db_path = task["db_path"]
+        db_path = task.get("db_path", "")
+        database_dir = task.get("database_dir") or db_path
         video_ref = task["video_ref"]
         bvid = task.get("bvid") or extract_bvid(video_ref)
         delay = task.get("delay", 0.35)
         request_id = task.get("request_id", "")
         logs = []
         try:
-            try:
-                before = load_comment_data(db_path, bvid=bvid)["metadata"]["comment_total_count"]
-            except LookupError:
-                before = 0
+            before = 0
 
             log_event(
                 "task.parse.start",
                 "parse video task started",
                 request_id=request_id,
-                db=str(db_path),
+                database_dir=str(database_dir),
                 bvid=bvid,
                 task_id=task["id"],
                 delay=delay,
@@ -167,6 +166,13 @@ class VideoParseTaskService:
             )
             bvid = output_data["metadata"]["bvid"]
             task["bvid"] = bvid
+            db_path = video_database_path_from_archive(output_data, database_dir)
+            task["db_path"] = str(db_path)
+            self.queue.update(task, db_path=str(db_path))
+            try:
+                before = load_comment_data(db_path, bvid=bvid)["metadata"]["comment_total_count"]
+            except LookupError:
+                before = 0
 
             if self.stop_or_pause_requested(task, bvid, 80):
                 return

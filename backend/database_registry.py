@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bilibili_comment_danmaku.archive import import_archive_json_to_sqlite, read_archive_meta
-from bilibili_comment_danmaku.storage import connect, connect_readonly, ensure_schema
+from bilibili_comment_danmaku.storage import connect, connect_readonly, ensure_schema, list_video_summaries_page
 from errors import BadRequestError
 
 
@@ -16,6 +16,7 @@ LEGACY_EXPORT_DIR = ROOT / "data" / "exports"
 DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
+AGGREGATE_VIDEO_LIST_LIMIT = 100000
 
 
 def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
@@ -28,7 +29,7 @@ def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     if prefix not in {"db", "legacy"} or not name:
         raise BadRequestError("数据库标识无效")
     base_dir = database_dir if prefix == "db" else LEGACY_EXPORT_DIR
-    candidate = (base_dir / name).resolve()
+    candidate = (base_dir / name.replace("\\", "/")).resolve()
     if not is_path_inside(candidate, base_dir.resolve()):
         raise BadRequestError("数据库路径无效")
     if candidate.suffix.lower() not in DATABASE_EXTENSIONS:
@@ -36,6 +37,159 @@ def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     if not candidate.exists():
         raise BadRequestError("数据库不存在，请刷新数据库列表")
     return candidate
+
+
+def video_database_filename(bvid):
+    bvid = str(bvid or "").strip()
+    if not bvid:
+        raise ValueError("missing bvid")
+    return normalize_database_filename(f"{bvid}.db")
+
+
+def owner_database_dir(owner_mid="", owner_name="", database_dir=DEFAULT_DATABASE_DIR):
+    database_dir = Path(database_dir).resolve()
+    owner_mid = str(owner_mid or "").strip()
+    owner_name = str(owner_name or "").strip()
+    if owner_name and owner_mid:
+        label = f"{owner_name}_{owner_mid}"
+    elif owner_name:
+        label = owner_name
+    elif owner_mid:
+        label = f"mid_{owner_mid}"
+    else:
+        label = "unknown_owner"
+    path = database_dir / normalize_path_component(label)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR, owner_mid="", owner_name=""):
+    return owner_database_dir(owner_mid, owner_name, database_dir) / video_database_filename(bvid)
+
+
+def video_database_path_from_archive(archive, database_dir=DEFAULT_DATABASE_DIR):
+    metadata = archive.get("metadata") or {}
+    video_raw = archive.get("video_raw") or {}
+    owner = video_raw.get("owner") or {}
+    return video_database_path(
+        metadata.get("bvid") or archive.get("bvid"),
+        database_dir,
+        owner_mid=owner.get("mid") or metadata.get("owner_mid") or "",
+        owner_name=owner.get("name") or metadata.get("owner_name") or "",
+    )
+
+
+def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
+    filename = video_database_filename(bvid)
+    database_dir = Path(database_dir).resolve()
+    if not database_dir.exists():
+        return None
+    matches = sorted(database_dir.rglob(filename), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    for match in matches:
+        if match.is_file() and match.suffix.lower() in DATABASE_EXTENSIONS:
+            return match.resolve()
+    return None
+
+
+def database_id_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
+    path = Path(path).resolve()
+    main_db_path = Path(main_db_path).resolve()
+    database_dir = Path(database_dir).resolve()
+    if path == main_db_path:
+        return "main"
+    if is_path_inside(path, database_dir):
+        return f"db:{path.relative_to(database_dir).as_posix()}"
+    legacy_dir = Path(LEGACY_EXPORT_DIR).resolve()
+    if is_path_inside(path, legacy_dir):
+        return f"legacy:{path.relative_to(legacy_dir).as_posix()}"
+    return f"file:{path.name}"
+
+
+def iter_catalog_database_paths(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
+    main_db_path = Path(main_db_path).resolve()
+    database_dir = Path(database_dir).resolve()
+    yield main_db_path, "main"
+    for base_dir, prefix in ((database_dir, "db"), (LEGACY_EXPORT_DIR, "legacy")):
+        base_dir = Path(base_dir).resolve()
+        if not base_dir.exists():
+            continue
+        for path in sorted(base_dir.rglob("*"), key=lambda item: str(item.relative_to(base_dir)).lower()):
+            if path.is_file() and path.suffix.lower() in DATABASE_EXTENSIONS and path.resolve() != main_db_path:
+                yield path.resolve(), f"{prefix}:{path.relative_to(base_dir).as_posix()}"
+
+
+def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, limit=40, offset=0, include_owners=True):
+    limit = max(1, min(int(limit or 40), 200))
+    offset = max(0, int(offset or 0))
+    by_bvid = {}
+    for db_path, db_id in iter_catalog_database_paths(main_db_path, database_dir):
+        if not Path(db_path).exists():
+            continue
+        try:
+            page = list_video_summaries_page(
+                db_path,
+                limit=AGGREGATE_VIDEO_LIST_LIMIT,
+                offset=0,
+                include_owners=False,
+            )
+        except Exception:
+            continue
+        for video in page.get("videos") or []:
+            item = {**video, "db_id": db_id}
+            current = by_bvid.get(item["bvid"])
+            if current is None or video_summary_rank(item, db_id) > video_summary_rank(current, current.get("db_id")):
+                by_bvid[item["bvid"]] = item
+
+    videos = sorted(by_bvid.values(), key=video_summary_sort_key, reverse=True)
+    total = len(videos)
+    selected = videos[offset : offset + limit]
+    payload = {
+        "videos": selected,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + limit < total,
+    }
+    if include_owners:
+        payload["owners"] = owner_summaries_from_videos(videos)
+    return payload
+
+
+def video_summary_rank(video, db_id):
+    score = int(video.get("comment_total_count") or 0) * 10 + int(video.get("danmaku_count") or 0)
+    if db_id and db_id != "main":
+        score += 1
+    return score
+
+
+def video_summary_sort_key(video):
+    return (str(video.get("fetched_at") or ""), str(video.get("bvid") or ""), str(video.get("db_id") or ""))
+
+
+def owner_summaries_from_videos(videos):
+    owners = {}
+    for video in videos:
+        owner_mid = str(video.get("owner_mid") or "")
+        owner_name = str(video.get("owner_name") or "")
+        key = f"mid:{owner_mid}" if owner_mid else f"name:{owner_name}"
+        current = owners.setdefault(
+            key,
+            {
+                "key": key,
+                "name": owner_name or "Unknown owner",
+                "owner_mid": owner_mid,
+                "video_count": 0,
+                "comment_count": 0,
+                "danmaku_count": 0,
+            },
+        )
+        current["video_count"] += 1
+        current["comment_count"] += int(video.get("comment_total_count") or 0)
+        current["danmaku_count"] += int(video.get("danmaku_count") or 0)
+    return sorted(
+        owners.values(),
+        key=lambda owner: (-owner["comment_count"], -owner["danmaku_count"], -owner["video_count"], owner["name"]),
+    )
 
 
 def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, include_details=True):
@@ -58,7 +212,7 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
         base_dir = Path(base_dir).resolve()
         if not base_dir.exists():
             continue
-        for path in sorted(base_dir.iterdir(), key=lambda item: item.name.lower()):
+        for path in sorted(base_dir.rglob("*"), key=lambda item: str(item.relative_to(base_dir)).lower()):
             if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
                 continue
             resolved = path.resolve()
@@ -85,14 +239,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
     if db_id is None:
-        if path == main_db_path:
-            db_id = "main"
-        elif is_path_inside(path, database_dir):
-            db_id = f"db:{path.name}"
-        elif is_path_inside(path, LEGACY_EXPORT_DIR):
-            db_id = f"legacy:{path.name}"
-        else:
-            db_id = f"file:{path.name}"
+        db_id = database_id_for_path(path, main_db_path, database_dir)
     if role is None:
         role = "main" if db_id == "main" else "hotplug"
 
@@ -453,6 +600,11 @@ def normalize_database_filename(name, allowed_extensions=DATABASE_EXTENSIONS):
     suffix = path.suffix.lower() if path.suffix.lower() in allowed_extensions else ".db"
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", path.stem).strip("._-") or "archive"
     return f"{stem[:100]}{suffix}"
+
+
+def normalize_path_component(name):
+    stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(name or "")).strip("._-")
+    return (stem or "archive")[:100]
 
 
 def parse_multipart_files(raw, content_type):

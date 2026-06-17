@@ -30,10 +30,13 @@ from database_registry import (
     DEFAULT_EXPORT_DIR,
     IMPORT_EXTENSIONS,
     LEGACY_EXPORT_DIR,
+    database_id_for_path,
     database_info_for_path,
     export_database_path,
+    find_video_database_path,
     import_database_file,
     import_uploaded_database_file,
+    list_all_video_summaries_page,
     list_database_catalog,
     parse_multipart_files,
     public_database_info,
@@ -423,14 +426,34 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         return True
 
 
+    def resolve_archive_db_path_from_query(self, parsed, bvid=None):
+        query = parse_qs(parsed.query)
+        db_id = query.get("db_id", [None])[0]
+        if bvid and (not db_id or db_id == "main"):
+            candidate = find_video_database_path(bvid, self.database_dir)
+            if candidate and candidate.exists():
+                return candidate
+        return self.resolve_db_path_from_query(parsed)
+
+
     def handle_videos_api(self):
+        query = parse_qs(urlparse(self.path).query)
+        db_id = query.get("db_id", ["main"])[0] or "main"
         db_path = self.resolve_db_path_from_query()
         try:
-            query = parse_qs(urlparse(self.path).query)
             limit = first_query_int(query, "limit", 40)
             offset = first_query_int(query, "offset", 0)
             include_meta = query.get("include_meta", ["1"])[0] not in {"0", "false", "False"}
-            page = list_video_summaries_page(db_path, limit=limit, offset=offset, include_owners=include_meta)
+            if db_id == "main":
+                page = list_all_video_summaries_page(
+                    self.db_path,
+                    self.database_dir,
+                    limit=limit,
+                    offset=offset,
+                    include_owners=include_meta,
+                )
+            else:
+                page = list_video_summaries_page(db_path, limit=limit, offset=offset, include_owners=include_meta)
             log_event(
                 "api.videos.list",
                 "listed local videos",
@@ -720,7 +743,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_parse_video_api(self):
         body = self.read_json_body()
-        db_path = self.resolve_db_path_from_body(body)
         video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
         if not video_ref:
             log_event(
@@ -737,7 +759,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=400)
             return
         task = video_parse_service.enqueue(
-            db_path=db_path,
+            database_dir=self.database_dir,
             video_ref=video_ref,
             delay=parse_float(body.get("delay"), 0.35),
             request_id=getattr(self, "request_id", ""),
@@ -746,6 +768,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             "task.parse.queued",
             "parse video task queued",
             request_id=getattr(self, "request_id", ""),
+            database_dir=str(self.database_dir),
             bvid=bvid,
             task_id=task["id"],
             queue_position=task["queue_position"],
@@ -763,7 +786,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_space_archive_api(self):
         body = self.read_json_body()
-        db_path = self.resolve_db_path_from_body(body)
         owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
         mid = extract_space_mid(owner_ref)
         if not mid:
@@ -779,7 +801,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         options = normalize_space_archive_options(body)
 
         task = space_archive_service.enqueue(
-            db_path=db_path,
+            database_dir=self.database_dir,
             mid=mid,
             owner_ref=owner_ref,
             options=options,
@@ -790,6 +812,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             "space archive task queued",
             request_id=getattr(self, "request_id", ""),
             mid=mid,
+            database_dir=str(self.database_dir),
             task_id=task["id"],
             queue_position=task["queue_position"],
             **options,
@@ -812,6 +835,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         task_id = str(body.get("task_id") or "").strip() or None
         retry_defaults = {
             "db_path": str(self.resolve_db_path_from_body(body)),
+            "database_dir": str(self.database_dir),
         }
         try:
             if task_id and task_id.startswith("parse-"):
@@ -1237,7 +1261,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         bvid = query.get("bvid", [None])[0]
         limit = first_query_int(query, "limit", DEFAULT_COMMENT_PAGE_SIZE)
         offset = first_query_int(query, "offset", 0)
-        db_path = self.resolve_db_path_from_query(parsed)
+        db_path = self.resolve_archive_db_path_from_query(parsed, bvid)
         try:
             payload = load_comment_data(db_path, bvid=bvid, limit=limit, offset=offset)
             log_event(
@@ -1275,7 +1299,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if limit is None:
             limit = DEFAULT_DANMAKU_PAGE_SIZE
         offset = first_query_int(query, "offset", 0)
-        db_path = self.resolve_db_path_from_query(parsed)
+        db_path = self.resolve_archive_db_path_from_query(parsed, bvid)
         try:
             payload = load_danmaku_data(db_path, bvid=bvid, limit=limit, offset=offset)
             log_event(
@@ -1319,7 +1343,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         query = parse_qs(parsed.query)
         requested_bvid = query.get("bvid", [None])[0]
         delay = parse_float(query.get("delay", [None])[0], 0.35)
-        db_path = self.resolve_db_path_from_query(parsed)
+        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
         try:
             current = load_comment_data(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
@@ -1410,7 +1434,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
         query = parse_qs(parsed.query)
         requested_bvid = query.get("bvid", [None])[0]
-        db_path = self.resolve_db_path_from_query(parsed)
+        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
         try:
             current = load_comment_data(db_path, bvid=requested_bvid)
             log_event(

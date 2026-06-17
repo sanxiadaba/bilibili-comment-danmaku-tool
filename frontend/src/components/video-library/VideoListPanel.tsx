@@ -56,7 +56,7 @@ export function VideoListPanel({
           videos.map((video) => (
             <VideoCard
               dbId={activeDbId}
-              key={video.bvid}
+              key={`${video.db_id || activeDbId}:${video.bvid}`}
               video={video}
             />
           ))}
