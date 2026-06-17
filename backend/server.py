@@ -29,7 +29,6 @@ from database_registry import (
     DEFAULT_DATABASE_DIR,
     DEFAULT_EXPORT_DIR,
     IMPORT_EXTENSIONS,
-    LEGACY_EXPORT_DIR,
     database_id_for_path,
     database_info_for_path,
     export_database_path,
@@ -439,8 +438,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
     def handle_videos_api(self):
         query = parse_qs(urlparse(self.path).query)
         db_id = query.get("db_id", ["main"])[0] or "main"
-        db_path = self.resolve_db_path_from_query()
         try:
+            db_path = self.resolve_db_path_from_query()
             limit = first_query_int(query, "limit", 40)
             offset = first_query_int(query, "offset", 0)
             include_meta = query.get("include_meta", ["1"])[0] not in {"0", "false", "False"}
@@ -464,25 +463,19 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 limit=page["limit"],
                 offset=page["offset"],
             )
-            self.send_json(
-                {
-                    **page,
-                    **(
-                        {
-                            "database": public_database_info(
-                                database_info_for_path(
-                                    db_path,
-                                    self.db_path,
-                                    self.database_dir,
-                                    include_details=False,
-                                )
-                            )
-                        }
-                        if include_meta
-                        else {}
-                    ),
-                }
-            )
+            response = dict(page)
+            if include_meta and db_id != "main":
+                response["database"] = public_database_info(
+                    database_info_for_path(
+                        db_path,
+                        self.db_path,
+                        self.database_dir,
+                        include_details=False,
+                    )
+                )
+            self.send_json(response)
+        except BadRequestError as exc:
+            self.send_json({"error": str(exc)}, status=400)
         except Exception as exc:
             log_exception("api.videos.list_error", str(exc), request_id=getattr(self, "request_id", ""))
             self.send_json({"error": str(exc)}, status=500)
@@ -503,7 +496,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 "databases": databases,
                 "active_id": query.get("db_id", ["main"])[0] or "main",
                 "hotplug_dir": str(self.database_dir),
-                "legacy_export_dir": str(LEGACY_EXPORT_DIR),
             }
         )
 
@@ -988,7 +980,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     ROOT / "data",
                     self.database_dir,
                     DEFAULT_EXPORT_DIR,
-                    LEGACY_EXPORT_DIR,
                     self.log_dir,
                 ],
             )
@@ -1179,7 +1170,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         try:
             source_path = ensure_importable_database_path(
                 source_value,
-                allowed_dirs=[ROOT / "data", self.database_dir, DEFAULT_EXPORT_DIR, LEGACY_EXPORT_DIR],
+                allowed_dirs=[ROOT / "data", self.database_dir, DEFAULT_EXPORT_DIR],
             )
             target_path = import_database_file(source_path, self.database_dir)
             info = public_database_info(database_info_for_path(target_path, self.db_path, self.database_dir))

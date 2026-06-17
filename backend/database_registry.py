@@ -12,7 +12,6 @@ from errors import BadRequestError
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
 DEFAULT_DATABASE_DIR = ROOT / "data" / "databases"
-LEGACY_EXPORT_DIR = ROOT / "data" / "exports"
 DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
@@ -26,11 +25,10 @@ def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     if db_id == "main":
         return main_db_path
     prefix, _, name = db_id.partition(":")
-    if prefix not in {"db", "legacy"} or not name:
+    if prefix != "db" or not name:
         raise BadRequestError("数据库标识无效")
-    base_dir = database_dir if prefix == "db" else LEGACY_EXPORT_DIR
-    candidate = (base_dir / name.replace("\\", "/")).resolve()
-    if not is_path_inside(candidate, base_dir.resolve()):
+    candidate = (database_dir / name.replace("\\", "/")).resolve()
+    if not is_path_inside(candidate, database_dir):
         raise BadRequestError("数据库路径无效")
     if candidate.suffix.lower() not in DATABASE_EXTENSIONS:
         raise BadRequestError("只支持 .db / .sqlite / .sqlite3 数据库")
@@ -99,23 +97,16 @@ def database_id_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DAT
         return "main"
     if is_path_inside(path, database_dir):
         return f"db:{path.relative_to(database_dir).as_posix()}"
-    legacy_dir = Path(LEGACY_EXPORT_DIR).resolve()
-    if is_path_inside(path, legacy_dir):
-        return f"legacy:{path.relative_to(legacy_dir).as_posix()}"
     return f"file:{path.name}"
 
 
 def iter_catalog_database_paths(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
-    main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
-    yield main_db_path, "main"
-    for base_dir, prefix in ((database_dir, "db"), (LEGACY_EXPORT_DIR, "legacy")):
-        base_dir = Path(base_dir).resolve()
-        if not base_dir.exists():
-            continue
-        for path in sorted(base_dir.rglob("*"), key=lambda item: str(item.relative_to(base_dir)).lower()):
-            if path.is_file() and path.suffix.lower() in DATABASE_EXTENSIONS and path.resolve() != main_db_path:
-                yield path.resolve(), f"{prefix}:{path.relative_to(base_dir).as_posix()}"
+    if not database_dir.exists():
+        return
+    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
+        if path.is_file() and path.suffix.lower() in DATABASE_EXTENSIONS:
+            yield path.resolve(), f"db:{path.relative_to(database_dir).as_posix()}"
 
 
 def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, limit=40, offset=0, include_owners=True):
@@ -196,39 +187,26 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
     main_db_path = Path(main_db_path).resolve()
     database_dir = Path(database_dir).resolve()
     database_dir.mkdir(parents=True, exist_ok=True)
-    databases = [
-        database_info_for_path(
-            main_db_path,
-            main_db_path,
-            database_dir,
-            db_id="main",
-            role="main",
-            include_details=include_details,
-        )
-    ]
-    seen = {main_db_path}
+    databases = []
+    seen = set()
 
-    for base_dir, prefix, role in ((database_dir, "db", "hotplug"), (LEGACY_EXPORT_DIR, "legacy", "legacy_export")):
-        base_dir = Path(base_dir).resolve()
-        if not base_dir.exists():
+    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
+        if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
             continue
-        for path in sorted(base_dir.rglob("*"), key=lambda item: str(item.relative_to(base_dir)).lower()):
-            if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
-                continue
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            databases.append(
-                database_info_for_path(
-                    resolved,
-                    main_db_path,
-                    database_dir,
-                    db_id=f"{prefix}:{path.name}",
-                    role=role,
-                    include_details=include_details,
-                )
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        databases.append(
+            database_info_for_path(
+                resolved,
+                main_db_path,
+                database_dir,
+                db_id=f"db:{path.relative_to(database_dir).as_posix()}",
+                role="hotplug",
+                include_details=include_details,
             )
+        )
     if include_details:
         annotate_database_coverage(databases)
     return [public_database_info(database) for database in databases]

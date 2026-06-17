@@ -148,7 +148,7 @@ export function LibrarySidebar({
           </label>
           <div className="grid gap-2 text-sm">
             <CookieStatusRow status={cookieStatus} />
-            <InfoRow label="当前数据库" value={activeDatabase?.relative_path || "data/comment_danmaku.db"} />
+            <InfoRow label="当前视图" value={activeDatabase?.relative_path || "全部视频"} />
             <InfoRow label="热插拔目录" value={hotplugDir} />
           </div>
         </div>

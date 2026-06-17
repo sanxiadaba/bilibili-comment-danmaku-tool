@@ -22,7 +22,6 @@ type ManagementPanelProps = {
   importPath: string;
   isImporting: boolean;
   isLoading: boolean;
-  legacyExportDir: string;
   queue?: ProgressQueue;
   view: ManagementView;
   onCookieStatusChange?: (status: CookieStatus | null) => void;
@@ -43,7 +42,6 @@ export function ManagementPanel({
   importPath,
   isImporting,
   isLoading,
-  legacyExportDir,
   queue,
   view,
   onCookieStatusChange,
@@ -60,6 +58,7 @@ export function ManagementPanel({
   const activeDatabase = databases.find((database) => database.id === activeDbId);
   const healthyCount = databases.filter((database) => database.ok).length;
   const authLabel = cookieStatus?.is_login ? AUTH_LABEL_VALID : cookieStatus?.exists ? AUTH_LABEL_STALE : AUTH_LABEL_MISSING;
+  const activeDatabaseName = activeDatabase?.name || (activeDbId === "main" ? "全部视频" : activeDbId);
 
   return (
     <section className="surface-card rounded-md">
@@ -93,7 +92,7 @@ export function ManagementPanel({
         </div>
       ) : (
         <DatabaseManagerPanel
-          activeDatabaseName={activeDatabase?.name || activeDbId}
+          activeDatabaseName={activeDatabaseName}
           activeDbId={activeDbId}
           databases={databases}
           healthyCount={healthyCount}
@@ -101,7 +100,6 @@ export function ManagementPanel({
           importPath={importPath}
           isImporting={isImporting}
           isLoading={isLoading}
-          legacyExportDir={legacyExportDir}
           onImportPathChange={onImportPathChange}
           onPickFiles={onPickFiles}
           onPickFolder={onPickFolder}
@@ -140,7 +138,6 @@ type DatabaseManagerPanelProps = {
   importPath: string;
   isImporting: boolean;
   isLoading: boolean;
-  legacyExportDir: string;
   onImportPathChange: (value: string) => void;
   onPickFiles: () => void;
   onPickFolder: () => void;
@@ -158,7 +155,6 @@ function DatabaseManagerPanel({
   importPath,
   isImporting,
   isLoading,
-  legacyExportDir,
   onImportPathChange,
   onPickFiles,
   onPickFolder,
@@ -186,8 +182,7 @@ function DatabaseManagerPanel({
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0">
           <div className="grid gap-2 text-sm">
-            <InfoRow label="热插拔目录" value={hotplugDir} />
-            <InfoRow label="兼容旧导出" value={legacyExportDir} />
+            <InfoRow label="视频数据库目录" value={hotplugDir} />
           </div>
           <div className="mt-3 grid max-h-[290px] gap-2 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
             {databases.map((database) => (
@@ -244,7 +239,7 @@ function DatabaseManagerPanel({
 }
 
 function DatabaseCard({ active, database, onSelect }: { active: boolean; database: DatabaseInfo; onSelect: () => void }) {
-  const roleLabel = database.role === "main" ? "主库" : database.role === "legacy_export" ? "旧导出" : "热插拔";
+  const roleLabel = "视频库";
   const kindLabel = databaseKindLabel(database.archive_kind);
   const coverageTone =
     database.coverage_status === "has_better"
@@ -311,7 +306,6 @@ function DatabaseCard({ active, database, onSelect }: { active: boolean; databas
 }
 
 function databaseKindLabel(kind: string) {
-  if (kind === "main") return "主数据库";
   if (kind === "up") return "UP 主库";
   if (kind === "video") return "单视频库";
   if (kind === "collection") return "视频集合";

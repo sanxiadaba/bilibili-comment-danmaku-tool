@@ -44,7 +44,6 @@ export function VideoLibraryPage() {
   const [cookieStatus, setCookieStatus] = useState<CookieStatus | null>(null);
   const [activeDbId, setActiveDbId] = useState(() => initialDatabaseId());
   const [hotplugDir, setHotplugDir] = useState("data/databases");
-  const [legacyExportDir, setLegacyExportDir] = useState("data/exports");
   const [url, setUrl] = useState("");
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -86,7 +85,7 @@ export function VideoLibraryPage() {
   const hasTaskWork = Boolean(taskQueue.active || taskQueue.queued.length || taskQueue.recent.length);
   const isTaskBusy = isParsing || hasSpaceQueueWork;
   const activeDatabase = useMemo(
-    () => databases.find((database) => database.id === activeDbId) || databases.find((database) => database.id === "main"),
+    () => databases.find((database) => database.id === activeDbId),
     [activeDbId, databases],
   );
 
@@ -100,12 +99,11 @@ export function VideoLibraryPage() {
         const payload = await fetchDatabases(selectedId, { includeDetails: options?.includeDetails ?? false });
         setDatabases(payload.databases);
         setHotplugDir(payload.hotplug_dir);
-        setLegacyExportDir(payload.legacy_export_dir);
-        if (!payload.databases.some((database) => database.id === selectedId)) {
+        if (selectedId !== "main" && !payload.databases.some((database) => database.id === selectedId)) {
           setActiveDbId("main");
           window.localStorage.setItem("bilibili-active-db-id", "main");
           window.history.replaceState({}, "", "/");
-          setMessage("所选数据库已不存在，已切回主数据库");
+          setMessage("所选数据库已不存在，已切回全部视频");
         }
       } catch (reason: unknown) {
         setError(reason instanceof Error ? reason.message : String(reason));
@@ -984,7 +982,6 @@ export function VideoLibraryPage() {
             importPath={importPath}
             isImporting={isImporting}
             isLoading={isLoadingDatabases}
-            legacyExportDir={legacyExportDir}
             queue={spaceQueue}
             view={managementView === "queue" ? "database" : managementView}
             onCookieStatusChange={setCookieStatus}

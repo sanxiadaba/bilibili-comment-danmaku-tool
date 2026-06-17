@@ -345,7 +345,7 @@ export type ArchiveDeleteResponse = {
 
 export type DatabaseInfo = {
   id: string;
-  role: "main" | "hotplug" | "legacy_export" | string;
+  role: "hotplug" | string;
   name: string;
   file_name: string;
   path: string;
@@ -389,7 +389,6 @@ export type DatabaseListResponse = {
   databases: DatabaseInfo[];
   active_id: string;
   hotplug_dir: string;
-  legacy_export_dir: string;
 };
 
 export type DatabaseImportResponse = {

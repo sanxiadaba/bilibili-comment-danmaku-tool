@@ -1,12 +1,9 @@
 from collections import defaultdict
 import binascii
 from pathlib import Path
-import shutil
 import sqlite3
 
 
-DEFAULT_DATABASE_NAME = "comment_danmaku.db"
-LEGACY_DATABASE_NAME = "comments.db"
 DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 32 * 1024 * 1024
 DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
 DELETE_COMMENT_BATCH_SIZE = 5000
@@ -174,14 +171,6 @@ def connect_readonly(db_path):
 def prepare_database_path(db_path):
     db_path = Path(db_path).resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path = db_path.with_name(LEGACY_DATABASE_NAME)
-    if db_path.name == DEFAULT_DATABASE_NAME and not db_path.exists() and legacy_path.exists():
-        shutil.copy2(legacy_path, db_path)
-        for suffix in ("-wal", "-shm"):
-            legacy_sidecar = legacy_path.with_name(f"{legacy_path.name}{suffix}")
-            target_sidecar = db_path.with_name(f"{db_path.name}{suffix}")
-            if legacy_sidecar.exists() and not target_sidecar.exists():
-                shutil.copy2(legacy_sidecar, target_sidecar)
     return db_path
 
 
