@@ -3,6 +3,7 @@ node_modules/
 
 # Frontend build output
 dist/
+release/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
@@ -36,4 +37,3 @@ server.err
 Thumbs.db
 .vscode/
 .idea/
-

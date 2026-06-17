@@ -74,6 +74,14 @@ pnpm dev             # Vite 开发服务
 pnpm fetch           # 单视频 CLI 抓取辅助
 ```
 
+Windows 免安装打包：
+
+```powershell
+pnpm package:windows
+```
+
+该命令会先构建前端，再用 Nuitka 生成 `release/bilibili-comment-danmaku-tool/` 文件夹版程序。双击其中的 `bilibili-comment-danmaku-tool.exe` 会启动本地服务并打开网页；数据、Cookie 和日志保存在该 release 文件夹下的 `data/` 与 `logs/`。
+
 Python 编译检查：
 
 ```powershell
