@@ -15,7 +15,8 @@ export function initialDatabaseId() {
 
 export function dbPath(path: string, dbId: string) {
   if (!dbId || dbId === "main") return path;
-  return `${path}?db_id=${encodeURIComponent(dbId)}`;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}db_id=${encodeURIComponent(dbId)}`;
 }
 
 export function formatBytes(value: number) {

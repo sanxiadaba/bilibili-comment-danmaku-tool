@@ -186,11 +186,8 @@ class TaskQueueTests(unittest.TestCase):
             self.assertEqual([task["status"] for task in snapshot["queued"]], ["queued", "queued"])
 
             release_first.set()
-            deadline = time.time() + 2
-            while time.time() < deadline:
-                if len(queue.snapshot()["recent"]) == 2:
-                    break
-                time.sleep(0.01)
+            self.assertTrue(queue.wait_until_idle(timeout=2))
+            self.assertEqual(len(queue.snapshot()["recent"]), 2)
 
     def test_queue_starts_recovered_tasks_and_keeps_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -678,4 +675,3 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["queued"][0]["id"], first["id"])
         self.assertEqual(snapshot["queued"][0]["status"], "paused")
         self.assertEqual(snapshot["recent"], [])
-
