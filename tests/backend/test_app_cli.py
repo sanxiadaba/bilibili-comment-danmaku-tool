@@ -16,7 +16,7 @@ if str(TEST_BACKEND) not in sys.path:
     sys.path.insert(0, str(TEST_BACKEND))
 
 from helpers import BVID, make_archive, make_comment  # noqa: E402
-from app_cli import build_parser, main, print_result, run_fetch_video, run_list_space  # noqa: E402
+from app_cli import build_parser, main, print_result, run_archive_space, run_fetch_video, run_list_space  # noqa: E402
 from space_archive import fetch_space_videos, normalize_space_archive_options  # noqa: E402
 
 
@@ -154,6 +154,20 @@ class AppCliTests(unittest.TestCase):
         scrape_comments.assert_called_once()
         scrape_danmaku.assert_called_once()
 
+    def test_fetch_video_explicit_db_overrides_owner_database_layout(self):
+        archive = make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "hello")])
+        with tempfile.TemporaryDirectory() as tmp:
+            explicit_db = Path(tmp) / "custom" / "manual.sqlite"
+            parser = build_parser()
+            args = parser.parse_args(["fetch-video", BVID, "--db", str(explicit_db), "--skip-danmaku"])
+            with patch("app_cli.scrape_comments", return_value=archive):
+                result = run_fetch_video(args)
+            db_exists = explicit_db.exists()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(Path(result["db"]), explicit_db.resolve())
+        self.assertTrue(db_exists)
+
     def test_fetch_video_skip_danmaku_does_not_call_danmaku_api(self):
         archive = make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "hello")])
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,6 +181,81 @@ class AppCliTests(unittest.TestCase):
 
         self.assertEqual(result["danmaku"], 0)
         scrape_danmaku.assert_not_called()
+
+    def test_archive_space_queues_task_with_normalized_options_and_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    "archive-space",
+                    "https://space.bilibili.com/1538787344",
+                    "--database-dir",
+                    str(Path(tmp) / "databases"),
+                    "--cookie-file",
+                    str(Path(tmp) / "cookie.txt"),
+                    "--space-cache-dir",
+                    str(Path(tmp) / "cache"),
+                    "--log-dir",
+                    str(Path(tmp) / "logs"),
+                    "--delay",
+                    "0.25",
+                    "--between-videos-min",
+                    "2",
+                    "--between-videos-max",
+                    "1",
+                    "--max-videos",
+                    "3",
+                    "--no-cache",
+                ]
+            )
+            captured = {}
+
+            class FakeQueue:
+                def make_queued_task_locked(self, payload):
+                    captured["payload"] = payload
+                    return {"id": "space-1", "status": "queued", **payload}
+
+                def public_task(self, task):
+                    return {"status": "finished", "total": 3, "archived": 3, "skipped": 0, "failed": 0}
+
+            class FakeService:
+                def __init__(self, cookie_file, cache_dir, refresh_lock, state_path=None):
+                    captured["cookie_file"] = Path(cookie_file)
+                    captured["cache_dir"] = Path(cache_dir)
+                    captured["state_path"] = state_path
+                    self.queue = FakeQueue()
+
+                def run_queue_task(self, task):
+                    captured["task"] = task
+                    task["status"] = "finished"
+
+            with patch("app_cli.SpaceArchiveService", FakeService), patch("app_cli.configure_logging"), patch("app_cli.shutdown_logging"):
+                result = run_archive_space(args)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["command"], "archive-space")
+        self.assertEqual(captured["cookie_file"], (Path(tmp) / "cookie.txt").resolve())
+        self.assertEqual(captured["cache_dir"], (Path(tmp) / "cache").resolve())
+        self.assertIsNone(captured["state_path"])
+        self.assertEqual(captured["payload"]["mid"], "1538787344")
+        self.assertEqual(captured["payload"]["database_dir"], str((Path(tmp) / "databases").resolve()))
+        self.assertEqual(captured["payload"]["options"]["delay"], 0.25)
+        self.assertEqual(captured["payload"]["options"]["between_videos_min"], 2.0)
+        self.assertEqual(captured["payload"]["options"]["between_videos_max"], 2.0)
+        self.assertEqual(captured["payload"]["options"]["max_videos"], 3)
+        self.assertTrue(captured["payload"]["options"]["no_cache"])
+
+    def test_main_prints_human_readable_cli_output(self):
+        stdout = io.StringIO()
+        with patch("app_cli.run_list_space", return_value={"ok": True, "command": "list-space", "mid": "1538787344", "fetched": 1, "returned": 1, "videos": [{"bvid": BVID, "title": "hello"}]}):
+            with redirect_stdout(stdout):
+                status = main(["list-space", "1538787344", "--max-videos", "1"])
+
+        output = stdout.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("UP mid: 1538787344", output)
+        self.assertIn("Videos: 1/1", output)
+        self.assertIn(f"{BVID}\thello", output)
 
     def test_json_output_is_ascii_and_round_trips_unicode(self):
         payload = {

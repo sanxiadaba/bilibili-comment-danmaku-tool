@@ -60,6 +60,24 @@ describe("API client", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("offset=80");
   });
 
+  it("passes abort signals through read requests", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/api/comments?")) return Promise.resolve(jsonResponse({ metadata: {}, comments: [], comment_items: [] }));
+      if (url.includes("/api/danmaku?")) return Promise.resolve(jsonResponse({ metadata: {}, items: [] }));
+      return Promise.resolve(jsonResponse({ videos: [] }));
+    });
+    globalThis.fetch = fetchMock;
+    const controller = new AbortController();
+
+    await fetchVideos("archive", { signal: controller.signal });
+    await fetchCommentData("BV1xx411c7mD", "archive", { signal: controller.signal });
+    await fetchDanmakuData("BV1xx411c7mD", "archive", { signal: controller.signal });
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+    expect(fetchMock.mock.calls[1][1].signal).toBe(controller.signal);
+    expect(fetchMock.mock.calls[2][1].signal).toBe(controller.signal);
+  });
+
   it("can skip heavy video metadata on append requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [] }));
     globalThis.fetch = fetchMock;
@@ -158,6 +176,30 @@ describe("API client", () => {
 
     expect((fetchMock.mock.calls[0][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
     expect((fetchMock.mock.calls[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
+  });
+
+  it("preserves caller headers while adding the local browser guard header", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true })));
+    globalThis.fetch = fetchMock;
+
+    await saveCookie("SESSDATA=session; bili_jct=csrf");
+    await pollAuthQrCode("session-1234567890");
+
+    const saveHeaders = fetchMock.mock.calls[0][1].headers as Headers;
+    const pollHeaders = fetchMock.mock.calls[1][1].headers as Headers;
+    expect(saveHeaders.get("Content-Type")).toBe("application/json");
+    expect(saveHeaders.get("X-Bilibili-Tool-Request")).toBe("1");
+    expect(pollHeaders.get("Content-Type")).toBe("application/json");
+    expect(pollHeaders.get("X-Bilibili-Tool-Request")).toBe("1");
+  });
+
+  it("does not add the local browser guard header to readonly requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [] }));
+    globalThis.fetch = fetchMock;
+
+    await fetchVideos("main");
+
+    expect(fetchMock.mock.calls[0][1].headers).toBeUndefined();
   });
 
   it("uploads selected database files as multipart form data", async () => {

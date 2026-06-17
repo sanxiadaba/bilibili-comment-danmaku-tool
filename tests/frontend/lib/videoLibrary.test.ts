@@ -23,6 +23,10 @@ describe("video library helpers", () => {
   it("builds db scoped paths and initializes database id from URL or storage", () => {
     expect(dbPath("/video/BV1xx411c7mD", "main")).toBe("/video/BV1xx411c7mD");
     expect(dbPath("/video/BV1xx411c7mD", "archive 1")).toBe("/video/BV1xx411c7mD?db_id=archive%201");
+    expect(dbPath("/video/BV1xx411c7mD?tab=comments", "db:Owner_42/BV1xx411c7mD.db")).toBe(
+      "/video/BV1xx411c7mD?tab=comments&db_id=db%3AOwner_42%2FBV1xx411c7mD.db",
+    );
+    expect(dbPath("/video/BV1xx411c7mD", "")).toBe("/video/BV1xx411c7mD");
 
     window.history.replaceState({}, "", "/?db_id=hotplug");
     expect(initialDatabaseId()).toBe("hotplug");
