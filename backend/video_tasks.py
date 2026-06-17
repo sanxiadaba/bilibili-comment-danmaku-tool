@@ -9,6 +9,7 @@ from bilibili_comment_danmaku import (
     scrape_comments,
     scrape_danmaku,
 )
+from bilibili_comment_danmaku.scraper import inspect_cookie_status
 from database_registry import video_database_path_from_archive
 from progress_state import fail_progress, finish_progress, make_progress_logger, parse_float, start_progress, update_progress
 from space_archive import api_error_response
@@ -232,7 +233,11 @@ class VideoParseTaskService:
         except Exception as exc:
             if isinstance(exc, TaskCancelled):
                 return
-            payload, status = api_error_response(exc)
+            try:
+                cookie_status = inspect_cookie_status(self.cookie_file)
+            except Exception:
+                cookie_status = None
+            payload, status = api_error_response(exc, cookie_status=cookie_status)
             self.queue.update(
                 task,
                 status="failed",

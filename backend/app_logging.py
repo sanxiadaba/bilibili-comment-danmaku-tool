@@ -114,6 +114,7 @@ def configure_logging(
     backup_count=10,
     queue_size=10000,
     level="INFO",
+    console=True,
 ):
     global _CONFIGURED, _LOG_QUEUE, _QUEUE_LISTENER
     logger = logging.getLogger(LOGGER_NAME)
@@ -140,12 +141,15 @@ def configure_logging(
     file_handler.setLevel(level_no)
     file_handler.setFormatter(JsonLineFormatter())
 
-    console_handler = ResilientStreamHandler(sys.stdout)
-    console_handler.setLevel(level_no)
-    console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    handlers = [file_handler]
+    if console:
+        console_handler = ResilientStreamHandler(sys.stdout)
+        console_handler.setLevel(level_no)
+        console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        handlers.append(console_handler)
 
     _LOG_QUEUE = queue.Queue(maxsize=queue_size)
-    _QUEUE_LISTENER = SafeQueueListener(_LOG_QUEUE, file_handler, console_handler, respect_handler_level=True)
+    _QUEUE_LISTENER = SafeQueueListener(_LOG_QUEUE, *handlers, respect_handler_level=True)
     _QUEUE_LISTENER.start()
     logger.addHandler(BoundedQueueHandler(_LOG_QUEUE))
 
@@ -205,13 +209,18 @@ def logging_status():
 
 
 def shutdown_logging():
-    global _QUEUE_LISTENER
+    global _CONFIGURED, _LOG_QUEUE, _QUEUE_LISTENER
     listener = _QUEUE_LISTENER
     if listener is None:
         return
     try:
         listener.stop()
     finally:
+        for handler in getattr(listener, "handlers", ()):
+            handler.close()
+        logging.getLogger(LOGGER_NAME).handlers.clear()
+        _CONFIGURED = False
+        _LOG_QUEUE = None
         _QUEUE_LISTENER = None
 
 

@@ -665,8 +665,8 @@ def log_space_video_progress(bvid, message):
         update_progress("space", bvid, message)
 
 
-def api_error_response(exc):
-    return api_error_response_with_context(exc)
+def api_error_response(exc, cookie_status=None):
+    return api_error_response_with_context(exc, cookie_status)
 
 
 def api_error_response_with_context(exc, cookie_status=None):
@@ -683,9 +683,17 @@ def api_error_response_with_context(exc, cookie_status=None):
         )
 
     if (isinstance(exc, BilibiliRequestError) and exc.status == 412) or "http error 412" in lower_message:
+        if cookie_status_needs_login(cookie_status):
+            return (
+                {
+                    "error": cookie_login_required_message(cookie_status),
+                    "detail": message,
+                },
+                401,
+            )
         return (
             {
-                "error": "Bilibili 接口返回 412，通常表示当前 Cookie、会话指纹或请求上下文未通过接口预检。工具已重新签名、冷却退避并重试；如果仍失败，请暂停一段时间后再试，必要时更新 Cookie。",
+                "error": "Bilibili 接口返回 412。请先确认已登录：打开页面右上角“登录态”，使用扫码登录或更新 Cookie 后再重试。",
                 "detail": message,
             },
             502,
@@ -752,6 +760,22 @@ def api_error_response_with_context(exc, cookie_status=None):
         )
 
     return ({"error": message}, 500)
+
+
+def cookie_status_needs_login(cookie_status):
+    if not cookie_status:
+        return True
+    if not cookie_status.get("exists") or cookie_status.get("status") in {"missing", "empty"}:
+        return True
+    return bool(cookie_status.get("nav_checked") and not cookie_status.get("is_login"))
+
+
+def cookie_login_required_message(cookie_status=None):
+    if not cookie_status or not cookie_status.get("exists"):
+        return "检测到当前没有登录 Cookie。请先打开页面右上角“登录态”，扫码登录或导入 Cookie 后再抓取。"
+    if cookie_status.get("status") == "empty":
+        return "检测到 Cookie 文件为空。请先打开页面右上角“登录态”，扫码登录或导入 Cookie 后再抓取。"
+    return "检测到当前 Bilibili 登录态无效。请先打开页面右上角“登录态”，扫码登录或更新 Cookie 后再抓取。"
 
 
 def should_abort_space_archive(exc):

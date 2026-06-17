@@ -228,7 +228,7 @@ def control_openapi_document():
             "version": CONTROL_API_VERSION,
             "description": "Stable local control API for automation and external integrations.",
         },
-        "servers": [{"url": "http://127.0.0.1:8000"}],
+        "servers": [{"url": "http://127.0.0.1:8001"}],
         "paths": paths,
     }
 

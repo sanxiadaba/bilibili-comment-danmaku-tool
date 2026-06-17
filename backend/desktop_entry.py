@@ -3,7 +3,6 @@ import sys
 import threading
 import time
 import webbrowser
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import server as server_module
@@ -11,6 +10,7 @@ from app_logging import configure_logging, logging_status, log_event, shutdown_l
 from bilibili_comment_danmaku import prepare_database_path
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from http_utils import safe_print
+from local_server import DEFAULT_PORT, create_threading_server
 from server import (
     DEFAULT_COOKIE_FILE,
     DEFAULT_DB,
@@ -67,7 +67,7 @@ def main():
     root = app_root()
     parser = argparse.ArgumentParser(description="Run Bilibili comment/danmaku tool as a local desktop app.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--db", default=str(root / "data" / DEFAULT_DB.name))
     parser.add_argument("--static", default=str(bundled_static_dir(root)))
@@ -77,7 +77,7 @@ def main():
     args = parser.parse_args()
 
     log_dir = Path(args.log_dir).resolve()
-    configure_logging(log_dir)
+    configure_logging(log_dir, console=False)
 
     handler = type(
         "DesktopCommentDanmakuServer",
@@ -99,20 +99,23 @@ def main():
     server_module.video_parse_service.start_pending_tasks()
     server_module.archive_delete_service.start_pending_tasks()
 
-    url = f"http://{args.host}:{args.port}/"
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server, actual_port = create_threading_server(args.host, args.port, handler)
+    url = f"http://{args.host}:{actual_port}/"
     log_event(
         "desktop.start",
         "desktop app server started",
         host=args.host,
-        port=args.port,
+        port=actual_port,
+        requested_port=args.port,
         db=str(handler.db_path),
         static_dir=str(handler.static_dir),
         log_dir=str(handler.log_dir),
         database_dir=str(handler.database_dir),
         logging=logging_status(),
     )
-    safe_print(f"Bilibili comment/danmaku tool is running at {url}")
+    safe_print("Bilibili comment/danmaku tool started.")
+    safe_print(f"Open: {url}")
+    safe_print(f"Logs: {handler.log_dir}")
     if not args.no_browser:
         open_browser_later(url)
 

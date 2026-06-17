@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config frontend/vite.config.ts --host 127.0.0.1",
-    "server": "powershell -ExecutionPolicy Bypass -File scripts/start_server_8000.ps1",
+    "server": "powershell -ExecutionPolicy Bypass -File scripts/start_server.ps1",
     "fetch": "python backend/fetch_bilibili_comment_danmaku.py",
     "test": "pnpm test:encoding && pnpm test:backend && pnpm test:frontend",
     "test:encoding": "python scripts/check_encoding.py",
