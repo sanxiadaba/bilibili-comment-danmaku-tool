@@ -9,6 +9,7 @@ from pathlib import Path
 import server as server_module
 from app_logging import configure_logging, logging_status, log_event, shutdown_logging
 from bilibili_comment_danmaku import prepare_database_path
+from bilibili_comment_danmaku.storage import connect, ensure_schema
 from http_utils import safe_print
 from server import (
     DEFAULT_COOKIE_FILE,
@@ -50,6 +51,15 @@ def open_browser_later(url, delay=0.8):
     threading.Thread(target=worker, name="desktop-browser-open", daemon=True).start()
 
 
+def initialize_database(db_path):
+    conn = connect(db_path)
+    try:
+        ensure_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def main():
     root = app_root()
     parser = argparse.ArgumentParser(description="Run Bilibili comment/danmaku tool as a local desktop app.")
@@ -77,6 +87,7 @@ def main():
         },
     )
     handler.db_path = prepare_database_path(handler.db_path)
+    initialize_database(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
 
     cookie_file = root / "data" / DEFAULT_COOKIE_FILE.name
