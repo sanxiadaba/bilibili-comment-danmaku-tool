@@ -477,6 +477,8 @@ class BilibiliClient:
 
 
 def load_cookie_file(path):
+    if not path or not Path(path).exists():
+        return ""
     text = Path(path).read_text(encoding="utf-8", errors="ignore").strip()
     if not text:
         return ""
@@ -1333,4 +1335,3 @@ def scrape_comments_to_sqlite(
         fetch_children=fetch_children,
     )
     return save_comments_to_sqlite(output_data, db_path)
-

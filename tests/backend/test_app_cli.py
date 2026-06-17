@@ -138,7 +138,16 @@ class AppCliTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             parser = build_parser()
-            args = parser.parse_args(["fetch-video", BVID, "--database-dir", str(Path(tmp) / "databases")])
+            args = parser.parse_args(
+                [
+                    "fetch-video",
+                    BVID,
+                    "--database-dir",
+                    str(Path(tmp) / "databases"),
+                    "--cookie-file",
+                    str(Path(tmp) / "missing-cookie.txt"),
+                ]
+            )
             with patch("app_cli.scrape_comments", return_value=archive) as scrape_comments:
                 with patch("app_cli.scrape_danmaku", return_value=danmaku) as scrape_danmaku:
                     result = run_fetch_video(args)
@@ -153,6 +162,7 @@ class AppCliTests(unittest.TestCase):
         self.assertTrue(db_exists)
         scrape_comments.assert_called_once()
         scrape_danmaku.assert_called_once()
+        self.assertNotIn("Cookie", scrape_danmaku.call_args.kwargs["headers"])
 
     def test_fetch_video_explicit_db_overrides_owner_database_layout(self):
         archive = make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "hello")])
