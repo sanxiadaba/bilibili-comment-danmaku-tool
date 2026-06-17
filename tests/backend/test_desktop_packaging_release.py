@@ -143,7 +143,20 @@ class DesktopPackagingReleaseTests(unittest.TestCase):
         self.assertIn('parent_count="$(git show -s --format=%P HEAD | wc -w | tr -d', workflow)
         self.assertIn('if [[ "$parent_count" -ge 2 ]]; then', workflow)
         self.assertIn("reason=not-a-merge-commit", workflow)
-        self.assertIn("softprops/action-gh-release@v2", workflow)
+        for action in (
+            "actions/checkout@v6",
+            "actions/setup-node@v6",
+            "actions/setup-python@v6",
+            "astral-sh/setup-uv@v8.2.0",
+            "actions/upload-artifact@v7",
+            "softprops/action-gh-release@v3",
+        ):
+            self.assertIn(action, workflow)
+        self.assertIn("package-manager-cache: false", workflow)
+        self.assertIn("enable-cache: false", workflow)
+        self.assertNotIn("@v2", workflow)
+        self.assertNotIn("@v4", workflow)
+        self.assertNotIn("@v5", workflow)
 
 
 if __name__ == "__main__":

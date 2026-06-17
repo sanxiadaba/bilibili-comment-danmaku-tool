@@ -328,6 +328,27 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(cookies["SESSDATA"], "session-value")
         self.assertEqual(cookies["bili_jct"], "csrf-value")
 
+    def test_load_cookie_file_treats_missing_or_empty_cookie_as_anonymous(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = Path(tmpdir) / "missing-cookie.txt"
+            empty = Path(tmpdir) / "empty-cookie.txt"
+            empty.write_text("   \n", encoding="utf-8")
+
+            self.assertEqual(scraper.load_cookie_file(missing), "")
+            self.assertEqual(scraper.load_cookie_file(empty), "")
+
+    def test_load_cookie_file_parses_netscape_cookie_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cookie_file = Path(tmpdir) / "cookie.txt"
+            cookie_file.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".bilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\tabc\n"
+                ".bilibili.com\tTRUE\t/\tFALSE\t0\tbili_jct\tcsrf\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scraper.load_cookie_file(cookie_file), "SESSDATA=abc; bili_jct=csrf")
+
     def test_cookie_browser_identifier_detection(self):
         self.assertTrue(scraper.cookie_has_browser_identifiers("SESSDATA=a; buvid3=b; bili_jct=c"))
         self.assertFalse(scraper.cookie_has_browser_identifiers("SESSDATA=a; bili_jct=c"))
@@ -1147,4 +1168,3 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn("登录态无效", payload["error"])
         self.assertIn("扫码登录", payload["error"])
-
