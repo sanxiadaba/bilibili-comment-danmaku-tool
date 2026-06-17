@@ -31,12 +31,12 @@ pnpm build
 pnpm server
 ```
 
-`pnpm server` 会先停止本机 `127.0.0.1:8000` 上的旧进程，再用同一个端口启动当前版本。
+`pnpm server` 默认从 `127.0.0.1:8001` 启动；如果端口被占用，会自动继续寻找下一个空闲端口。
 
 访问：
 
 ```text
-http://127.0.0.1:8000/
+http://127.0.0.1:8001/
 ```
 
 开发模式：
@@ -46,7 +46,7 @@ pnpm server
 pnpm dev
 ```
 
-Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
+Vite 会把 `/api` 代理到 `http://127.0.0.1:8001`。
 
 ## 本地数据
 
@@ -68,7 +68,7 @@ pnpm test:encoding
 pnpm test:backend
 pnpm test:frontend
 pnpm build           # 测试、类型检查、Vite 构建
-pnpm server          # Python 服务，127.0.0.1:8000
+pnpm server          # Python 服务，默认 127.0.0.1:8001，端口占用时自动递增
 pnpm dev             # Vite 开发服务
 pnpm fetch           # 单视频 CLI 抓取辅助
 ```
@@ -79,7 +79,24 @@ Windows 免安装打包：
 pnpm package:windows
 ```
 
-该命令会先构建前端，再用 Nuitka 生成 `release/bilibili-comment-danmaku-tool/` 文件夹版程序。双击其中的 `bilibili-comment-danmaku-tool.exe` 会启动本地服务并打开网页；数据、Cookie 和日志保存在该 release 文件夹下的 `data/` 与 `logs/`。
+该命令会先构建前端，再用 Nuitka 生成 `release/bilibili-comment-danmaku-tool/` 文件夹版程序。双击其中的 `bilibili-comment-danmaku-tool.exe` 会启动本地服务并打开网页；程序窗口只显示启动地址和日志位置，详细日志保存在该 release 文件夹下的 `logs/`，数据和 Cookie 保存在 `data/`。
+
+打包后的 exe 也可以直接当命令行工具使用：
+
+```powershell
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe serve --port 8001
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli fetch-video BV1xx411c7mD
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli list-space https://space.bilibili.com/1538787344 --max-videos 3
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli archive-space https://space.bilibili.com/1538787344 --max-videos 1
+```
+
+源码模式使用同一套 CLI：
+
+```powershell
+python backend/app_cli.py fetch-video BV1xx411c7mD
+python backend/app_cli.py list-space https://space.bilibili.com/1538787344 --max-videos 3
+python backend/app_cli.py archive-space https://space.bilibili.com/1538787344 --max-videos 1
+```
 
 GitHub Release 发布：
 

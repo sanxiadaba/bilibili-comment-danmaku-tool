@@ -1140,5 +1140,11 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertIn("WBI", payload["error"])
         self.assertIn("暂停", payload["error"])
 
+    def test_412_without_login_prompts_user_to_login(self):
+        exc = scraper.BilibiliRequestError("HTTP Error 412: Precondition Failed", status=412)
+        payload, status = api_error_response(exc, cookie_status={"exists": True, "nav_checked": True, "is_login": False})
 
+        self.assertEqual(status, 401)
+        self.assertIn("登录态无效", payload["error"])
+        self.assertIn("扫码登录", payload["error"])
 

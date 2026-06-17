@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -44,6 +43,7 @@ from database_registry import (
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload
 from errors import BadRequestError, RequestTooLargeError
 from http_utils import JsonStaticRequestHandler, first_query_int, parse_content_length, parse_optional_int, safe_print
+from local_server import DEFAULT_PORT, create_threading_server
 from progress_state import (
     fail_progress,
     finish_progress,
@@ -1395,7 +1395,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            payload, status = api_error_response(exc)
+            try:
+                cookie_status = auth_cookie_store.status(check_remote=True)
+            except Exception:
+                cookie_status = None
+            payload, status = api_error_response(exc, cookie_status=cookie_status)
             fail_progress("comments", requested_bvid or "", payload["error"])
             log_exception(
                 "task.comments_refresh.error",
@@ -1498,7 +1502,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            payload, status = api_error_response(exc)
+            try:
+                cookie_status = auth_cookie_store.status(check_remote=True)
+            except Exception:
+                cookie_status = None
+            payload, status = api_error_response(exc, cookie_status=cookie_status)
             fail_progress("danmaku", requested_bvid or "", payload["error"])
             log_exception(
                 "task.danmaku_refresh.error",
@@ -1519,7 +1527,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
@@ -1553,19 +1561,22 @@ def main():
     space_archive_service.start_pending_tasks()
     video_parse_service.start_pending_tasks()
     archive_delete_service.start_pending_tasks()
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server, actual_port = create_threading_server(args.host, args.port, handler)
+    url = f"http://{args.host}:{actual_port}/"
     log_event(
         "service.start",
         "Bilibili comment/danmaku service started",
         host=args.host,
-        port=args.port,
+        port=actual_port,
+        requested_port=args.port,
         db=str(handler.db_path),
         static_dir=str(handler.static_dir),
         log_dir=str(handler.log_dir),
         database_dir=str(handler.database_dir),
         logging=logging_status(),
     )
-    safe_print(f"Serving Bilibili comment/danmaku app at http://{args.host}:{args.port}/")
+    safe_print(f"Bilibili comment/danmaku service started.")
+    safe_print(f"Open: {url}")
     safe_print(f"SQLite database: {Path(args.db).resolve()}")
     safe_print(f"Hotplug database directory: {handler.database_dir}")
     try:

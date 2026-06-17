@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import zlib
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from helpers import BVID, make_archive, make_comment
@@ -24,6 +25,7 @@ from database_registry import (  # noqa: E402
 from errors import BadRequestError  # noqa: E402
 from progress_state import progress_percent, progress_stats  # noqa: E402
 from http_utils import MAX_JSON_BODY_BYTES, parse_content_length, parse_json_object_body  # noqa: E402
+from local_server import create_threading_server  # noqa: E402
 from space_archive import (  # noqa: E402
     api_error_response,
     extract_space_mid,
@@ -118,6 +120,24 @@ class RequestParsingTests(unittest.TestCase):
         self.assertTrue(is_local_host("127.0.0.1:8000"))
         self.assertTrue(is_local_host("localhost:8000"))
         self.assertFalse(is_local_host("evil.example"))
+
+    def test_create_threading_server_uses_next_free_port(self):
+        class Handler(BaseHTTPRequestHandler):
+            def handle(self):
+                return None
+
+        blocker = socket.socket()
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        blocked_port = blocker.getsockname()[1]
+        try:
+            server, actual_port = create_threading_server("127.0.0.1", blocked_port, Handler)
+            try:
+                self.assertGreater(actual_port, blocked_port)
+            finally:
+                server.server_close()
+        finally:
+            blocker.close()
 
     def test_openable_local_path_accepts_allowed_file_or_directory_only(self):
         with tempfile.TemporaryDirectory() as tmp:

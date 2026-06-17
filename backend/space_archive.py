@@ -39,13 +39,14 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
+def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0):
+    max_items = max(0, first_int(max_items, 0))
     if use_cache and cache_path and cache_path.exists():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
         items = cached.get("items") if isinstance(cached, dict) else None
-        if isinstance(items, list):
+        if isinstance(items, list) and not cached.get("partial"):
             log_event("task.space_archive.cache_hit", "loaded cached UP video list", mid=mid, total=len(items))
-            return items
+            return items[:max_items] if max_items else items
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
@@ -69,12 +70,15 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
         total = (data.get("page") or {}).get("count") or 0
         update_progress("space", mid, f"UP视频列表页 page={page} got={len(vlist)} total={total}")
         items.extend(vlist)
+        if max_items and len(items) >= max_items:
+            items = items[:max_items]
+            break
         if not vlist or len(items) >= total:
             break
         page += 1
         time.sleep(random.uniform(2.0, 5.0))
 
-    if cache_path:
+    if cache_path and not max_items:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(
             json.dumps(
@@ -82,6 +86,7 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True):
                     "mid": str(mid),
                     "cached_at": utc_now(),
                     "total": len(items),
+                    "partial": False,
                     "items": items,
                 },
                 ensure_ascii=False,
@@ -276,6 +281,7 @@ def normalize_space_archive_options(body):
         "delay": clamp_float(parse_float(body.get("delay"), 1.0), 0.0, 5.0),
         "between_videos_min": clamp_float(parse_float(body.get("between_videos_min"), 8.0), 0.0, 3600.0),
         "between_videos_max": clamp_float(parse_float(body.get("between_videos_max"), 20.0), 0.0, 3600.0),
+        "max_videos": max(0, first_int(body.get("max_videos"), 0)),
         "no_cache": bool(body.get("no_cache")),
     }
     if options["between_videos_max"] < options["between_videos_min"]:
@@ -399,7 +405,11 @@ class SpaceArchiveService:
                 cookie,
                 cache_path=cache_path,
                 use_cache=not options.get("no_cache"),
+                max_items=options.get("max_videos", 0),
             )
+            max_videos = int(options.get("max_videos") or 0)
+            if max_videos > 0:
+                items = items[:max_videos]
             total = len(items)
             self.update_task(task, total=total, message=f"视频列表完成，共 {total} 个视频")
             update_progress("space", mid, f"UP视频列表完成 total={total} complete=0 archived=0 skipped=0 failed=0")
@@ -665,8 +675,8 @@ def log_space_video_progress(bvid, message):
         update_progress("space", bvid, message)
 
 
-def api_error_response(exc):
-    return api_error_response_with_context(exc)
+def api_error_response(exc, cookie_status=None):
+    return api_error_response_with_context(exc, cookie_status)
 
 
 def api_error_response_with_context(exc, cookie_status=None):
@@ -683,9 +693,17 @@ def api_error_response_with_context(exc, cookie_status=None):
         )
 
     if (isinstance(exc, BilibiliRequestError) and exc.status == 412) or "http error 412" in lower_message:
+        if cookie_status_needs_login(cookie_status):
+            return (
+                {
+                    "error": cookie_login_required_message(cookie_status),
+                    "detail": message,
+                },
+                401,
+            )
         return (
             {
-                "error": "Bilibili 接口返回 412，通常表示当前 Cookie、会话指纹或请求上下文未通过接口预检。工具已重新签名、冷却退避并重试；如果仍失败，请暂停一段时间后再试，必要时更新 Cookie。",
+                "error": "Bilibili 接口返回 412。请先确认已登录：打开页面右上角“登录态”，使用扫码登录或更新 Cookie 后再重试。",
                 "detail": message,
             },
             502,
@@ -752,6 +770,22 @@ def api_error_response_with_context(exc, cookie_status=None):
         )
 
     return ({"error": message}, 500)
+
+
+def cookie_status_needs_login(cookie_status):
+    if not cookie_status:
+        return True
+    if not cookie_status.get("exists") or cookie_status.get("status") in {"missing", "empty"}:
+        return True
+    return bool(cookie_status.get("nav_checked") and not cookie_status.get("is_login"))
+
+
+def cookie_login_required_message(cookie_status=None):
+    if not cookie_status or not cookie_status.get("exists"):
+        return "检测到当前没有登录 Cookie。请先打开页面右上角“登录态”，扫码登录或导入 Cookie 后再抓取。"
+    if cookie_status.get("status") == "empty":
+        return "检测到 Cookie 文件为空。请先打开页面右上角“登录态”，扫码登录或导入 Cookie 后再抓取。"
+    return "检测到当前 Bilibili 登录态无效。请先打开页面右上角“登录态”，扫码登录或更新 Cookie 后再抓取。"
 
 
 def should_abort_space_archive(exc):

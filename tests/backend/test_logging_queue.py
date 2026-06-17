@@ -13,7 +13,7 @@ from pathlib import Path
 
 from helpers import BVID, make_archive, make_comment
 
-from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
+from app_logging import BoundedQueueHandler, configure_logging, shutdown_logging, clean_fields  # noqa: E402
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
@@ -75,6 +75,21 @@ class LoggingTests(unittest.TestCase):
 
         self.assertEqual(log_queue.qsize(), 1)
         self.assertEqual(log_queue.get_nowait().getMessage(), "warning")
+
+    def test_configure_logging_can_disable_console_handler(self):
+        import app_logging
+
+        shutdown_logging()
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = configure_logging(tmp, console=False)
+            try:
+                status = app_logging.logging_status()
+                self.assertTrue(status["listener_alive"])
+                self.assertEqual(status["log_dir"], str(Path(tmp).resolve()))
+                self.assertEqual(len(app_logging._QUEUE_LISTENER.handlers), 1)
+            finally:
+                shutdown_logging()
+                logger.handlers.clear()
 
 
 class TaskQueueTests(unittest.TestCase):
@@ -663,6 +678,4 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["queued"][0]["id"], first["id"])
         self.assertEqual(snapshot["queued"][0]["status"], "paused")
         self.assertEqual(snapshot["recent"], [])
-
-
 

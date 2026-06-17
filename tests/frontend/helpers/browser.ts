@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 
-export function installWindowStub(url = "http://127.0.0.1:8000/") {
+export function installWindowStub(url = "http://127.0.0.1:8001/") {
   const store = new Map<string, string>();
   const win = {
     location: new URL(url),
@@ -20,7 +20,7 @@ export function installWindowStub(url = "http://127.0.0.1:8000/") {
   return win;
 }
 
-export function installApiBrowserStubs(url = "http://127.0.0.1:8000/video/BV1xx411c7mD") {
+export function installApiBrowserStubs(url = "http://127.0.0.1:8001/video/BV1xx411c7mD") {
   vi.stubGlobal("window", {
     location: new URL(url),
   });
