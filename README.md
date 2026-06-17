@@ -2,41 +2,22 @@
 
 本地运行的 Bilibili 评论、楼中楼、弹幕归档和查看工具。
 
-它把数据保存到本机 SQLite，通过 Python HTTP 服务提供 API 和 React 页面。仓库只保存源码和配置，不保存 cookie、数据库、日志、依赖或构建产物。
+项目由 Python HTTP 服务、SQLite 存储、React/Vite 前端和 Windows 免安装打包脚本组成。仓库只保存源码、测试和配置；`data/`、`logs/`、`dist/`、`release/`、Cookie、数据库和构建产物都不提交。
 
-## 功能
+## 当前结构
 
-- 按视频 URL 或 BV 号归档评论和弹幕。
-- 把 UP 主全部视频加入归档任务队列。
-- 支持任务暂停、继续、停止、重试和清空记录。
-- 服务重启后可恢复持久化任务。
-- 内置登录态管理，支持扫码登录、粘贴 Cookie、导入 Cookie 文件和清除登录态。
-- 查看视频库、评论、弹幕、统计和详情。
-- 独立刷新评论和弹幕。
-- 刷新评论时保留“本次未返回”的历史评论。
-- JSON / SQLite 导入导出。
-- 通过 `/api/v1/control` 被其它本地程序调用。
+- 默认服务地址：`http://127.0.0.1:8001/`，端口占用时自动尝试后续空闲端口。
+- 新数据结构：每个视频一个 SQLite 数据库，路径为 `data/databases/<UP主>/<BVID>.db`。
+- `data/comment_danmaku.db` 不是新结构的必需主库；页面里的 `main` 是聚合视图标识，不代表必须存在物理主数据库。
+- `data/cookie.txt` 可选；缺失时按匿名请求运行。需要登录态时，在页面登录状态里扫码登录或导入 Cookie。
+- Windows release 包根目录只保留一个可见 exe，运行时依赖放在 `_internal/`，数据和日志放在 `data/`、`logs/`。
 
-## 环境
-
-- Python 3.11+
-- pnpm
-- 可选：`data/cookie.txt`，用于 Bilibili 登录态访问
-
-## 安装运行
+## 快速运行
 
 ```powershell
 pnpm install
 pnpm build
 pnpm server
-```
-
-`pnpm server` 默认从 `127.0.0.1:8001` 启动；如果端口被占用，会自动继续寻找下一个空闲端口。
-
-访问：
-
-```text
-http://127.0.0.1:8001/
 ```
 
 开发模式：
@@ -48,49 +29,17 @@ pnpm dev
 
 Vite 会把 `/api` 代理到 `http://127.0.0.1:8001`。
 
-## 本地数据
-
-```text
-data/databases/<UP主>/<BVID>.db  每个视频一个 SQLite 数据库
-data/cookie.txt               可选 Bilibili cookie
-data/databases/               视频数据库、导入数据库和本地导出目录
-logs/app.jsonl                结构化运行日志
-dist/                         前端构建产物
-```
-
-这些路径均被 Git 忽略。
-
 ## 常用命令
 
 ```powershell
-pnpm test            # 后端 + 前端测试
-pnpm test:encoding
+pnpm test            # 编码检查 + 后端 unittest + 前端 Vitest
 pnpm test:backend
 pnpm test:frontend
-pnpm build           # 测试、类型检查、Vite 构建
-pnpm server          # Python 服务，默认 127.0.0.1:8001，端口占用时自动递增
-pnpm dev             # Vite 开发服务
-pnpm fetch           # 单视频 CLI 抓取辅助
+pnpm build           # 测试 + TypeScript 检查 + Vite 构建
+pnpm package:windows # 构建 Windows 免安装包
 ```
 
-Windows 免安装打包：
-
-```powershell
-pnpm package:windows
-```
-
-该命令会先构建前端，再用 Nuitka 生成 `release/bilibili-comment-danmaku-tool/` 文件夹版程序。双击其中的 `bilibili-comment-danmaku-tool.exe` 会启动本地服务并打开网页；程序窗口只显示启动地址和日志位置，详细日志保存在该 release 文件夹下的 `logs/`，数据和 Cookie 保存在 `data/`。
-
-打包后的 exe 也可以直接当命令行工具使用：
-
-```powershell
-.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe serve --port 8001
-.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli fetch-video BV1xx411c7mD
-.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli list-space https://space.bilibili.com/1538787344 --max-videos 3
-.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli archive-space https://space.bilibili.com/1538787344 --max-videos 1
-```
-
-源码模式使用同一套 CLI：
+CLI：
 
 ```powershell
 python backend/app_cli.py fetch-video BV1xx411c7mD
@@ -98,69 +47,47 @@ python backend/app_cli.py list-space https://space.bilibili.com/1538787344 --max
 python backend/app_cli.py archive-space https://space.bilibili.com/1538787344 --max-videos 1
 ```
 
-GitHub Release 发布：
-
-1. 只有合并分支到 `main` 的 merge commit 才会自动发布。
-2. 自动发布只关注前后端、打包脚本和依赖文件变更；只改 README、文档或 workflow 不会发布。
-3. 自动发布会读取已有稳定版本 tag，并递增 patch 号，例如从 `v1.0.1` 发布到 `v1.0.2`。
-4. workflow 会构建 Windows 免安装包，并上传到 GitHub Release。
-
-需要指定版本时，也可以在 GitHub Actions 里手动运行 `Release` workflow，输入版本号（例如 `v1.1.0`）和目标分支 `main`。
-
-也可以本地手动推送 `v*` tag 触发同一个发布流程；这种方式会使用你推送的 tag 作为版本号：
+打包后的 exe 也支持 CLI：
 
 ```powershell
-git tag -a v1.0.1 -m "Release v1.0.1"
-git push origin v1.0.1
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli fetch-video BV1xx411c7mD
+.\release\bilibili-comment-danmaku-tool\bilibili-comment-danmaku-tool.exe cli list-space https://space.bilibili.com/1538787344 --max-videos 3
 ```
 
-Python 编译检查：
+## 测试重点
 
-```powershell
-python -B -m py_compile backend/server.py backend/http_utils.py backend/fetch_bilibili_comment_danmaku.py backend/bilibili_comment_danmaku/storage.py backend/bilibili_comment_danmaku/danmaku.py backend/bilibili_comment_danmaku/scraper.py backend/bilibili_comment_danmaku/wbi.py backend/bilibili_comment_danmaku/url_utils.py backend/bilibili_comment_danmaku/__init__.py backend/task_queue.py backend/space_archive.py backend/video_tasks.py
-```
+- CI 没有 `data/cookie.txt`，测试不能依赖本机 Cookie。
+- 后端测试覆盖无 Cookie 匿名路径、单视频单库、UP 主目录、任务队列恢复、导入导出、分页和打包脚本。
+- 前端测试覆盖 API 请求、AbortSignal、数据库作用域、组件渲染和大列表行为。
+- 只改文档时通常不需要跑完整 `pnpm build`；改代码、打包、workflow 时必须跑相关测试。
 
-## 控制 API
+## GitHub Release
 
-外部本地集成优先使用稳定控制命名空间：
+自动发布规则：
+
+1. 只有合并到 `main` 的 merge commit 会自动发布。
+2. 只有前后端、后端、脚本、依赖文件变更才触发；只改 README、AGENTS、普通文档不发布。
+3. workflow 自动递增稳定版本 tag，例如 `v1.0.2` -> `v1.0.3`。
+4. Windows 包会上传到 GitHub Release。
+
+也可以手动运行 `Release` workflow，输入版本号和目标分支。
+
+## 项目目录
 
 ```text
-GET  /api/v1/control
-GET  /api/v1/control/openapi.json
-GET  /api/v1/control/status
-GET  /api/v1/control/progress
-POST /api/v1/control/actions
+backend/     Python 服务、抓取、任务队列、SQLite 存储、控制 API
+frontend/    Vite + React + TypeScript 页面
+scripts/     启动、编码检查、Nuitka 打包脚本
+tests/       后端 unittest、前端 Vitest、覆盖说明
+assets/      应用图标等静态资源
 ```
 
-示例：
+## 设计约束
 
-```json
-{
-  "action": "archive.export",
-  "params": {
-    "format": "json",
-    "bvid": "BV1xx411c7mD",
-    "db_id": "main"
-  }
-}
-```
-
-动作元数据和 schema 来自 `backend/control_api.py`。
-
-## 项目结构
-
-```text
-backend/       Python 服务、任务队列、Bilibili 抓取、SQLite 存储
-frontend/      Vite + React + TypeScript 页面
-tests/         后端 unittest 和前端 Vitest
-AGENTS.md      agent 开发规则
-```
-
-## 设计原则
-
-- 本地优先：不要把服务直接暴露到公网。
-- SQLite 优先：新结构按视频拆分数据库，避免单库无限膨胀。
-- 单一路径：有维护良好的主路径时，删除旧脚本和重复抽象。
-- 任务可观测：长任务必须能通过进度和队列 API 查看。
-- 不漂移秘密：cookie、数据库、日志、构建产物永不提交。
-- 编码统一：源码必须是 UTF-8 无 BOM，`pnpm test:encoding` 会拦截 BOM 和典型 mojibake 乱码。
+- 本地工具优先，不按公网服务设计。
+- SQLite 是事实来源；新归档默认一视频一库。
+- 长任务必须可观察、可暂停、可停止、可恢复。
+- 评论刷新保留历史缺失评论，不因为本次 API 未返回就物理删除。
+- 弹幕刷新遇到远端 0 条时，不覆盖已有本地弹幕。
+- 日志必须脱敏，不能记录 Cookie、token、密码或完整敏感正文。
+- 源码必须是 UTF-8 无 BOM；终端显示乱码不等于文件编码错，先跑 `pnpm test:encoding`。
