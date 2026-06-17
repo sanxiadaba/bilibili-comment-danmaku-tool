@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -40,8 +42,32 @@ jobs:
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $version = "${{ inputs.version }}".Trim()
-          } else {
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
             $version = "${{ github.ref_name }}".Trim()
+          } else {
+            git fetch --tags origin
+            $stableTags = git tag --list "v*.*.*" | ForEach-Object {
+              if ($_ -match '^v(\d+)\.(\d+)\.(\d+)$') {
+                [PSCustomObject]@{
+                  Name = $_
+                  Major = [int]$Matches[1]
+                  Minor = [int]$Matches[2]
+                  Patch = [int]$Matches[3]
+                }
+              }
+            } | Sort-Object Major, Minor, Patch -Descending
+            $latest = $stableTags | Select-Object -First 1
+            if ($latest) {
+              $version = "v$($latest.Major).$($latest.Minor).$($latest.Patch + 1)"
+            } else {
+              $version = "v1.0.0"
+            }
+            while ((git tag --list $version).Trim()) {
+              if ($version -notmatch '^v(\d+)\.(\d+)\.(\d+)$') {
+                throw "Cannot increment generated release tag: $version"
+              }
+              $version = "v$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+            }
           }
           if ($version -notmatch '^v\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
             throw "Release version must look like v1.2.3 or v1.2.3-beta.1. Got: $version"
