@@ -210,6 +210,7 @@ class AppCliTests(unittest.TestCase):
         self.assertIn("--windows-icon-from-ico=$iconPath", script)
         self.assertIn('/win32icon:"$iconPath"', script)
         self.assertIn("Icon.ExtractAssociatedIcon(Application.ExecutablePath)", script)
+        self.assertIn("/target:exe", script)
 
     def test_build_script_wraps_cli_and_gui_modes(self):
         script = (ROOT / "scripts" / "build_nuitka_windows.ps1").read_text(encoding="utf-8")
@@ -229,6 +230,16 @@ class AppCliTests(unittest.TestCase):
         self.assertIn('if "--cli" in sys.argv:', source)
         self.assertIn("from app_cli import main as cli_main", source)
         self.assertLess(source.index('if "--cli" in sys.argv:'), source.index("parser = argparse.ArgumentParser"))
+
+    def test_frontend_uses_packaged_favicon(self):
+        html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        favicon = ROOT / "frontend" / "public" / "favicon.png"
+        source_icon = ROOT / "assets" / "app-icon.png"
+
+        self.assertIn('<link rel="icon" type="image/png" href="/favicon.png" />', html)
+        self.assertIn("<title>Bilibili 评论弹幕工具</title>", html)
+        self.assertTrue(favicon.exists())
+        self.assertEqual(favicon.read_bytes(), source_icon.read_bytes())
 
 
 if __name__ == "__main__":
