@@ -42,21 +42,54 @@ function Convert-PngToIcon {
         throw "Missing icon source: $PngFile"
     }
     $source = [System.Drawing.Image]::FromFile($PngFile)
-    $bitmap = New-Object System.Drawing.Bitmap 256, 256
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $graphics.Clear([System.Drawing.Color]::Transparent)
-    $graphics.DrawImage($source, 0, 0, 256, 256)
-    $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
+    $frames = New-Object System.Collections.Generic.List[object]
     $stream = [System.IO.File]::Create($IconFile)
+    $writer = New-Object System.IO.BinaryWriter($stream)
     try {
-        $icon.Save($stream)
+        foreach ($size in @(256, 128, 64, 48, 32, 16)) {
+            $bitmap = New-Object System.Drawing.Bitmap $size, $size, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $memory = New-Object System.IO.MemoryStream
+            try {
+                $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+                $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                $graphics.Clear([System.Drawing.Color]::Transparent)
+                $graphics.DrawImage($source, 0, 0, $size, $size)
+                $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+                $frames.Add([PSCustomObject]@{
+                    Size = [int]$size
+                    Data = $memory.ToArray()
+                }) | Out-Null
+            } finally {
+                $memory.Dispose()
+                $graphics.Dispose()
+                $bitmap.Dispose()
+            }
+        }
+
+        $writer.Write([UInt16]0)
+        $writer.Write([UInt16]1)
+        $writer.Write([UInt16]$frames.Count)
+        $offset = 6 + (16 * $frames.Count)
+        foreach ($frame in $frames) {
+            $sizeByte = if ($frame.Size -eq 256) { 0 } else { $frame.Size }
+            $writer.Write([byte]$sizeByte)
+            $writer.Write([byte]$sizeByte)
+            $writer.Write([byte]0)
+            $writer.Write([byte]0)
+            $writer.Write([UInt16]1)
+            $writer.Write([UInt16]32)
+            $writer.Write([UInt32]$frame.Data.Length)
+            $writer.Write([UInt32]$offset)
+            $offset += $frame.Data.Length
+        }
+        foreach ($frame in $frames) {
+            $writer.Write([byte[]]$frame.Data)
+        }
     } finally {
+        $writer.Dispose()
         $stream.Dispose()
-        $icon.Dispose()
-        $graphics.Dispose()
-        $bitmap.Dispose()
         $source.Dispose()
     }
 }
