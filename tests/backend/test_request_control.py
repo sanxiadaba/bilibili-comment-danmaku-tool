@@ -48,7 +48,13 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     save_danmaku_to_sqlite,
 )
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
-from server import ensure_importable_database_path, ensure_openable_local_path, is_local_host, is_local_origin  # noqa: E402
+from server import (  # noqa: E402
+    ensure_importable_database_path,
+    ensure_openable_local_path,
+    is_local_host,
+    is_local_origin,
+    parse_archive_delete_request,
+)
 class RequestParsingTests(unittest.TestCase):
     def test_control_capabilities_describe_machine_callable_actions(self):
         payload = control_capabilities()
@@ -89,6 +95,15 @@ class RequestParsingTests(unittest.TestCase):
     def test_control_action_payload_rejects_unknown_action(self):
         with self.assertRaises(LookupError):
             normalize_control_action_payload({"action": "unknown.action", "params": {}})
+
+    def test_archive_delete_request_normalizes_exclusive_targets(self):
+        self.assertEqual(parse_archive_delete_request({"bvid": " BV1xx411c7mD ", "bvids": ["ignored"]}), ("", ["BV1xx411c7mD"]))
+        self.assertEqual(parse_archive_delete_request({"bvids": [" BV1 ", "", "BV2"]}), ("", ["BV1", "BV2"]))
+        self.assertEqual(parse_archive_delete_request({"owner_mid": " 1538787344 "}), ("1538787344", []))
+        with self.assertRaises(ValueError):
+            parse_archive_delete_request({"owner_mid": "1538787344", "bvid": BVID})
+        with self.assertRaises(ValueError):
+            parse_archive_delete_request({})
 
     def test_parse_json_object_body_accepts_empty_or_object(self):
         self.assertEqual(parse_json_object_body(b""), {})

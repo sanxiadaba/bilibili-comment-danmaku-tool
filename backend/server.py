@@ -130,6 +130,28 @@ def combined_queue_snapshot():
     return {"active": active, "queued": queued, "recent": recent[:10]}
 
 
+def bilibili_api_error_response(exc):
+    try:
+        cookie_status = auth_cookie_store.status(check_remote=True)
+    except Exception:
+        cookie_status = None
+    return api_error_response(exc, cookie_status=cookie_status)
+
+
+def parse_archive_delete_request(body):
+    bvid = (body.get("bvid") or "").strip()
+    owner_mid = (body.get("owner_mid") or "").strip()
+    raw_bvids = body.get("bvids")
+    bvids = [str(item).strip() for item in raw_bvids if str(item).strip()] if isinstance(raw_bvids, list) else []
+    if bvid:
+        bvids = [bvid]
+    if owner_mid and bvids:
+        raise ValueError("删除 UP 主和删除视频不能同时执行")
+    if not owner_mid and not bvids:
+        raise ValueError("请选择要删除的 UP 主或视频")
+    return owner_mid, bvids
+
+
 def build_export_label(kind, label="", bvid="", owner_mid="", video_count=0):
     label = str(label or "").strip()
     bvid = str(bvid or "").strip()
@@ -1007,111 +1029,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         )
         self.send_json({"ok": True, "path": str(directory), "relative_path": relative_to_root(directory)})
 
-    def _handle_archive_delete_api_sync_legacy_unused(self):
-        raise NotImplementedError("archive deletion now runs through ArchiveDeleteTaskService")
-        if not refresh_lock.acquire(blocking=False):
-            log_event(
-                "api.archive_delete.rejected",
-                "archive delete rejected because another task is active",
-                request_id=getattr(self, "request_id", ""),
-                level="warning",
-            )
-            self.send_json({"error": "已有抓取、刷新或删除任务正在进行，请稍后再试"}, status=409)
-            return
-
-        try:
-            body = self.read_json_body()
-            db_path = self.resolve_db_path_from_body(body)
-            bvid = (body.get("bvid") or "").strip()
-            owner_mid = (body.get("owner_mid") or "").strip()
-            raw_bvids = body.get("bvids")
-            if isinstance(raw_bvids, list):
-                bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
-            else:
-                bvids = []
-            if bvid:
-                bvids = [bvid]
-            if owner_mid and bvids:
-                self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
-                return
-            if not owner_mid and not bvids:
-                self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
-                return
-            result = (
-                delete_owner_from_sqlite(db_path, owner_mid, vacuum=False)
-                if owner_mid
-                else delete_videos_from_sqlite(db_path, bvids, vacuum=False)
-            )
-        except LookupError as exc:
-            log_event(
-                "api.archive_delete.not_found",
-                str(exc),
-                request_id=getattr(self, "request_id", ""),
-                db=str(db_path),
-                owner_mid=owner_mid,
-                bvid=bvid,
-                bvid_count=len(bvids),
-                level="warning",
-            )
-            self.send_json({"error": str(exc)}, status=404)
-            return
-        except ValueError as exc:
-            self.send_json({"error": str(exc)}, status=400)
-            return
-        except Exception as exc:
-            log_exception(
-                "api.archive_delete.error",
-                str(exc),
-                request_id=getattr(self, "request_id", ""),
-                db=str(db_path),
-                owner_mid=owner_mid,
-                bvid=bvid,
-                bvid_count=len(bvids),
-            )
-            self.send_json({"error": str(exc)}, status=500)
-            return
-        finally:
-            refresh_lock.release()
-
-        log_event(
-            "api.archive_delete.finish",
-            "deleted archive data",
-            request_id=getattr(self, "request_id", ""),
-            db=str(db_path),
-            owner_mid=owner_mid,
-            deleted_videos=result["deleted_videos"],
-            counts=result["counts"],
-            bytes_reclaimed=result["bytes_reclaimed"],
-            vacuum_deferred=result.get("vacuum_deferred"),
-        )
-        schedule_database_vacuum(db_path, getattr(self, "request_id", ""))
-        self.send_json(
-            {
-                "ok": True,
-                "database": public_database_info(database_info_for_path(db_path, self.db_path, self.database_dir)),
-                **result,
-            }
-        )
-
     def handle_archive_delete_api(self):
         try:
             body = self.read_json_body()
             db_path = self.resolve_db_path_from_body(body)
-            bvid = (body.get("bvid") or "").strip()
-            owner_mid = (body.get("owner_mid") or "").strip()
-            raw_bvids = body.get("bvids")
-            if isinstance(raw_bvids, list):
-                bvids = [str(item).strip() for item in raw_bvids if str(item).strip()]
-            else:
-                bvids = []
-            if bvid:
-                bvids = [bvid]
-            if owner_mid and bvids:
-                self.send_json({"error": "删除 UP 主和删除视频不能同时执行"}, status=400)
-                return
-            if not owner_mid and not bvids:
-                self.send_json({"error": "请选择要删除的 UP 主或视频"}, status=400)
-                return
+            owner_mid, bvids = parse_archive_delete_request(body)
             task = archive_delete_service.enqueue(
                 db_path=db_path,
                 owner_mid=owner_mid,
@@ -1136,7 +1058,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             request_id=getattr(self, "request_id", ""),
             db=str(db_path),
             owner_mid=owner_mid,
-            bvid=bvid,
+            bvid=bvids[0] if len(bvids) == 1 else "",
             bvid_count=len(bvids),
             task_id=task["id"],
             queue_position=task["queue_position"],
@@ -1395,11 +1317,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            try:
-                cookie_status = auth_cookie_store.status(check_remote=True)
-            except Exception:
-                cookie_status = None
-            payload, status = api_error_response(exc, cookie_status=cookie_status)
+            payload, status = bilibili_api_error_response(exc)
             fail_progress("comments", requested_bvid or "", payload["error"])
             log_exception(
                 "task.comments_refresh.error",
@@ -1502,11 +1420,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
             return
         except Exception as exc:
-            try:
-                cookie_status = auth_cookie_store.status(check_remote=True)
-            except Exception:
-                cookie_status = None
-            payload, status = api_error_response(exc, cookie_status=cookie_status)
+            payload, status = bilibili_api_error_response(exc)
             fail_progress("danmaku", requested_bvid or "", payload["error"])
             log_exception(
                 "task.danmaku_refresh.error",

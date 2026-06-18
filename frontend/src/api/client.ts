@@ -11,6 +11,7 @@ import type {
   ParseVideoResponse,
   ProgressState,
   SpaceArchiveResponse,
+  TaskControlAction,
   VideoListResponse,
 } from "../types";
 
@@ -18,6 +19,7 @@ type LogFields = Record<string, string | number | boolean | null | undefined>;
 type RequestOptions = RequestInit & { signal?: AbortSignal };
 
 const MUTATING_REQUEST_HEADER = "X-Bilibili-Tool-Request";
+const POST_REQUEST: RequestOptions = { cache: "no-store", method: "POST" };
 
 export async function fetchDatabases(activeId = "main", options: { includeDetails?: boolean } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
@@ -33,12 +35,7 @@ export async function saveCookie(cookie: string) {
   return requestJson<CookieStatus>(
     "cookie.save",
     `/api/cookie/save?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cookie }),
-    },
+    postJsonInit({ cookie }),
     { length: cookie.length },
   );
 }
@@ -47,10 +44,7 @@ export async function clearCookie() {
   return requestJson<CookieStatus>(
     "cookie.clear",
     `/api/cookie/clear?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-    },
+    POST_REQUEST,
   );
 }
 
@@ -58,10 +52,7 @@ export async function createAuthQrCode() {
   return requestJson<AuthQrSession>(
     "auth.qrcode",
     `/api/auth/qrcode?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-    },
+    POST_REQUEST,
   );
 }
 
@@ -69,12 +60,7 @@ export async function pollAuthQrCode(sessionId: string) {
   return requestJson<AuthQrPollResponse>(
     "auth.qrcode_poll",
     `/api/auth/qrcode/poll?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId }),
-    },
+    postJsonInit({ session_id: sessionId }),
     { session_id: sessionId.slice(0, 12) },
   );
 }
@@ -83,12 +69,7 @@ export async function importDatabase(path: string) {
   return requestJson<DatabaseImportResponse>(
     "databases.import",
     `/api/databases/import?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    },
+    postJsonInit({ path }),
     { path: path.slice(0, 120) },
   );
 }
@@ -142,10 +123,7 @@ export async function refreshDanmakuData(bvid?: string, dbId = "main") {
   return requestJson<DanmakuData>(
     "danmaku.refresh",
     `/api/danmaku/refresh?${query.toString()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-    },
+    POST_REQUEST,
     { bvid, db_id: dbId },
   );
 }
@@ -154,12 +132,7 @@ export async function parseVideo(url: string, delay: number, dbId = "main") {
   return requestJson<ParseVideoResponse>(
     "videos.parse",
     `/api/videos/parse?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, delay, db_id: dbId }),
-    },
+    postJsonInit({ url, delay, db_id: dbId }),
     { delay, video_ref: summarizeVideoRef(url), db_id: dbId },
   );
 }
@@ -168,32 +141,20 @@ export async function archiveSpaceVideos(ownerRef: string, options: { delay: num
   return requestJson<SpaceArchiveResponse>(
     "space.archive",
     `/api/space/archive?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        owner_ref: ownerRef,
-        delay: options.delay,
-        db_id: options.dbId || "main",
-      }),
-    },
+    postJsonInit({
+      owner_ref: ownerRef,
+      delay: options.delay,
+      db_id: options.dbId || "main",
+    }),
     { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay, db_id: options.dbId || "main" },
   );
 }
-
-export type TaskControlAction = "pause" | "resume" | "stop" | "retry" | "clear";
 
 export async function controlSpaceTasks(action: TaskControlAction, taskId?: string) {
   return requestJson<{ ok: boolean; action: string; queue: ProgressState["queue"] }>(
     "space.control",
     `/api/space/tasks/control?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, task_id: taskId }),
-    },
+    postJsonInit({ action, task_id: taskId }),
     { action, task_id: taskId },
   );
 }
@@ -202,12 +163,7 @@ export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: st
   return requestJson<DatabaseExportResponse>(
     "database.export",
     `/api/database/export?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
+    postJsonInit(payload),
     {
       bvid: payload.bvid,
       db_id: payload.db_id,
@@ -222,12 +178,7 @@ export async function openLocalPath(path: string) {
   return requestJson<{ ok: boolean; path: string; relative_path: string }>(
     "system.open_path",
     `/api/system/open-path?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    },
+    postJsonInit({ path }),
     { path },
   );
 }
@@ -236,12 +187,7 @@ export async function deleteArchiveData(payload: { bvid?: string; bvids?: string
   return requestJson<ArchiveDeleteResponse>(
     "archive.delete",
     `/api/archive/delete?ts=${Date.now()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
+    postJsonInit(payload),
     {
       bvid: payload.bvid,
       db_id: payload.db_id,
@@ -258,10 +204,7 @@ export async function refreshCommentData(bvid?: string, dbId = "main") {
   return requestJson<CommentData>(
     "comments.refresh",
     `/api/refresh?${query.toString()}`,
-    {
-      cache: "no-store",
-      method: "POST",
-    },
+    POST_REQUEST,
     { bvid, db_id: dbId },
   );
 }
@@ -332,6 +275,10 @@ async function requestJson<T>(event: string, url: string, init?: RequestOptions,
     });
     throw reason;
   }
+}
+
+function postJsonInit(body: unknown): RequestOptions {
+  return { ...POST_REQUEST, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
 function withMutatingRequestHeader(init?: RequestOptions): RequestInit | undefined {

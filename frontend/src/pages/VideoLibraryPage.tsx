@@ -13,7 +13,6 @@ import {
   logClientEvent,
   openLocalPath,
   parseVideo,
-  type TaskControlAction,
 } from "../api/client";
 import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
 import { AuthPanel } from "../components/video-library/AuthPanel";
@@ -27,11 +26,29 @@ import { ManagementPanel } from "../components/video-library/ManagementPanel";
 import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
 import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
-import type { DeleteTarget, ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState, OwnerGroup } from "../components/video-library/types";
+import { taskActionLabel } from "../components/video-library/taskUtils";
+import type { LibraryView, ManagementView, NoticeState } from "../components/video-library/types";
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
-import { dbPath, extractBvid, formatBytes, initialDatabaseId, ownerKey, ownerName, summarizeOwnerRef } from "../lib/videoLibrary";
-import type { CookieStatus, DatabaseInfo, OwnerSummary, ProgressQueue, ProgressState, ProgressTask, VideoSummary } from "../types";
+import { mergeProgressIntoQueue, taskHideKeys } from "../lib/progressQueue";
+import {
+  batchExportLabel,
+  buildOwnerGroups,
+  databaseIdForDeleteTarget,
+  dbPath,
+  deletePayloadForTarget,
+  deleteTargetVideoCount,
+  extractBvid,
+  filterVideos,
+  formatBytes,
+  initialDatabaseId,
+  mergeVideosByBvid,
+  singleDatabaseIdForVideos,
+  summarizeOwnerRef,
+  summarizeVideos,
+  videoExportLabel,
+} from "../lib/videoLibrary";
+import type { CookieStatus, DatabaseInfo, DeleteTarget, ExportFormat, ExportTarget, OwnerGroup, OwnerSummary, ProgressQueue, ProgressTask, TaskControlAction, VideoSummary } from "../types";
 
 const VIDEO_PAGE_SIZE = 40;
 
@@ -187,60 +204,7 @@ export function VideoLibraryPage() {
     void loadDatabases({ includeDetails: true, quiet: true });
   }, [libraryView, loadDatabases]);
 
-  const ownerGroups = useMemo(() => {
-    if (ownerSummaries.length) {
-      const bvidsByOwner = new Map<string, string[]>();
-      for (const video of videos) {
-        const key = ownerKey(video);
-        const bvids = bvidsByOwner.get(key);
-        if (bvids) {
-          bvids.push(video.bvid);
-        } else {
-          bvidsByOwner.set(key, [video.bvid]);
-        }
-      }
-      return ownerSummaries.map((owner) => ({
-        bvids: owner.owner_mid ? [] : bvidsByOwner.get(owner.key) || [],
-        key: owner.key,
-        name: owner.name,
-        ownerMid: owner.owner_mid,
-        videoCount: owner.video_count,
-        commentCount: owner.comment_count,
-        danmakuCount: owner.danmaku_count,
-        storageBytes: owner.storage_bytes,
-      }));
-    }
-
-    const groups = new Map<string, OwnerGroup>();
-    for (const video of videos) {
-      const key = ownerKey(video);
-      const existing = groups.get(key);
-      if (existing) {
-        existing.bvids.push(video.bvid);
-        existing.videoCount += 1;
-        existing.commentCount += video.comment_total_count || 0;
-        existing.danmakuCount += video.danmaku_count || 0;
-        existing.storageBytes = estimateOwnerStorageBytes(existing.commentCount, existing.danmakuCount, existing.videoCount);
-      } else {
-        groups.set(key, {
-          bvids: [video.bvid],
-          key,
-          name: ownerName(video),
-          ownerMid: (video.owner_mid || "").trim(),
-          videoCount: 1,
-          commentCount: video.comment_total_count || 0,
-          danmakuCount: video.danmaku_count || 0,
-          storageBytes: estimateOwnerStorageBytes(video.comment_total_count || 0, video.danmaku_count || 0, 1),
-        });
-      }
-    }
-
-    return Array.from(groups.values()).sort((first, second) => {
-      if (second.videoCount !== first.videoCount) return second.videoCount - first.videoCount;
-      if (second.commentCount !== first.commentCount) return second.commentCount - first.commentCount;
-      return first.name.localeCompare(second.name, "zh-Hans-CN");
-    });
-  }, [ownerSummaries, videos]);
+  const ownerGroups = useMemo(() => buildOwnerGroups(videos, ownerSummaries), [ownerSummaries, videos]);
 
   useEffect(() => {
     if (ownerFilter === "all") return;
@@ -252,34 +216,9 @@ export function VideoLibraryPage() {
   const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
   const selectedOwnerName = selectedOwner?.name;
 
-  const filteredVideos = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const ownerScopedVideos =
-      ownerFilter === "all" ? videos : videos.filter((video) => ownerKey(video) === ownerFilter);
-    if (!needle) return ownerScopedVideos;
-    return ownerScopedVideos.filter((video) => {
-      return (
-        video.title.toLowerCase().includes(needle) ||
-        video.bvid.toLowerCase().includes(needle) ||
-        (video.owner_name || "").toLowerCase().includes(needle)
-      );
-    });
-  }, [ownerFilter, query, videos]);
+  const filteredVideos = useMemo(() => filterVideos(videos, ownerFilter, query), [ownerFilter, query, videos]);
 
-  const totals = useMemo(() => {
-    return videos.reduce(
-      (acc, video) => {
-        acc.views += video.stat_view || 0;
-        acc.comments += video.comment_total_count || 0;
-        acc.active += video.active_comment_count || 0;
-        acc.deleted += video.deleted_comment_count || 0;
-        acc.likes += video.comment_like_count || 0;
-        acc.danmaku += video.danmaku_count || 0;
-        return acc;
-      },
-      { views: 0, comments: 0, active: 0, deleted: 0, likes: 0, danmaku: 0 },
-    );
-  }, [videos]);
+  const totals = useMemo(() => summarizeVideos(videos), [videos]);
 
   async function loadMoreVideos() {
     await loadVideos({ append: true, offset: videos.length, quiet: true });
@@ -336,16 +275,6 @@ export function VideoLibraryPage() {
       const text = reason instanceof Error ? reason.message : String(reason);
       setNotice({ kind: "error", title: "打开文件夹失败", message: text });
     }
-  }
-
-  function videoExportLabel(video: VideoSummary) {
-    return video.title || "未命名视频";
-  }
-
-  function batchExportLabel(prefix: string, names: string[], count: number) {
-    const readable = names.slice(0, 2).filter(Boolean).join("_");
-    const suffix = names.length > 2 ? `_等${names.length}项` : "";
-    return `${prefix}_${readable || `${count}项`}${suffix}`;
   }
 
   async function exportOwnerDatabase(owner = selectedOwner, format: ExportFormat) {
@@ -521,33 +450,11 @@ export function VideoLibraryPage() {
     setDeleteTarget({ kind: "owners", owners });
   }
 
-  function deletePayloadForTarget(target: DeleteTarget): { owner_mid?: string; bvid?: string; bvids?: string[] } {
-    if (target.kind === "owner") return { owner_mid: target.owner.ownerMid };
-    if (target.kind === "video") return { bvid: target.video.bvid };
-    if (target.kind === "videos") return { bvids: target.videos.map((video) => video.bvid) };
-    const mids = target.owners.map((owner) => owner.ownerMid).filter(Boolean);
-    if (mids.length === 1 && target.owners.length === 1) return { owner_mid: mids[0] };
-    return { bvids: Array.from(new Set(target.owners.flatMap((owner) => owner.bvids))) };
-  }
-
-  function databaseIdForDeleteTarget(target: DeleteTarget) {
-    if (target.kind === "video") return target.video.db_id || activeDbId;
-    if (target.kind === "videos") return singleDatabaseIdForVideos(target.videos, activeDbId);
-    return activeDbId;
-  }
-
-  function deleteTargetVideoCount(target: DeleteTarget) {
-    if (target.kind === "owner") return target.owner.videoCount;
-    if (target.kind === "owners") return target.owners.reduce((sum, owner) => sum + owner.videoCount, 0);
-    if (target.kind === "videos") return target.videos.length;
-    return 1;
-  }
-
   async function queueArchiveDeleteTarget() {
     if (!deleteTarget) return;
     const target = deleteTarget;
     const payloadTarget = deletePayloadForTarget(target);
-    const targetDbId = databaseIdForDeleteTarget(target);
+    const targetDbId = databaseIdForDeleteTarget(target, activeDbId);
     if (!targetDbId) {
       setNotice({
         kind: "warning",
@@ -1045,105 +952,6 @@ export function VideoLibraryPage() {
   );
 }
 
-export function mergeProgressIntoQueue(queue: ProgressQueue | undefined, progress: ProgressState | null, hiddenTaskKeys: Set<string> = new Set()): ProgressQueue {
-  const base: ProgressQueue = {
-    active: queue?.active || null,
-    queued: queue?.queued || [],
-    recent: (queue?.recent || []).filter((task) => !isHiddenTask(task, hiddenTaskKeys)),
-  };
-  const progressTask = progressToTask(progress);
-  if (!progressTask) return base;
-  if (isHiddenTask(progressTask, hiddenTaskKeys)) return base;
-  if (queueHasMatchingTask(base, progressTask)) return base;
-
-  if (progressTask.status === "running" || progressTask.status === "waiting") {
-    return {
-      ...base,
-      active: progressTask,
-    };
-  }
-
-  const alreadyInRecent = base.recent.some((task) => task.id === progressTask.id);
-  return {
-    ...base,
-    recent: alreadyInRecent ? base.recent : [progressTask, ...base.recent],
-  };
-}
-
 function allQueueTasks(queue: ProgressQueue) {
   return [queue.active, ...queue.queued, ...queue.recent].filter(Boolean) as ProgressTask[];
-}
-
-function isHiddenTask(task: ProgressTask, hiddenTaskKeys: Set<string>) {
-  return taskHideKeys(task).some((key) => hiddenTaskKeys.has(key));
-}
-
-function taskHideKeys(task: ProgressTask) {
-  const keys = [`id:${task.id}`];
-  const bvid = task.bvid || task.current_bvid;
-  if (bvid && ["parse", "comments", "danmaku"].includes(task.kind)) {
-    keys.push(`id:${task.kind}:${bvid}`);
-  }
-  return keys;
-}
-
-function queueHasMatchingTask(queue: ProgressQueue, task: ProgressTask) {
-  return [queue.active, ...queue.queued, ...queue.recent].some((existing) => {
-    if (!existing) return false;
-    if (existing.id === task.id) return true;
-    const existingBvid = existing.bvid || existing.current_bvid;
-    const taskBvid = task.bvid || task.current_bvid;
-    return Boolean(existingBvid && taskBvid && existing.kind === task.kind && existingBvid === taskBvid);
-  });
-}
-
-function taskActionLabel(action: TaskControlAction) {
-  if (action === "pause") return "暂停";
-  if (action === "resume") return "继续";
-  if (action === "stop") return "停止";
-  if (action === "retry") return "重试";
-  return "清除";
-}
-
-function progressToTask(progress: ProgressState | null): ProgressTask | null {
-  if (!progress || !["parse", "comments", "danmaku"].includes(progress.kind)) return null;
-  const bvid = progress.bvid || "";
-  const taskKindLabel = progress.kind === "parse" ? "视频抓取" : progress.kind === "comments" ? "评论刷新" : "弹幕刷新";
-  const status = progress.active ? "running" : progress.error ? "failed" : progress.done ? "finished" : "queued";
-  return {
-    id: `${progress.kind}:${bvid || progress.started_at || "latest"}`,
-    kind: progress.kind,
-    mid: "",
-    owner_ref: taskKindLabel,
-    status,
-    message: progress.message || taskKindLabel,
-    created_at: progress.started_at,
-    updated_at: progress.updated_at,
-    started_at: progress.started_at,
-    finished_at: progress.done ? progress.updated_at : "",
-    progress: progress.percent || 0,
-    current_bvid: bvid,
-    total: 1,
-    complete: progress.done && !progress.error ? 1 : 0,
-    archived: progress.done && !progress.error ? 1 : 0,
-    skipped: 0,
-    failed: progress.error ? 1 : 0,
-  };
-}
-
-function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummary[]) {
-  const byBvid = new Map(current.map((video) => [video.bvid, video]));
-  for (const video of incoming) {
-    byBvid.set(video.bvid, video);
-  }
-  return Array.from(byBvid.values());
-}
-
-function singleDatabaseIdForVideos(videos: VideoSummary[], fallbackDbId: string) {
-  const ids = new Set(videos.map((video) => video.db_id || fallbackDbId));
-  return ids.size === 1 ? Array.from(ids)[0] : "";
-}
-
-function estimateOwnerStorageBytes(commentCount: number, danmakuCount: number, videoCount: number) {
-  return commentCount * 900 + danmakuCount * 260 + videoCount * 4096;
 }

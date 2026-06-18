@@ -6,11 +6,25 @@ import { ManagementPanel } from "../../../../frontend/src/components/video-libra
 import { OwnerFilterButton } from "../../../../frontend/src/components/video-library/OwnerFilterButton";
 import { ProgressQueuePanel } from "../../../../frontend/src/components/video-library/ProgressQueuePanel";
 import { TaskManagementPanel } from "../../../../frontend/src/components/video-library/TaskManagementPanel";
-import { mergeProgressIntoQueue } from "../../../../frontend/src/pages/VideoLibraryPage";
-import type { OwnerGroup } from "../../../../frontend/src/components/video-library/types";
+import { isControllableTaskKind, isTerminalTaskStatus, taskStatusLabel, taskTitle } from "../../../../frontend/src/components/video-library/taskUtils";
+import { mergeProgressIntoQueue, taskHideKeys } from "../../../../frontend/src/lib/progressQueue";
+import type { OwnerGroup } from "../../../../frontend/src/types";
 import { makeCookieStatus, makeDatabase, makeProgress, makeProgressTask, makeVideo } from "../../helpers/factories";
 
 describe("video library management components", () => {
+  it("keeps queue task display helpers consistent across panels", () => {
+    expect(isControllableTaskKind("space")).toBe(true);
+    expect(isControllableTaskKind("parse")).toBe(true);
+    expect(isControllableTaskKind("delete")).toBe(true);
+    expect(isControllableTaskKind("unknown")).toBe(false);
+    expect(isTerminalTaskStatus("finished")).toBe(true);
+    expect(isTerminalTaskStatus("running")).toBe(false);
+    expect(taskStatusLabel(makeProgressTask({ status: "paused" }))).toBe("已暂停");
+    expect(taskStatusLabel(makeProgressTask({ status: "custom" }))).toBe("custom");
+    expect(taskTitle(makeProgressTask({ kind: "parse", bvid: "BV1xx411c7mD", current_bvid: "" }))).toBe("视频 BV1xx411c7mD");
+    expect(taskTitle(makeProgressTask({ kind: "delete", owner_ref: "", bvid: "BV1xx411c7mD" }))).toBe("删除 BV1xx411c7mD");
+  });
+
   it("renders queue progress across active, queued and recent tasks", () => {
     const html = renderToStaticMarkup(
       <ProgressQueuePanel
@@ -130,6 +144,14 @@ describe("video library management components", () => {
     expect(merged.recent[0].id).toBe("parse-1");
   });
 
+  it("builds stable hide keys for single-video task history", () => {
+    expect(taskHideKeys(makeProgressTask({ id: "task-1", kind: "parse", bvid: "BV1HideTask1", current_bvid: "" }))).toEqual([
+      "id:task-1",
+      "id:parse:BV1HideTask1",
+    ]);
+    expect(taskHideKeys(makeProgressTask({ id: "task-2", kind: "space_archive", bvid: "BV1HideTask2" }))).toEqual(["id:task-2"]);
+  });
+
   it("does not re-add hidden progress tasks after clearing history", () => {
     const merged = mergeProgressIntoQueue(
       { active: null, queued: [], recent: [] },
@@ -144,6 +166,28 @@ describe("video library management components", () => {
       new Set(["id:parse:BV1JogwzEEzD"]),
     );
 
+    expect(merged.recent).toHaveLength(0);
+  });
+
+  it("promotes live single-video progress into the active queue slot", () => {
+    const merged = mergeProgressIntoQueue(
+      { active: null, queued: [], recent: [] },
+      makeProgress({
+        active: true,
+        kind: "comments",
+        bvid: "BV1LiveTask1",
+        percent: 36,
+        message: "?????",
+      }),
+    );
+
+    expect(merged.active).toMatchObject({
+      id: "comments:BV1LiveTask1",
+      kind: "comments",
+      current_bvid: "BV1LiveTask1",
+      progress: 36,
+      status: "running",
+    });
     expect(merged.recent).toHaveLength(0);
   });
 

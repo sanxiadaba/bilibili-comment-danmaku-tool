@@ -220,6 +220,27 @@ export type OwnerSummary = {
   storage_bytes?: number;
 };
 
+export type OwnerGroup = {
+  bvids: string[];
+  key: string;
+  name: string;
+  ownerMid: string;
+  videoCount: number;
+  commentCount: number;
+  danmakuCount: number;
+  storageBytes?: number;
+};
+
+export type ExportFormat = "sqlite" | "json";
+
+export type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
+
+export type DeleteTarget =
+  | { kind: "owner"; owner: OwnerGroup }
+  | { kind: "owners"; owners: OwnerGroup[] }
+  | { kind: "video"; video: VideoSummary }
+  | { kind: "videos"; videos: VideoSummary[] };
+
 export type VideoListResponse = {
   videos: VideoSummary[];
   owners?: OwnerSummary[];
@@ -423,6 +444,8 @@ export type ProgressTask = {
   pause_requested?: boolean;
   stop_requested?: boolean;
 };
+
+export type TaskControlAction = "pause" | "resume" | "stop" | "retry" | "clear";
 
 export type ProgressQueue = {
   active: ProgressTask | null;
