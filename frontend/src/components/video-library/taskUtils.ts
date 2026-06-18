@@ -27,11 +27,10 @@ export function taskStatusLabel(task: ProgressTask) {
   return task.status || "未知";
 }
 
-
 export function taskActionLabel(action: TaskControlAction) {
-  if (action === "pause") return "??";
-  if (action === "resume") return "??";
-  if (action === "stop") return "??";
-  if (action === "retry") return "??";
-  return "??";
+  if (action === "pause") return "暂停";
+  if (action === "resume") return "继续";
+  if (action === "stop") return "停止";
+  if (action === "retry") return "重试";
+  return "清除";
 }

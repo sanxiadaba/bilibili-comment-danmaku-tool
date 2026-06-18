@@ -393,7 +393,7 @@ class BilibiliClient:
                     delay = retry_delay_seconds(attempt, status=exc.code)
                 if attempt == retries:
                     break
-                if exc.code in BLOCKED_HTTP_STATUSES:
+                if exc.code in RATE_LIMIT_HTTP_STATUSES:
                     self.backoff.block_for(delay)
                     log(
                         f"warning: request got HTTP {exc.code}; "
@@ -414,7 +414,7 @@ class BilibiliClient:
                     delay = retry_delay_seconds(attempt)
                 if attempt == retries:
                     break
-                if is_blocked_request_error(exc):
+                if should_global_backoff(exc):
                     self.backoff.block_for(delay)
                     log(
                         f"warning: request got {blocked_error_label(exc)}; "
@@ -779,6 +779,14 @@ def is_blocked_request_error(exc):
     )
 
 
+def is_session_precondition_error(exc):
+    return isinstance(exc, BilibiliRequestError) and exc.status in SESSION_RETRY_HTTP_STATUSES
+
+
+def should_global_backoff(exc):
+    return is_blocked_request_error(exc) and not is_session_precondition_error(exc)
+
+
 def is_comments_closed_error(exc):
     return (
         isinstance(exc, BilibiliRequestError)
@@ -807,7 +815,7 @@ def request_signed_json(endpoint, params_factory, client, mixin_key, log, refres
                 retry_delay_seconds(attempt, status=exc.status, api_code=exc.api_code),
             )
             backoff = getattr(client, "backoff", None)
-            if backoff is not None:
+            if backoff is not None and should_global_backoff(exc):
                 backoff.block_for(delay)
             log(
                 f"warning: signed request got {blocked_error_label(exc)}; "
@@ -1054,11 +1062,17 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
                     exc.retry_after or 0,
                     retry_delay_seconds(1, status=exc.status, api_code=exc.api_code),
                 )
-                client.backoff.block_for(delay)
-                log(
-                    f"child root={root_rpid} blocked by {blocked_error_label(exc)}; "
-                    f"cooling down for {delay:.0f}s and pausing current archive task"
-                )
+                if should_global_backoff(exc):
+                    client.backoff.block_for(delay)
+                    log(
+                        f"child root={root_rpid} blocked by {blocked_error_label(exc)}; "
+                        f"cooling down for {delay:.0f}s and pausing current archive task"
+                    )
+                else:
+                    log(
+                        f"child root={root_rpid} got {blocked_error_label(exc)}; "
+                        "login/session precondition failed, pausing current archive task without global cooldown"
+                    )
             raise
         page_replies = collect_main_reply_candidates(data)
         page_info = data.get("page") or {}
