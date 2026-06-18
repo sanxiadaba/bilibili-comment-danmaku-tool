@@ -231,6 +231,16 @@ export type OwnerGroup = {
   storageBytes?: number;
 };
 
+export type ExportFormat = "sqlite" | "json";
+
+export type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
+
+export type DeleteTarget =
+  | { kind: "owner"; owner: OwnerGroup }
+  | { kind: "owners"; owners: OwnerGroup[] }
+  | { kind: "video"; video: VideoSummary }
+  | { kind: "videos"; videos: VideoSummary[] };
+
 export type VideoListResponse = {
   videos: VideoSummary[];
   owners?: OwnerSummary[];

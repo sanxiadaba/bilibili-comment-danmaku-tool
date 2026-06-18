@@ -27,22 +27,28 @@ import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
 import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
 import { taskActionLabel } from "../components/video-library/taskUtils";
-import type { DeleteTarget, ExportFormat, ExportTarget, LibraryView, ManagementView, NoticeState } from "../components/video-library/types";
+import type { LibraryView, ManagementView, NoticeState } from "../components/video-library/types";
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { mergeProgressIntoQueue, taskHideKeys } from "../lib/progressQueue";
 import {
+  batchExportLabel,
   buildOwnerGroups,
+  databaseIdForDeleteTarget,
   dbPath,
+  deletePayloadForTarget,
+  deleteTargetVideoCount,
   extractBvid,
+  filterVideos,
   formatBytes,
   initialDatabaseId,
   mergeVideosByBvid,
-  ownerKey,
   singleDatabaseIdForVideos,
   summarizeOwnerRef,
+  summarizeVideos,
+  videoExportLabel,
 } from "../lib/videoLibrary";
-import type { CookieStatus, DatabaseInfo, OwnerGroup, OwnerSummary, ProgressQueue, ProgressTask, TaskControlAction, VideoSummary } from "../types";
+import type { CookieStatus, DatabaseInfo, DeleteTarget, ExportFormat, ExportTarget, OwnerGroup, OwnerSummary, ProgressQueue, ProgressTask, TaskControlAction, VideoSummary } from "../types";
 
 const VIDEO_PAGE_SIZE = 40;
 
@@ -210,34 +216,9 @@ export function VideoLibraryPage() {
   const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
   const selectedOwnerName = selectedOwner?.name;
 
-  const filteredVideos = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const ownerScopedVideos =
-      ownerFilter === "all" ? videos : videos.filter((video) => ownerKey(video) === ownerFilter);
-    if (!needle) return ownerScopedVideos;
-    return ownerScopedVideos.filter((video) => {
-      return (
-        video.title.toLowerCase().includes(needle) ||
-        video.bvid.toLowerCase().includes(needle) ||
-        (video.owner_name || "").toLowerCase().includes(needle)
-      );
-    });
-  }, [ownerFilter, query, videos]);
+  const filteredVideos = useMemo(() => filterVideos(videos, ownerFilter, query), [ownerFilter, query, videos]);
 
-  const totals = useMemo(() => {
-    return videos.reduce(
-      (acc, video) => {
-        acc.views += video.stat_view || 0;
-        acc.comments += video.comment_total_count || 0;
-        acc.active += video.active_comment_count || 0;
-        acc.deleted += video.deleted_comment_count || 0;
-        acc.likes += video.comment_like_count || 0;
-        acc.danmaku += video.danmaku_count || 0;
-        return acc;
-      },
-      { views: 0, comments: 0, active: 0, deleted: 0, likes: 0, danmaku: 0 },
-    );
-  }, [videos]);
+  const totals = useMemo(() => summarizeVideos(videos), [videos]);
 
   async function loadMoreVideos() {
     await loadVideos({ append: true, offset: videos.length, quiet: true });
@@ -294,16 +275,6 @@ export function VideoLibraryPage() {
       const text = reason instanceof Error ? reason.message : String(reason);
       setNotice({ kind: "error", title: "打开文件夹失败", message: text });
     }
-  }
-
-  function videoExportLabel(video: VideoSummary) {
-    return video.title || "未命名视频";
-  }
-
-  function batchExportLabel(prefix: string, names: string[], count: number) {
-    const readable = names.slice(0, 2).filter(Boolean).join("_");
-    const suffix = names.length > 2 ? `_等${names.length}项` : "";
-    return `${prefix}_${readable || `${count}项`}${suffix}`;
   }
 
   async function exportOwnerDatabase(owner = selectedOwner, format: ExportFormat) {
@@ -479,33 +450,11 @@ export function VideoLibraryPage() {
     setDeleteTarget({ kind: "owners", owners });
   }
 
-  function deletePayloadForTarget(target: DeleteTarget): { owner_mid?: string; bvid?: string; bvids?: string[] } {
-    if (target.kind === "owner") return { owner_mid: target.owner.ownerMid };
-    if (target.kind === "video") return { bvid: target.video.bvid };
-    if (target.kind === "videos") return { bvids: target.videos.map((video) => video.bvid) };
-    const mids = target.owners.map((owner) => owner.ownerMid).filter(Boolean);
-    if (mids.length === 1 && target.owners.length === 1) return { owner_mid: mids[0] };
-    return { bvids: Array.from(new Set(target.owners.flatMap((owner) => owner.bvids))) };
-  }
-
-  function databaseIdForDeleteTarget(target: DeleteTarget) {
-    if (target.kind === "video") return target.video.db_id || activeDbId;
-    if (target.kind === "videos") return singleDatabaseIdForVideos(target.videos, activeDbId);
-    return activeDbId;
-  }
-
-  function deleteTargetVideoCount(target: DeleteTarget) {
-    if (target.kind === "owner") return target.owner.videoCount;
-    if (target.kind === "owners") return target.owners.reduce((sum, owner) => sum + owner.videoCount, 0);
-    if (target.kind === "videos") return target.videos.length;
-    return 1;
-  }
-
   async function queueArchiveDeleteTarget() {
     if (!deleteTarget) return;
     const target = deleteTarget;
     const payloadTarget = deletePayloadForTarget(target);
-    const targetDbId = databaseIdForDeleteTarget(target);
+    const targetDbId = databaseIdForDeleteTarget(target, activeDbId);
     if (!targetDbId) {
       setNotice({
         kind: "warning",

@@ -1,7 +1,7 @@
 import { AlertTriangle, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { formatNumber } from "../../lib/utils";
-import type { DeleteTarget } from "./types";
+import type { DeleteTarget } from "../../types";
 
 type DeleteConfirmDialogProps = {
   disabled?: boolean;

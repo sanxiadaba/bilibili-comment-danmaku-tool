@@ -2,10 +2,8 @@ import { AlertTriangle, FolderOpen, LinkIcon, PlusCircle, RefreshCcw, Users } fr
 import type React from "react";
 import { InfoRow } from "../common";
 import { cn, formatNumber } from "../../lib/utils";
-import type { CookieStatus, DatabaseInfo, VideoSummary } from "../../types";
+import type { CookieStatus, DatabaseInfo, ExportFormat, OwnerGroup, VideoSummary } from "../../types";
 import { OwnerFilterButton } from "./OwnerFilterButton";
-import type { OwnerGroup } from "../../types";
-import type { ExportFormat } from "./types";
 
 type LibrarySidebarProps = {
   activeDatabase?: DatabaseInfo;

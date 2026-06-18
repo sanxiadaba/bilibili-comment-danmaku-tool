@@ -1,6 +1,6 @@
 import { Database, Download, X } from "lucide-react";
 import { formatNumber } from "../../lib/utils";
-import type { ExportFormat, ExportTarget } from "./types";
+import type { ExportFormat, ExportTarget } from "../../types";
 
 type ExportChoiceDialogProps = {
   target: ExportTarget;
