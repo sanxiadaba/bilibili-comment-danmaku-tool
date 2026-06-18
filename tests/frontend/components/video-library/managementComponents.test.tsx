@@ -6,7 +6,7 @@ import { ManagementPanel } from "../../../../frontend/src/components/video-libra
 import { OwnerFilterButton } from "../../../../frontend/src/components/video-library/OwnerFilterButton";
 import { ProgressQueuePanel } from "../../../../frontend/src/components/video-library/ProgressQueuePanel";
 import { TaskManagementPanel } from "../../../../frontend/src/components/video-library/TaskManagementPanel";
-import { isControllableTaskKind, isTerminalTaskStatus, taskStatusLabel, taskTitle } from "../../../../frontend/src/components/video-library/taskUtils";
+import { isControllableTaskKind, isTerminalTaskStatus, taskActionLabel, taskStatusLabel, taskTitle } from "../../../../frontend/src/components/video-library/taskUtils";
 import { mergeProgressIntoQueue, taskHideKeys } from "../../../../frontend/src/lib/progressQueue";
 import type { OwnerGroup } from "../../../../frontend/src/types";
 import { makeCookieStatus, makeDatabase, makeProgress, makeProgressTask, makeVideo } from "../../helpers/factories";
@@ -23,6 +23,11 @@ describe("video library management components", () => {
     expect(taskStatusLabel(makeProgressTask({ status: "custom" }))).toBe("custom");
     expect(taskTitle(makeProgressTask({ kind: "parse", bvid: "BV1xx411c7mD", current_bvid: "" }))).toBe("视频 BV1xx411c7mD");
     expect(taskTitle(makeProgressTask({ kind: "delete", owner_ref: "", bvid: "BV1xx411c7mD" }))).toBe("删除 BV1xx411c7mD");
+    expect(taskActionLabel("pause")).toBe("暂停");
+    expect(taskActionLabel("resume")).toBe("继续");
+    expect(taskActionLabel("stop")).toBe("停止");
+    expect(taskActionLabel("retry")).toBe("重试");
+    expect(taskActionLabel("clear")).toBe("清除");
   });
 
   it("renders queue progress across active, queued and recent tasks", () => {

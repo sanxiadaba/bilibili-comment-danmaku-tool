@@ -267,7 +267,7 @@ class ScraperPerformanceTests(unittest.TestCase):
 
         self.assertEqual(result, {"data": {"ok": True}})
         self.assertEqual(sleeps, [17])
-        self.assertEqual(client.backoff.blocks, [17])
+        self.assertEqual(client.backoff.blocks, [])
         self.assertEqual(len(client.urls), 2)
         self.assertIn("wts=1000", client.urls[0])
         self.assertIn("wts=1030", client.urls[1])
@@ -917,7 +917,7 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(summary[0]["fetched_count"], 1)
         self.assertEqual(sleeps, [])
 
-    def test_child_fetch_blocked_request_raises_without_internal_retries(self):
+    def test_child_fetch_412_raises_without_global_backoff(self):
         calls = []
         logs = []
 
@@ -933,8 +933,23 @@ class ScraperPerformanceTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1]["retries"], 1)
-        self.assertTrue(any("blocked by HTTP 412" in item for item in logs))
-        self.assertGreater(BlockedClient.backoff.blocked_until, 0)
+        self.assertTrue(any("HTTP 412" in item and "without global cooldown" in item for item in logs))
+        self.assertEqual(BlockedClient.backoff.blocked_until, 0)
+
+    def test_child_fetch_429_still_sets_global_backoff(self):
+        logs = []
+
+        class RateLimitedClient:
+            backoff = scraper.RequestBackoff(persist=False)
+
+            def request_json(self, url, **_kwargs):
+                raise scraper.BilibiliRequestError("rate limited", status=429, url=url)
+
+        with self.assertRaises(scraper.BilibiliRequestError):
+            scraper.fetch_child_replies("123", "456", 10, RateLimitedClient(), 0, logs.append)
+
+        self.assertTrue(any("blocked by HTTP 429" in item for item in logs))
+        self.assertGreater(RateLimitedClient.backoff.blocked_until, 0)
 
     def test_main_reply_fetch_can_stop_after_page_limit(self):
         calls = []
