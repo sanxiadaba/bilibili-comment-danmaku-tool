@@ -103,7 +103,7 @@ class VideoParseTaskService:
     def cancellation_logger(self, task, bvid, logs, progress):
         base_log = make_progress_logger("parse", bvid, logs)
 
-        def log(message):
+        def check_cancel():
             if task.get("stop_requested"):
                 self.queue.update(
                     task,
@@ -128,8 +128,12 @@ class VideoParseTaskService:
                 )
                 update_progress("parse", bvid, "视频抓取已暂停")
                 raise TaskCancelled("pause")
+
+        def log(message):
+            check_cancel()
             base_log(message)
 
+        log.check_cancel = check_cancel
         return log
 
     def run_parse_task(self, task):

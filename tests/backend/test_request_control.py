@@ -1,4 +1,5 @@
 import gzip
+import io
 import json
 import logging
 import os
@@ -10,7 +11,10 @@ import time
 import unittest
 import zlib
 from http.server import BaseHTTPRequestHandler
+from email.message import Message
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import urlparse
 
 from helpers import BVID, make_archive, make_comment
 
@@ -18,14 +22,16 @@ from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
+    import_uploaded_database_stream,
     list_database_catalog,
     parse_multipart_files,
     resolve_database_path,
 )
 from errors import BadRequestError  # noqa: E402
 from progress_state import progress_percent, progress_stats  # noqa: E402
-from http_utils import MAX_JSON_BODY_BYTES, parse_content_length, parse_json_object_body  # noqa: E402
+from http_utils import JsonStaticRequestHandler, MAX_JSON_BODY_BYTES, parse_content_length, parse_json_object_body  # noqa: E402
 from local_server import create_threading_server  # noqa: E402
+from multipart_upload import parse_multipart_upload  # noqa: E402
 from space_archive import (  # noqa: E402
     api_error_response,
     extract_space_mid,
@@ -49,10 +55,12 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
 )
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 from server import (  # noqa: E402
+    CommentDanmakuServer,
     ensure_importable_database_path,
     ensure_openable_local_path,
     is_local_host,
     is_local_origin,
+    is_loopback_address,
     parse_archive_delete_request,
 )
 class RequestParsingTests(unittest.TestCase):
@@ -127,6 +135,95 @@ class RequestParsingTests(unittest.TestCase):
             parse_content_length("many")
         self.assertGreater(MAX_JSON_BODY_BYTES, 0)
 
+    def test_streaming_multipart_parser_preserves_uploaded_file(self):
+        boundary = "test-boundary"
+        raw = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="archive.db"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode() + b"SQLite payload\x00\xff" + f"\r\n--{boundary}--\r\n".encode()
+        headers = Message()
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        headers["Content-Length"] = str(len(raw))
+
+        files = parse_multipart_upload(io.BytesIO(raw), headers, len(raw))
+        try:
+            self.assertEqual(files[0].filename, "archive.db")
+            self.assertEqual(files[0].file.read(), b"SQLite payload\x00\xff")
+        finally:
+            files[0].file.close()
+
+    def test_streaming_multipart_parser_handles_multiple_files_and_chunk_boundary(self):
+        boundary = "chunk-boundary"
+        first_content = b"x" * (64 * 1024 - 123) + f"\r\n--{boundary}-not-a-delimiter".encode()
+        second_content = b"second\x00\xffpayload"
+        raw = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="first.db"\r\n\r\n'
+        ).encode() + first_content + (
+            f"\r\n--{boundary}\r\n"
+            'Content-Disposition: form-data; name="files"; filename="second.sqlite"\r\n\r\n'
+        ).encode() + second_content + f"\r\n--{boundary}--\r\n".encode()
+        headers = Message()
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+
+        files = parse_multipart_upload(io.BytesIO(raw), headers, len(raw))
+        try:
+            self.assertEqual([item.filename for item in files], ["first.db", "second.sqlite"])
+            self.assertEqual(files[0].file.read(), first_content)
+            self.assertEqual(files[1].file.read(), second_content)
+        finally:
+            for item in files:
+                item.file.close()
+
+    def test_streaming_database_import_accepts_real_sqlite_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_path = root / "source.db"
+            database_dir = root / "databases"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), source_path, replace=True)
+
+            with source_path.open("rb") as source:
+                imported = import_uploaded_database_stream("uploaded.sqlite", source, database_dir)
+
+            self.assertEqual(imported.name, "uploaded.sqlite")
+            self.assertEqual(load_comment_data(imported, bvid=BVID)["metadata"]["bvid"], BVID)
+            self.assertEqual(list(database_dir.glob(".*.upload")), [])
+
+    def test_streaming_json_import_removes_partial_database_after_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database_dir = Path(tmp) / "databases"
+
+            def fail_import(_source, target):
+                Path(target).write_bytes(b"partial database")
+                raise ValueError("invalid archive")
+
+            with patch("database_registry.import_archive_json_to_sqlite", side_effect=fail_import):
+                with self.assertRaisesRegex(ValueError, "invalid archive"):
+                    import_uploaded_database_stream("broken.json", io.BytesIO(b"{}"), database_dir)
+
+            self.assertEqual(list(database_dir.iterdir()), [])
+
+    def test_static_handler_does_not_serve_same_prefix_sibling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            static_dir = root / "dist"
+            sibling = root / "dist-backup"
+            static_dir.mkdir()
+            sibling.mkdir()
+            (static_dir / "index.html").write_bytes(b"safe index")
+            (sibling / "secret.txt").write_bytes(b"secret")
+            handler = object.__new__(JsonStaticRequestHandler)
+            handler.static_dir = static_dir
+            handler.wfile = io.BytesIO()
+            handler.send_response = lambda *_args, **_kwargs: None
+            handler.send_header = lambda *_args, **_kwargs: None
+            handler.end_headers = lambda: None
+
+            handler.handle_static("/../dist-backup/secret.txt")
+
+            self.assertEqual(handler.wfile.getvalue(), b"safe index")
+
     def test_local_origin_and_host_validation(self):
         self.assertTrue(is_local_origin(""))
         self.assertTrue(is_local_origin("http://127.0.0.1:8000"))
@@ -135,6 +232,53 @@ class RequestParsingTests(unittest.TestCase):
         self.assertTrue(is_local_host("127.0.0.1:8000"))
         self.assertTrue(is_local_host("localhost:8000"))
         self.assertFalse(is_local_host("evil.example"))
+        self.assertTrue(is_loopback_address("127.0.0.1"))
+        self.assertTrue(is_loopback_address("::1"))
+        self.assertFalse(is_loopback_address("192.168.1.20"))
+
+    def test_remote_mutation_requires_explicit_token(self):
+        handler = object.__new__(CommentDanmakuServer)
+        handler.client_address = ("192.168.1.20", 1234)
+        handler.headers = {"Host": "localhost:8001"}
+        handler.allow_remote_writes = False
+        handler.remote_api_token = "expected"
+        responses = []
+        handler.send_json = lambda payload, status=200: responses.append((payload, status))
+
+        self.assertFalse(handler.check_mutating_request(urlparse("/api/cookie/clear")))
+        self.assertEqual(responses[-1][1], 403)
+
+        handler.allow_remote_writes = True
+        handler.headers["X-Bilibili-Tool-Token"] = "expected"
+        self.assertTrue(handler.check_mutating_request(urlparse("/api/cookie/clear")))
+
+    def test_invalid_refresh_path_releases_shared_lock(self):
+        import server
+
+        handler = object.__new__(CommentDanmakuServer)
+        handler.database_dir = Path(tempfile.gettempdir())
+        handler.db_path = Path(tempfile.gettempdir()) / "missing.db"
+        handler.request_id = "test-request"
+        handler.send_json = lambda *_args, **_kwargs: None
+
+        handler.handle_refresh_api(urlparse("/api/refresh?db_id=../outside"))
+        self.assertTrue(server.refresh_lock.acquire(blocking=False))
+        server.refresh_lock.release()
+
+        handler.handle_danmaku_refresh_api(urlparse("/api/danmaku/refresh?db_id=../outside"))
+        self.assertTrue(server.refresh_lock.acquire(blocking=False))
+        server.refresh_lock.release()
+
+    def test_unhandled_error_returns_json_when_response_has_not_started(self):
+        handler = object.__new__(CommentDanmakuServer)
+        handler.response_status = 0
+        handler.request_id = "request-123"
+        responses = []
+        handler.send_json = lambda payload, status=200: responses.append((payload, status))
+
+        handler.send_unhandled_error()
+
+        self.assertEqual(responses, [({"error": "服务器内部错误", "request_id": "request-123"}, 500)])
 
     def test_create_threading_server_uses_next_free_port(self):
         class Handler(BaseHTTPRequestHandler):

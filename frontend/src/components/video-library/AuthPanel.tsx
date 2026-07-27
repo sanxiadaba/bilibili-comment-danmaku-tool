@@ -103,7 +103,7 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
       onStatusChange(payload);
       setQrSession(null);
       setQrState(null);
-      setMessage("登录态已清除");
+      setMessage("登录态已彻底清除，本地未保留 Cookie 备份");
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {

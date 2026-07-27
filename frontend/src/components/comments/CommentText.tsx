@@ -1,8 +1,9 @@
 import { X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import type { CommentNode } from "../../types";
 import { cn, getCommentPictures, getCommentTextParts } from "../../lib/utils";
+import { useModalDialog } from "../../hooks/useModalDialog";
 
 type CommentTextProps = {
   comment?: CommentNode;
@@ -50,18 +51,7 @@ export function CommentImages({ comment, compact = false }: CommentImagesProps) 
   const preview = previewIndex === null ? null : pictures[previewIndex];
   const previewNumber = previewIndex === null ? 0 : previewIndex + 1;
 
-  useEffect(() => {
-    if (!preview) return undefined;
-
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setPreviewIndex(null);
-      }
-    };
-
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [preview]);
+  const previewDialogRef = useModalDialog(Boolean(preview), () => setPreviewIndex(null));
 
   if (!pictures.length) return null;
 
@@ -106,14 +96,17 @@ export function CommentImages({ comment, compact = false }: CommentImagesProps) 
       {preview &&
         createPortal(
           <div
+            ref={previewDialogRef}
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
             role="dialog"
             aria-modal="true"
             aria-label="评论图片预览"
+            tabIndex={-1}
             onClick={() => setPreviewIndex(null)}
           >
             <div className="relative max-h-full max-w-6xl" onClick={(event) => event.stopPropagation()}>
               <button
+                data-autofocus
                 className="absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-md bg-black/70 text-white transition hover:bg-black focus:outline-none focus:ring-2 focus:ring-white/70"
                 type="button"
                 aria-label="关闭图片预览"

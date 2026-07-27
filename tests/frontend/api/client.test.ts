@@ -22,6 +22,7 @@ import {
   saveCookie,
 } from "../../../frontend/src/api/client";
 import { installApiBrowserStubs } from "../helpers/browser";
+import { progressPollingDelay } from "../../../frontend/src/hooks/useProgressPolling";
 
 function jsonResponse(payload: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(payload), {
@@ -58,6 +59,12 @@ describe("API client", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive+1");
     expect(fetchMock.mock.calls[0][0]).toContain("limit=40");
     expect(fetchMock.mock.calls[0][0]).toContain("offset=80");
+  });
+
+  it("uses adaptive progress polling intervals", () => {
+    expect(progressPollingDelay({ active: true } as never)).toBe(900);
+    expect(progressPollingDelay({ queue: { active: null, queued: [], recent: [] } } as never)).toBe(10_000);
+    expect(progressPollingDelay(undefined, true, 15_000)).toBe(30_000);
   });
 
   it("passes abort signals through read requests", async () => {
@@ -251,19 +258,22 @@ describe("API client", () => {
     await expect(fetchProgress()).rejects.toThrow(/API/);
   });
 
-  it("uses sendBeacon for client logs and ignores failures", () => {
-    logClientEvent("client.test", "hello", { bvid: "BV1xx411c7mD" });
-    expect(navigator.sendBeacon).toHaveBeenCalledWith("/api/logs/client", expect.any(Blob));
+  it("sends guarded client logs with keepalive and ignores failures", () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
 
-    vi.stubGlobal("navigator", {
-      sendBeacon: vi.fn(() => {
-        throw new Error("blocked");
-      }),
-    });
+    logClientEvent("client.test", "hello", { bvid: "BV1xx411c7mD" });
+    vi.runOnlyPendingTimers();
+    const request = fetchMock.mock.calls[0];
+    expect(request[0]).toBe("/api/logs/client");
+    expect(request[1]).toMatchObject({ keepalive: true, method: "POST" });
+    expect(new Headers(request[1].headers).get("X-Bilibili-Tool-Request")).toBe("1");
+
     globalThis.fetch = vi.fn(() => {
       throw new Error("network down");
     }) as typeof fetch;
 
     expect(() => logClientEvent("client.test", "ignored")).not.toThrow();
+    expect(() => vi.runOnlyPendingTimers()).not.toThrow();
   });
 });

@@ -35,6 +35,8 @@ class AuthStoreTests(unittest.TestCase):
             store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
             store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
             store.cookie_path.write_text("SESSDATA=secret\n", encoding="utf-8")
+            store.backup_dir.mkdir(parents=True, exist_ok=True)
+            (store.backup_dir / "cookie-old.txt").write_text("SESSDATA=older-secret\n", encoding="utf-8")
 
             with self.assertRaises(ValueError):
                 store.save("   ")
@@ -45,9 +47,7 @@ class AuthStoreTests(unittest.TestCase):
 
             self.assertFalse(store.cookie_path.exists())
             self.assertEqual(payload["status"], "missing")
-            backups = list(store.backup_dir.glob("cookie-*.txt"))
-            self.assertEqual(len(backups), 1)
-            self.assertEqual(backups[0].read_text(encoding="utf-8"), "SESSDATA=secret\n")
+            self.assertEqual(list(store.backup_dir.glob("cookie-*.txt")), [])
 
     def test_cookie_store_backs_up_existing_cookie_before_overwrite(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -63,6 +63,17 @@ class AuthStoreTests(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "SESSDATA=old\n")
             self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=new")
+
+    def test_cookie_store_prunes_old_backups(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt", backup_limit=2)
+            store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            with mock.patch("auth_store.inspect_cookie_status", return_value={"status": "unchecked", "exists": True}):
+                for value in ("one", "two", "three", "four"):
+                    store.cookie_path.write_text(f"SESSDATA={value}\n", encoding="utf-8")
+                    store.save(f"SESSDATA={value}-new")
+
+            self.assertLessEqual(len(list(store.backup_dir.glob("cookie-*.txt"))), 2)
 
     def test_qr_login_success_persists_response_cookies(self):
         headers = Message()

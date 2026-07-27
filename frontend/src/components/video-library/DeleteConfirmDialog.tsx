@@ -1,6 +1,7 @@
 import { AlertTriangle, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { formatNumber } from "../../lib/utils";
+import { useModalDialog } from "../../hooks/useModalDialog";
 import type { DeleteTarget } from "../../types";
 
 type DeleteConfirmDialogProps = {
@@ -14,9 +15,10 @@ export function DeleteConfirmDialog({ disabled = false, target, onClose, onConfi
   const [confirmText, setConfirmText] = useState("");
   const summary = useMemo(() => deleteSummary(target), [target]);
   const matched = confirmText.trim() === summary.confirmText;
+  const dialogRef = useModalDialog(true, onClose);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-ink/35 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+    <div ref={dialogRef} className="fixed inset-0 z-50 grid place-items-center bg-ink/35 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={summary.title} tabIndex={-1}>
       <div className="surface-card w-full max-w-lg overflow-hidden rounded-md shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-red-100 bg-red-50/80 p-4">
           <div className="min-w-0">
@@ -49,6 +51,7 @@ export function DeleteConfirmDialog({ disabled = false, target, onClose, onConfi
           <label className="grid gap-2 text-muted">
             输入 <span className="font-mono text-ink">{summary.confirmText}</span> 确认删除
             <input
+              data-autofocus
               className="input-shell h-10 rounded-md px-3 text-ink outline-none"
               value={confirmText}
               onChange={(event) => setConfirmText(event.target.value)}

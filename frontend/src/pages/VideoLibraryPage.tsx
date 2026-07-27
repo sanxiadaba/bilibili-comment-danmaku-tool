@@ -761,6 +761,7 @@ export function VideoLibraryPage() {
         isLoading={isLoading}
         isLoadingDatabases={isLoadingDatabases}
         showSettings={showSettings}
+        showSettingsButton={libraryView === "videos"}
         videoCount={videoTotal || videos.length}
         onRefresh={() => {
           logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
@@ -890,7 +891,7 @@ export function VideoLibraryPage() {
             isImporting={isImporting}
             isLoading={isLoadingDatabases}
             queue={spaceQueue}
-            view={managementView === "queue" ? "database" : managementView}
+            view={managementView}
             onCookieStatusChange={setCookieStatus}
             onImportPathChange={setImportPath}
             onPickFiles={() => fileInputRef.current?.click()}

@@ -1,5 +1,6 @@
 import { Database, Download, X } from "lucide-react";
 import { formatNumber } from "../../lib/utils";
+import { useModalDialog } from "../../hooks/useModalDialog";
 import type { ExportFormat, ExportTarget } from "../../types";
 
 type ExportChoiceDialogProps = {
@@ -9,6 +10,7 @@ type ExportChoiceDialogProps = {
 };
 
 export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDialogProps) {
+  const dialogRef = useModalDialog(true, onClose);
   const isOwner = target.kind === "owner";
   const title = isOwner ? "导出 UP 主档案" : "导出视频档案";
   const name = isOwner ? target.owner.name : target.video.title;
@@ -17,7 +19,7 @@ export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDi
     : `${target.video.bvid} · 评论 ${formatNumber(target.video.comment_total_count)} · 弹幕 ${formatNumber(target.video.danmaku_count)}`;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
+    <div ref={dialogRef} className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <div className="surface-card w-full max-w-lg overflow-hidden rounded-md shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-line/80 bg-white/42 p-4">
           <div className="min-w-0">
@@ -26,6 +28,7 @@ export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDi
             <div className="mt-1 text-xs text-muted">{summary}</div>
           </div>
           <button
+            data-autofocus
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/70 text-muted transition hover:text-ink hover:shadow-sm"
             type="button"
             aria-label="关闭导出选择"

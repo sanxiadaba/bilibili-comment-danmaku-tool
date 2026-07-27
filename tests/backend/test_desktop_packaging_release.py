@@ -121,6 +121,8 @@ class DesktopPackagingReleaseTests(unittest.TestCase):
         self.assertIn('New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "logs")', script)
         self.assertIn('foreach ($leftover in @("desktop_entry.build", "desktop_entry.dist", "desktop_entry.onefile-build", "data"))', script)
         self.assertNotIn("--onefile", script)
+        self.assertIn('$nuitkaVersion = "4.1.3"', script)
+        self.assertIn('uvx --from "nuitka==$nuitkaVersion"', script)
 
     def test_build_script_icon_is_applied_to_inner_runtime_launcher_and_status_form(self):
         script = (ROOT / "scripts" / "build_nuitka_windows.ps1").read_text(encoding="utf-8")
@@ -157,6 +159,14 @@ class DesktopPackagingReleaseTests(unittest.TestCase):
         self.assertNotIn("@v2", workflow)
         self.assertNotIn("@v4", workflow)
         self.assertNotIn("@v5", workflow)
+
+    def test_ci_runs_build_and_dependency_audit(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("pull_request:", workflow)
+        self.assertIn("pnpm install --frozen-lockfile", workflow)
+        self.assertIn("pnpm build", workflow)
+        self.assertIn("pnpm audit --audit-level high", workflow)
 
 
 if __name__ == "__main__":

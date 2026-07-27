@@ -29,6 +29,20 @@ pnpm dev
 
 Vite 会把 `/api` 代理到 `http://127.0.0.1:8001`。
 
+所有 Bilibili 请求统一走代理时，启动服务前设置：
+
+```powershell
+$env:BILIBILI_PROXY = "http://127.0.0.1:7890"
+pnpm server
+```
+
+服务默认只监听本机。确需允许局域网访问时，必须显式启用远程模式并配置 API token；远程写请求需要携带 `X-Bilibili-Tool-Token` 请求头：
+
+```powershell
+$env:BILIBILI_TOOL_API_TOKEN = "请替换为随机长字符串"
+python backend/server.py --host 0.0.0.0 --allow-remote
+```
+
 ## 常用命令
 
 ```powershell

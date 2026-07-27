@@ -2,6 +2,7 @@
   "name": "bilibili-comment-danmaku-tool",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@11.5.2",
   "type": "module",
   "scripts": {
     "dev": "vite --config frontend/vite.config.ts --host 127.0.0.1",
@@ -11,26 +12,38 @@
     "test:encoding": "python scripts/check_encoding.py",
     "test:backend": "python -B -m unittest discover -s tests/backend -p \"test_*.py\"",
     "test:frontend": "vitest run --config frontend/vite.config.ts",
-    "build": "pnpm test && tsc -p frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",
+    "test:frontend:coverage": "vitest run --coverage --config frontend/vite.config.ts",
+    "lint:frontend": "eslint frontend tests/frontend --max-warnings 0",
+    "lint:backend": "uvx --python 3.11 --from ruff==0.16.0 ruff check --select E9,F63,F7,F82 backend tests/backend",
+    "test:backend:coverage": "uvx --python 3.11 --from coverage==7.15.2 coverage run --branch --source=backend -m unittest discover -s tests/backend -p test_*.py && uvx --python 3.11 --from coverage==7.15.2 coverage report --fail-under=60",
+    "lint": "pnpm lint:backend && pnpm lint:frontend",
+    "build": "pnpm lint && pnpm test && tsc -p frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",
     "preview": "vite preview --config frontend/vite.config.ts --host 127.0.0.1",
     "package:windows": "powershell -ExecutionPolicy Bypass -File scripts/build_nuitka_windows.ps1"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^5.1.1",
     "lucide-react": "^0.555.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3",
-    "vite": "^7.2.7"
+    "react-dom": "^19.2.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "@vitest/coverage-v8": "4.1.8",
     "autoprefixer": "^10.4.23",
-    "postcss": "^8.5.6",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.7.0",
+    "postcss": "^8.5.23",
     "tailwindcss": "^3.4.18",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.65.0",
+    "vite": "^8.1.5",
     "vitest": "^4.0.15"
   }
 }

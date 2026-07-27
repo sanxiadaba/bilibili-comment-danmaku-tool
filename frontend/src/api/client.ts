@@ -226,27 +226,22 @@ export function logClientEvent(event: string, message = "", fields: LogFields = 
     },
   });
 
-  try {
-    if (navigator.sendBeacon) {
-      const blob = new Blob([payload], { type: "application/json" });
-      navigator.sendBeacon("/api/logs/client", blob);
-      return;
+  globalThis.setTimeout(() => {
+    try {
+      void fetch("/api/logs/client", {
+        body: payload,
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          [MUTATING_REQUEST_HEADER]: "1",
+        },
+        keepalive: true,
+        method: "POST",
+      });
+    } catch {
+      // Ignore client-side logging failures.
     }
-  } catch {
-    // Logging should never block the user's workflow.
-  }
-
-  try {
-    void fetch("/api/logs/client", {
-      body: payload,
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      keepalive: true,
-      method: "POST",
-    });
-  } catch {
-    // Ignore client-side logging failures.
-  }
+  }, 0);
 }
 
 async function requestJson<T>(event: string, url: string, init?: RequestOptions, fields: LogFields = {}) {
@@ -300,12 +295,12 @@ async function parseJsonResponse<T>(response: Response) {
     throw new Error(`后端返回了非 JSON 响应：${response.status}`);
   }
   if (!response.ok) {
-    let detail = "";
+    let detail: string | undefined;
     try {
       const payload = (await response.json()) as { detail?: string; error?: string };
       detail = payload.error || payload.detail || "";
     } catch {
-      detail = "";
+      // Fall back to the HTTP status when the error body is not JSON.
     }
     throw new Error(detail || `HTTP ${response.status}`);
   }

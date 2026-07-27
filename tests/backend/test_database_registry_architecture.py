@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +79,11 @@ class DatabaseRegistryArchitectureTests(unittest.TestCase):
             self.assertEqual(page["videos"][0]["db_id"], "db:Owner_42/BV2222222222.db")
             self.assertEqual(page["owners"][0]["owner_mid"], "42")
             self.assertEqual(page["owners"][0]["video_count"], 2)
+
+            with patch("database_registry.list_video_summaries_page", side_effect=AssertionError("cache miss")):
+                cached_page = list_all_video_summaries_page(main_db, database_dir, limit=1, offset=0)
+            self.assertEqual(cached_page["videos"], page["videos"])
+            self.assertTrue((database_dir / ".bilibili-catalog-index.json").exists())
 
     def test_video_path_uses_sanitized_owner_folder_and_bvid_filename(self):
         with tempfile.TemporaryDirectory() as tmp:

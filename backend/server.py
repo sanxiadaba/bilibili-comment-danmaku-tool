@@ -1,4 +1,6 @@
 import argparse
+import hmac
+import ipaddress
 import os
 import subprocess
 import sys
@@ -33,10 +35,9 @@ from database_registry import (
     export_database_path,
     find_video_database_path,
     import_database_file,
-    import_uploaded_database_file,
+    import_uploaded_database_stream,
     list_all_video_summaries_page,
     list_database_catalog,
-    parse_multipart_files,
     public_database_info,
     relative_to_root,
 )
@@ -44,6 +45,7 @@ from control_api import control_capabilities, control_openapi_document, normaliz
 from errors import BadRequestError, RequestTooLargeError
 from http_utils import JsonStaticRequestHandler, first_query_int, parse_content_length, parse_optional_int, safe_print
 from local_server import DEFAULT_PORT, create_threading_server
+from multipart_upload import parse_multipart_upload
 from progress_state import (
     fail_progress,
     finish_progress,
@@ -70,9 +72,11 @@ DEFAULT_COOKIE_FILE = ROOT / "data" / "cookie.txt"
 DEFAULT_LOG_DIR = ROOT / "logs"
 DEFAULT_SPACE_CACHE_DIR = ROOT / "data" / "space_cache"
 MAX_MULTIPART_BODY_BYTES = 512 * 1024 * 1024
+MAX_MULTIPART_FILE_BYTES = 256 * 1024 * 1024
 DEFAULT_COMMENT_PAGE_SIZE = 500
 DEFAULT_DANMAKU_PAGE_SIZE = 2000
 LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
+REMOTE_API_TOKEN_HEADER = "X-Bilibili-Tool-Token"
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
@@ -257,6 +261,13 @@ def is_local_host(host):
     return (parsed.hostname or "").lower() in LOCAL_HOSTNAMES
 
 
+def is_loopback_address(address):
+    try:
+        return ipaddress.ip_address(str(address or "").split("%", 1)[0]).is_loopback
+    except ValueError:
+        return str(address or "").lower() == "localhost"
+
+
 def schedule_database_vacuum(db_path, request_id=""):
     if maintenance_lock.locked():
         log_event(
@@ -299,6 +310,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
     static_dir = DEFAULT_STATIC
     log_dir = DEFAULT_LOG_DIR
     database_dir = DEFAULT_DATABASE_DIR
+    allow_remote_writes = False
+    remote_api_token = ""
 
     def do_GET(self):
         self.start_request_log("GET")
@@ -337,7 +350,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.handle_static(parsed.path)
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
-            raise
+            self.send_unhandled_error()
         finally:
             self.finish_request_log(parsed.path)
 
@@ -418,12 +431,21 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": str(exc)}, status=413)
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
-            raise
+            self.send_unhandled_error()
         finally:
             self.finish_request_log(parsed.path)
 
 
     def check_mutating_request(self, parsed):
+        client_host = self.client_address[0] if self.client_address else ""
+        if not is_loopback_address(client_host):
+            supplied_token = self.headers.get(REMOTE_API_TOKEN_HEADER, "")
+            expected_token = str(self.remote_api_token or "")
+            if not self.allow_remote_writes or not expected_token or not hmac.compare_digest(supplied_token, expected_token):
+                self.send_json({"error": "远程状态变更请求未授权"}, status=403)
+                return False
+            return True
+
         host = self.headers.get("Host", "")
         origin = self.headers.get("Origin", "")
         has_origin = bool(origin)
@@ -445,6 +467,18 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": "浏览器状态变更请求必须来自本机页面"}, status=403)
             return False
         return True
+
+    def send_unhandled_error(self):
+        if getattr(self, "response_status", 0):
+            self.close_connection = True
+            return
+        self.send_json(
+            {
+                "error": "服务器内部错误",
+                "request_id": getattr(self, "request_id", ""),
+            },
+            status=500,
+        )
 
 
     def resolve_archive_db_path_from_query(self, parsed, bvid=None):
@@ -1125,8 +1159,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 raise ValueError("上传请求体为空")
             if length > MAX_MULTIPART_BODY_BYTES:
                 raise RequestTooLargeError(f"上传文件过大，上限为 {MAX_MULTIPART_BODY_BYTES} 字节")
-            raw = self.rfile.read(length)
-            files = parse_multipart_files(raw, self.headers.get("Content-Type", ""))
+            files = parse_multipart_upload(self.rfile, self.headers, length)
         except RequestTooLargeError as exc:
             self.send_json({"error": str(exc)}, status=413)
             return
@@ -1136,20 +1169,36 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
         imported = []
         errors = []
-        for item in files:
-            filename = item["filename"]
-            suffix = Path(filename).suffix.lower()
-            if suffix not in IMPORT_EXTENSIONS:
-                errors.append(f"{filename}: 只支持 .db / .sqlite / .sqlite3 / .json")
-                continue
-            try:
-                target_path = import_uploaded_database_file(filename, item["content"], self.database_dir)
-                imported.append(public_database_info(database_info_for_path(target_path, self.db_path, self.database_dir)))
-            except Exception as exc:
-                errors.append(f"{filename}: {exc}")
+        oversized = False
+        try:
+            for item in files:
+                filename = Path(item.filename or "").name
+                if not filename or item.file is None:
+                    continue
+                suffix = Path(filename).suffix.lower()
+                if suffix not in IMPORT_EXTENSIONS:
+                    errors.append(f"{filename}: 只支持 .db / .sqlite / .sqlite3 / .json")
+                    continue
+                try:
+                    item.file.seek(0, os.SEEK_END)
+                    file_size = item.file.tell()
+                    item.file.seek(0)
+                    if file_size > MAX_MULTIPART_FILE_BYTES:
+                        raise RequestTooLargeError(f"单个上传文件上限为 {MAX_MULTIPART_FILE_BYTES} 字节")
+                    target_path = import_uploaded_database_stream(filename, item.file, self.database_dir)
+                    imported.append(public_database_info(database_info_for_path(target_path, self.db_path, self.database_dir)))
+                except RequestTooLargeError as exc:
+                    oversized = True
+                    errors.append(f"{filename}: {exc}")
+                except Exception as exc:
+                    errors.append(f"{filename}: {exc}")
+        finally:
+            for item in files:
+                if item.file is not None:
+                    item.file.close()
 
         if not imported:
-            self.send_json({"error": "没有导入任何数据库文件", "errors": errors}, status=400)
+            self.send_json({"error": "没有导入任何数据库文件", "errors": errors}, status=413 if oversized else 400)
             return
 
         log_event(
@@ -1253,11 +1302,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": "已有刷新任务正在进行，请稍后再试"}, status=409)
             return
 
-        query = parse_qs(parsed.query)
-        requested_bvid = query.get("bvid", [None])[0]
-        delay = parse_float(query.get("delay", [None])[0], 0.35)
-        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
         try:
+            query = parse_qs(parsed.query)
+            requested_bvid = query.get("bvid", [None])[0]
+            delay = parse_float(query.get("delay", [None])[0], 0.35)
+            db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
             current = load_comment_data(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
@@ -1283,7 +1332,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             scraped_count = output_data["metadata"]["comment_total_count"]
             update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
             save_comments_to_sqlite(output_data, db_path, replace=True)
-            payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
+            payload = load_comment_data(
+                db_path,
+                bvid=output_data["metadata"]["bvid"],
+                limit=DEFAULT_COMMENT_PAGE_SIZE,
+            )
             payload["refresh"] = {
                 "before_count": before_count,
                 "scraped_count": scraped_count,
@@ -1345,10 +1398,10 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
             return
 
-        query = parse_qs(parsed.query)
-        requested_bvid = query.get("bvid", [None])[0]
-        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
         try:
+            query = parse_qs(parsed.query)
+            requested_bvid = query.get("bvid", [None])[0]
+            db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
             current = load_comment_data(db_path, bvid=requested_bvid)
             log_event(
                 "task.danmaku_refresh.start",
@@ -1388,7 +1441,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             else:
                 update_progress("danmaku", current["metadata"]["bvid"], "弹幕抓取完成，正在保存档案")
                 save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
-            payload = load_danmaku_data(db_path, bvid=current["metadata"]["bvid"], limit=None)
+            payload = load_danmaku_data(
+                db_path,
+                bvid=current["metadata"]["bvid"],
+                limit=DEFAULT_DANMAKU_PAGE_SIZE,
+            )
             payload["refresh"] = {
                 "before_count": before_count,
                 "after_count": payload["metadata"]["total_count"],
@@ -1441,6 +1498,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--allow-remote", action="store_true", help="Allow remote clients when authenticated with an API token")
+    parser.add_argument("--api-token", default=os.environ.get("BILIBILI_TOOL_API_TOKEN", ""))
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
@@ -1451,6 +1510,10 @@ def main():
     parser.add_argument("--log-queue-size", type=int, default=10000)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
+    if not is_loopback_address(args.host) and not args.allow_remote:
+        parser.error("非回环监听必须显式传入 --allow-remote")
+    if args.allow_remote and not args.api_token:
+        parser.error("--allow-remote 必须同时提供 --api-token 或 BILIBILI_TOOL_API_TOKEN")
     configure_logging(
         args.log_dir,
         max_bytes=args.log_max_bytes,
@@ -1467,6 +1530,8 @@ def main():
             "static_dir": Path(args.static).resolve(),
             "log_dir": Path(args.log_dir).resolve(),
             "database_dir": Path(args.database_dir).resolve(),
+            "allow_remote_writes": args.allow_remote,
+            "remote_api_token": args.api_token,
         },
     )
     handler.db_path = prepare_database_path(handler.db_path)

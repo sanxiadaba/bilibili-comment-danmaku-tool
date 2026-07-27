@@ -26,7 +26,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
@@ -71,6 +71,8 @@ jobs:
     runs-on: windows-latest
     needs: release-gate
     if: needs.release-gate.outputs.should_release == 'true'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout

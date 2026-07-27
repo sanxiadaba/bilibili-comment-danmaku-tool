@@ -5,6 +5,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app_logging import log_event
+
 
 DEFAULT_HISTORY_LIMIT = 10
 RUNTIME_TASK_FIELDS = {
@@ -359,10 +361,17 @@ class InMemoryTaskQueue:
             temp_path = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
             temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(self.state_path)
-        except OSError:
+        except OSError as exc:
             if temp_path:
                 try:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
-            pass
+            log_event(
+                "task.state.persist_error",
+                "failed to persist task queue state",
+                kind=self.kind,
+                state_path=str(self.state_path),
+                error=str(exc),
+                level="error",
+            )

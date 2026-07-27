@@ -23,6 +23,9 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
         self.request_started_at = time.perf_counter()
         self.response_status = 0
         parsed = urlparse(self.path)
+        self.request_log_suppressed = parsed.path == "/api/progress"
+        if self.request_log_suppressed:
+            return
         log_event(
             "http.request.start",
             f"{method} {parsed.path}",
@@ -34,6 +37,8 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
         )
 
     def finish_request_log(self, path):
+        if getattr(self, "request_log_suppressed", False):
+            return
         duration_ms = int((time.perf_counter() - getattr(self, "request_started_at", time.perf_counter())) * 1000)
         log_event(
             "http.request.finish",
@@ -58,7 +63,7 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
         relative = path.lstrip("/")
         static_root = self.static_dir.resolve()
         file_path = (self.static_dir / relative).resolve()
-        if path == "/" or not str(file_path).startswith(str(static_root)):
+        if path == "/" or not file_path.is_relative_to(static_root):
             file_path = static_root / "index.html"
         if not file_path.exists() or file_path.is_dir():
             file_path = static_root / "index.html"

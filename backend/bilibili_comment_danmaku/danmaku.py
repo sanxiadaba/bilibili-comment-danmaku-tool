@@ -16,7 +16,10 @@ from .scraper import (
     DEFAULT_PROXY,
     GLOBAL_REQUEST_BACKOFF,
     BilibiliRequestError,
+    build_proxy_handler,
     install_ipv4_first_dns,
+    interruptible_sleep,
+    logger_cancel_check,
     log_backoff_wait,
     log_slow_request,
     retry_after_seconds,
@@ -49,9 +52,9 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
             "Referer": "https://www.bilibili.com",
         },
     )
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(build_proxy_handler(use_proxy))
     for attempt in range(1, 4):
-        backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+        backoff_wait = GLOBAL_REQUEST_BACKOFF.wait(cancel_check=logger_cancel_check(log))
         log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
         started_at = time.perf_counter()
         try:
@@ -76,7 +79,7 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
                 f"danmaku: XML got HTTP {exc.code}; elapsed={elapsed:.1f}s "
                 f"cooling down for {delay:.0f}s before retry"
             )
-            time.sleep(delay)
+            interruptible_sleep(delay, logger_cancel_check(log))
     raise BilibiliRequestError(f"danmaku XML request failed cid={cid}")
 
 
@@ -142,10 +145,10 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
                 "Referer": "https://www.bilibili.com",
             },
         )
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(build_proxy_handler(use_proxy))
         payload = None
         for attempt in range(1, 4):
-            backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+            backoff_wait = GLOBAL_REQUEST_BACKOFF.wait(cancel_check=logger_cancel_check(log))
             log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
             started_at = time.perf_counter()
             try:
@@ -176,7 +179,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
                     f"danmaku likes: got HTTP {exc.code}; elapsed={elapsed:.1f}s "
                     f"cooling down for {delay:.0f}s before retry"
                 )
-                time.sleep(delay)
+                interruptible_sleep(delay, logger_cancel_check(log))
                 continue
 
             api_code = payload.get("code")
@@ -190,7 +193,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
                 )
             GLOBAL_REQUEST_BACKOFF.block_for(delay)
             log(f"danmaku likes: got API code {api_code}; cooling down for {delay:.0f}s before retry")
-            time.sleep(delay)
+            interruptible_sleep(delay, logger_cancel_check(log))
 
         if payload is None:
             continue

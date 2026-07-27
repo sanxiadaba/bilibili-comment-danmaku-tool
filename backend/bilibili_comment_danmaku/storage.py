@@ -2,6 +2,7 @@ from collections import defaultdict
 import binascii
 from pathlib import Path
 import sqlite3
+import threading
 
 
 DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 32 * 1024 * 1024
@@ -142,8 +143,11 @@ CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_ctime ON danmaku (bvid, ctime, dmid)
 """
 
 
-SQLITE_CACHE_SIZE_KB = 64 * 1024
-SQLITE_MMAP_SIZE_BYTES = 256 * 1024 * 1024
+SQLITE_CACHE_SIZE_KB = 8 * 1024
+SQLITE_MMAP_SIZE_BYTES = 64 * 1024 * 1024
+SCHEMA_VERSION = 1
+_SCHEMA_READY = {}
+_SCHEMA_READY_LOCK = threading.Lock()
 
 
 def connect(db_path, readonly=False):
@@ -192,6 +196,7 @@ def ensure_schema(conn, journal_mode="WAL"):
     ensure_danmaku_column(conn, "like_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_danmaku_column(conn, "is_up_owner", "INTEGER NOT NULL DEFAULT 0")
     backfill_comment_lifecycle(conn)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def ensure_comment_column(conn, name, definition):
@@ -507,6 +512,27 @@ def save_comments_to_sqlite(output_data, db_path, replace=True):
         conn.close()
 
 
+def ensure_schema_for_path(db_path):
+    path = Path(db_path).resolve()
+    if not path.exists():
+        raise LookupError("video not found")
+    stat = path.stat()
+    fingerprint = (stat.st_mtime_ns, stat.st_size)
+    with _SCHEMA_READY_LOCK:
+        if _SCHEMA_READY.get(str(path)) == fingerprint:
+            return
+        conn = connect(path)
+        try:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+            if version < SCHEMA_VERSION:
+                ensure_schema(conn)
+                conn.commit()
+            updated_stat = path.stat()
+            _SCHEMA_READY[str(path)] = (updated_stat.st_mtime_ns, updated_stat.st_size)
+        finally:
+            conn.close()
+
+
 def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
     bvid = danmaku_data["bvid"]
     items = danmaku_data.get("items") or []
@@ -560,10 +586,9 @@ def load_danmaku_data(db_path, bvid=None, limit=None, offset=0):
     if offset is None:
         offset = 0
     offset = max(0, int(offset or 0))
-    conn = connect(db_path)
+    ensure_schema_for_path(db_path)
+    conn = connect_readonly(db_path)
     try:
-        ensure_schema(conn)
-        conn.commit()
         if bvid:
             video = conn.execute("SELECT * FROM videos WHERE bvid = ?", (bvid,)).fetchone()
         else:
@@ -679,10 +704,9 @@ def load_comment_data(db_path, bvid=None, limit=None, offset=0):
     if offset is None:
         offset = 0
     offset = max(0, int(offset or 0))
-    conn = connect(db_path)
+    ensure_schema_for_path(db_path)
+    conn = connect_readonly(db_path)
     try:
-        ensure_schema(conn)
-        conn.commit()
         if bvid:
             video = conn.execute("SELECT * FROM videos WHERE bvid = ?", (bvid,)).fetchone()
         else:

@@ -17,7 +17,7 @@ type LibraryStatsProps = {
 
 export function LibraryStats({ totals, videoCount }: LibraryStatsProps) {
   return (
-    <section className="mx-auto grid max-w-[1540px] gap-4 px-4 py-4 md:grid-cols-2 lg:grid-cols-6 lg:px-6">
+    <section className="mx-auto grid max-w-[1540px] grid-cols-2 gap-3 px-4 py-4 lg:grid-cols-6 lg:gap-4 lg:px-6">
       <StatTile icon={PlayCircle} label="视频数量" value={videoCount} tone="pink" />
       <StatTile icon={Eye} label="播放量" value={totals.views} tone="mint" />
       <StatTile icon={MessageCircle} label="评论档案" value={totals.comments} tone="cyan" />

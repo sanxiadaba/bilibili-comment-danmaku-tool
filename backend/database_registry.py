@@ -1,5 +1,9 @@
+import copy
+import json
+import os
 import re
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +20,9 @@ DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
 AGGREGATE_VIDEO_LIST_LIMIT = 100000
+CATALOG_INDEX_FILENAME = ".bilibili-catalog-index.json"
+CATALOG_INDEX_VERSION = 1
+_CATALOG_INDEX_LOCK = threading.Lock()
 
 
 def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
@@ -113,23 +120,40 @@ def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
     by_bvid = {}
-    for db_path, db_id in iter_catalog_database_paths(main_db_path, database_dir):
-        if not Path(db_path).exists():
-            continue
-        try:
-            page = list_video_summaries_page(
-                db_path,
-                limit=AGGREGATE_VIDEO_LIST_LIMIT,
-                offset=0,
-                include_owners=False,
-            )
-        except Exception:
-            continue
-        for video in page.get("videos") or []:
-            item = {**video, "db_id": db_id}
-            current = by_bvid.get(item["bvid"])
-            if current is None or video_summary_rank(item, db_id) > video_summary_rank(current, current.get("db_id")):
-                by_bvid[item["bvid"]] = item
+    database_dir = Path(database_dir).resolve()
+    with _CATALOG_INDEX_LOCK:
+        cache = load_catalog_index(database_dir)
+        seen = set()
+        changed = False
+        for db_path, db_id in iter_catalog_database_paths(main_db_path, database_dir):
+            key = db_path.relative_to(database_dir).as_posix()
+            seen.add(key)
+            fingerprint = database_fingerprint(db_path)
+            entry = cache["entries"].get(key)
+            if not isinstance(entry, dict):
+                entry = {}
+            if entry.get("fingerprint") != fingerprint or "videos" not in entry:
+                try:
+                    page = list_video_summaries_page(
+                        db_path,
+                        limit=AGGREGATE_VIDEO_LIST_LIMIT,
+                        offset=0,
+                        include_owners=False,
+                    )
+                    videos_for_database = page.get("videos") or []
+                except Exception:
+                    videos_for_database = []
+                entry = {**entry, "fingerprint": database_fingerprint(db_path), "videos": videos_for_database}
+                cache["entries"][key] = entry
+                changed = True
+            for video in entry.get("videos") or []:
+                item = {**video, "db_id": db_id}
+                current = by_bvid.get(item["bvid"])
+                if current is None or video_summary_rank(item, db_id) > video_summary_rank(current, current.get("db_id")):
+                    by_bvid[item["bvid"]] = item
+        changed = prune_catalog_index(cache, seen) or changed
+        if changed:
+            save_catalog_index(database_dir, cache)
 
     videos = sorted(by_bvid.values(), key=video_summary_sort_key, reverse=True)
     total = len(videos)
@@ -188,28 +212,87 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
     database_dir = Path(database_dir).resolve()
     database_dir.mkdir(parents=True, exist_ok=True)
     databases = []
-    seen = set()
-
-    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
-        if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
-            continue
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        databases.append(
-            database_info_for_path(
-                resolved,
-                main_db_path,
-                database_dir,
-                db_id=f"db:{path.relative_to(database_dir).as_posix()}",
-                role="hotplug",
-                include_details=include_details,
-            )
-        )
+    with _CATALOG_INDEX_LOCK:
+        cache = load_catalog_index(database_dir)
+        seen = set()
+        changed = False
+        info_key = "info_detailed" if include_details else "info_light"
+        for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
+            if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
+                continue
+            resolved = path.resolve()
+            key = path.relative_to(database_dir).as_posix()
+            seen.add(key)
+            fingerprint = database_fingerprint(resolved)
+            entry = cache["entries"].get(key)
+            if not isinstance(entry, dict):
+                entry = {}
+            if entry.get("fingerprint") != fingerprint:
+                entry = {"fingerprint": fingerprint}
+            if info_key not in entry:
+                entry[info_key] = database_info_for_path(
+                    resolved,
+                    main_db_path,
+                    database_dir,
+                    db_id=f"db:{key}",
+                    role="hotplug",
+                    include_details=include_details,
+                )
+                cache["entries"][key] = entry
+                changed = True
+            databases.append(copy.deepcopy(entry[info_key]))
+        changed = prune_catalog_index(cache, seen) or changed
+        if changed:
+            save_catalog_index(database_dir, cache)
     if include_details:
         annotate_database_coverage(databases)
     return [public_database_info(database) for database in databases]
+
+
+def database_fingerprint(path):
+    path = Path(path)
+    stat = path.stat()
+    wal_path = Path(str(path) + "-wal")
+    wal_stat = wal_path.stat() if wal_path.exists() else None
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "wal_size": wal_stat.st_size if wal_stat else 0,
+        "wal_mtime_ns": wal_stat.st_mtime_ns if wal_stat else 0,
+    }
+
+
+def load_catalog_index(database_dir):
+    path = Path(database_dir) / CATALOG_INDEX_FILENAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") == CATALOG_INDEX_VERSION and isinstance(payload.get("entries"), dict):
+            return payload
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return {"version": CATALOG_INDEX_VERSION, "entries": {}}
+
+
+def save_catalog_index(database_dir, payload):
+    path = Path(database_dir) / CATALOG_INDEX_FILENAME
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temp_path.replace(path)
+    except OSError:
+        pass
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def prune_catalog_index(payload, seen):
+    stale = [key for key in payload["entries"] if key not in seen]
+    for key in stale:
+        del payload["entries"][key]
+    return bool(stale)
 
 
 def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, db_id=None, role=None, include_details=True):
@@ -559,6 +642,9 @@ def import_uploaded_database_file(filename, content, database_dir=DEFAULT_DATABA
         try:
             import_archive_json_to_sqlite(source_path, target_path)
             return target_path
+        except Exception:
+            remove_file_quietly(target_path)
+            raise
         finally:
             remove_file_quietly(source_path)
     target_path = unique_database_path(database_dir / normalize_database_filename(filename))
@@ -571,6 +657,36 @@ def import_uploaded_database_file(filename, content, database_dir=DEFAULT_DATABA
     except Exception:
         remove_file_quietly(target_path)
         raise
+
+
+def import_uploaded_database_stream(filename, source, database_dir=DEFAULT_DATABASE_DIR):
+    database_dir = Path(database_dir).resolve()
+    database_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(filename).suffix.lower()
+    if suffix not in IMPORT_EXTENSIONS:
+        raise ValueError("只支持 .db / .sqlite / .sqlite3 / .json 归档")
+    staging_path = unique_database_path(database_dir / f".{normalize_database_filename(filename, allowed_extensions=IMPORT_EXTENSIONS)}.upload")
+    try:
+        with staging_path.open("wb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+        if staging_path.stat().st_size <= 0:
+            raise ValueError("上传文件为空")
+        if suffix == ".json":
+            target_path = unique_database_path(database_dir / normalize_database_filename(Path(filename).with_suffix(".db").name))
+            try:
+                import_archive_json_to_sqlite(staging_path, target_path)
+                return target_path
+            except Exception:
+                remove_file_quietly(target_path)
+                raise
+        info = database_info_for_path(staging_path, database_dir=database_dir)
+        if not info["ok"]:
+            raise ValueError(info["error"] or "不是可用的归档数据库")
+        target_path = unique_database_path(database_dir / normalize_database_filename(filename))
+        staging_path.replace(target_path)
+        return target_path
+    finally:
+        remove_file_quietly(staging_path)
 
 
 def normalize_database_filename(name, allowed_extensions=DATABASE_EXTENSIONS):

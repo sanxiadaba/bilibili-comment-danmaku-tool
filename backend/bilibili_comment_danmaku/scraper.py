@@ -148,7 +148,7 @@ class RequestBackoff:
         self.persist = persist
         self.load_state()
 
-    def wait(self, include_spacing=True, spacing_factor=1.0):
+    def wait(self, include_spacing=True, spacing_factor=1.0, cancel_check=None):
         total_sleep = 0
         try:
             spacing_factor = max(float(spacing_factor), 0)
@@ -168,7 +168,7 @@ class RequestBackoff:
                         self.next_request_at = now + max(spacing, 0)
                     return total_sleep
             total_sleep += sleep_for
-            time.sleep(sleep_for)
+            interruptible_sleep(sleep_for, cancel_check)
 
     def block_for(self, seconds):
         if seconds <= 0:
@@ -321,6 +321,13 @@ class RequestBackoff:
 GLOBAL_REQUEST_BACKOFF = RequestBackoff()
 
 
+def build_proxy_handler(use_proxy=False):
+    configured_proxy = os.environ.get("BILIBILI_PROXY", "").strip()
+    if configured_proxy:
+        return urllib.request.ProxyHandler({"http": configured_proxy, "https": configured_proxy})
+    return urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({})
+
+
 class BilibiliClient:
     def __init__(self, headers, use_proxy=False, backoff=None):
         install_ipv4_first_dns()
@@ -331,7 +338,7 @@ class BilibiliClient:
         cookie_header = self.headers.pop("Cookie", "")
         if cookie_header:
             seed_cookie_jar(self.cookie_jar, cookie_header)
-        proxy_handler = urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({})
+        proxy_handler = build_proxy_handler(use_proxy)
         self.opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPCookieProcessor(self.cookie_jar))
 
     def clone(self):
@@ -355,6 +362,7 @@ class BilibiliClient:
         spacing_factor=1.0,
     ):
         log = logger or (lambda _message: None)
+        cancel_check = logger_cancel_check(log)
         last_error = None
         for attempt in range(1, retries + 1):
             request_elapsed = 0
@@ -363,6 +371,7 @@ class BilibiliClient:
                     backoff_wait = self.backoff.wait(
                         include_spacing=wait_for_spacing,
                         spacing_factor=spacing_factor,
+                        cancel_check=cancel_check,
                     )
                     log_backoff_wait(log, url, backoff_wait, attempt, retries)
                 started_at = time.perf_counter()
@@ -400,7 +409,7 @@ class BilibiliClient:
                         f"endpoint={request_endpoint_label(url)} elapsed={request_elapsed:.1f}s "
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
-                time.sleep(delay)
+                interruptible_sleep(delay, cancel_check)
             except BilibiliRequestError as exc:
                 if request_elapsed == 0:
                     request_elapsed = time.perf_counter() - started_at
@@ -421,7 +430,7 @@ class BilibiliClient:
                         f"endpoint={request_endpoint_label(url)} elapsed={request_elapsed:.1f}s "
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
-                time.sleep(delay)
+                interruptible_sleep(delay, cancel_check)
             except Exception as exc:
                 if request_elapsed == 0 and "started_at" in locals():
                     request_elapsed = time.perf_counter() - started_at
@@ -434,7 +443,7 @@ class BilibiliClient:
                     f"elapsed={request_elapsed:.1f}s retrying in {delay:.0f}s "
                     f"(attempt {attempt}/{retries}) error={type(exc).__name__}"
                 )
-                time.sleep(delay)
+                interruptible_sleep(delay, cancel_check)
 
         status = getattr(last_error, "code", None)
         if status:
@@ -457,7 +466,7 @@ class BilibiliClient:
         log = logger or (lambda _message: None)
         req = urllib.request.Request(f"https://www.bilibili.com/video/{bvid}", headers=self.headers)
         for attempt in range(1, 4):
-            backoff_wait = self.backoff.wait()
+            backoff_wait = self.backoff.wait(cancel_check=logger_cancel_check(log))
             log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
             try:
                 log(f"warmup: fetching video page attempt={attempt}/3")
@@ -470,7 +479,7 @@ class BilibiliClient:
                 delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
                 self.backoff.block_for(delay)
                 log(f"warning: warmup got HTTP {exc.code}; cooling down for {delay:.0f}s before retry")
-                time.sleep(delay)
+                interruptible_sleep(delay, logger_cancel_check(log))
             except Exception as exc:
                 log(f"warning: warmup skipped after {type(exc).__name__}: {exc}")
                 return
@@ -711,6 +720,24 @@ def retry_delay_seconds(attempt, status=None, api_code=None):
     return min(2 * attempt, 8)
 
 
+def logger_cancel_check(logger):
+    return getattr(logger, "check_cancel", None)
+
+
+def interruptible_sleep(seconds, cancel_check=None, quantum=0.5):
+    seconds = max(float(seconds or 0), 0)
+    if cancel_check is None:
+        time.sleep(seconds)
+        return
+    deadline = time.monotonic() + seconds
+    while True:
+        cancel_check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, quantum))
+
+
 def retry_after_seconds(error):
     headers = getattr(error, "headers", None)
     if not headers:
@@ -821,7 +848,7 @@ def request_signed_json(endpoint, params_factory, client, mixin_key, log, refres
                 f"warning: signed request got {blocked_error_label(exc)}; "
                 f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{SIGNED_REQUEST_RETRIES})"
             )
-            time.sleep(delay)
+            interruptible_sleep(delay, logger_cancel_check(log))
             if refresh_mixin_key is not None:
                 try:
                     mixin_key = refresh_mixin_key()

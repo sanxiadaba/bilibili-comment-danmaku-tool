@@ -16,5 +16,16 @@ export default defineConfig({
   },
   test: {
     include: ["../tests/frontend/**/*.{test,spec}.{ts,tsx}"],
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/main.tsx", "src/types.ts"],
+      thresholds: {
+        lines: 30,
+        functions: 30,
+        statements: 30,
+        branches: 35,
+      },
+    },
   },
 });

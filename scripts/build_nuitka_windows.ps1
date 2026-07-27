@@ -10,6 +10,7 @@ $distDir = Join-Path $root "dist"
 $outputExe = Join-Path $outputDir "$appName.exe"
 $iconSource = Join-Path $root "assets\app-icon.png"
 $iconPath = Join-Path $env:TEMP "bilibili-comment-danmaku-tool.ico"
+$nuitkaVersion = "4.1.3"
 
 Set-Location $root
 
@@ -109,8 +110,12 @@ $nuitkaArgs = @(
 )
 
 if (Get-Command uvx -ErrorAction SilentlyContinue) {
-    uvx --from nuitka nuitka.cmd @nuitkaArgs
+    uvx --from "nuitka==$nuitkaVersion" nuitka.cmd @nuitkaArgs
 } else {
+    $installedNuitkaVersion = (python -m nuitka --version | Select-Object -First 1).Trim()
+    if ($installedNuitkaVersion -ne $nuitkaVersion) {
+        throw "Nuitka $nuitkaVersion is required; found $installedNuitkaVersion."
+    }
     python -m nuitka @nuitkaArgs
 }
 if ($LASTEXITCODE -ne 0) {

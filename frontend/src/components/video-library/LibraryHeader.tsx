@@ -8,6 +8,7 @@ type LibraryHeaderProps = {
   isLoading: boolean;
   isLoadingDatabases: boolean;
   showSettings: boolean;
+  showSettingsButton: boolean;
   videoCount: number;
   onRefresh: () => void;
   onToggleSettings: () => void;
@@ -19,6 +20,7 @@ export function LibraryHeader({
   isLoading,
   isLoadingDatabases,
   showSettings,
+  showSettingsButton,
   videoCount,
   onRefresh,
   onToggleSettings,
@@ -51,7 +53,7 @@ export function LibraryHeader({
             <RefreshCcw className={cn(busy && "animate-spin")} size={16} aria-hidden="true" />
             刷新列表
           </button>
-          <button
+          {showSettingsButton && <button
             className={cn(
               "inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium transition",
               showSettings ? "border-bilibili bg-white text-bilibili shadow-sm" : "btn-quiet text-muted",
@@ -60,8 +62,8 @@ export function LibraryHeader({
             onClick={onToggleSettings}
           >
             <Settings size={16} aria-hidden="true" />
-            设置
-          </button>
+            抓取设置
+          </button>}
         </div>
       </div>
     </section>

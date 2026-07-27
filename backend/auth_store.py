@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from pathlib import Path
 
-from bilibili_comment_danmaku.scraper import inspect_cookie_status, load_cookie_file
+from bilibili_comment_danmaku.scraper import build_proxy_handler, inspect_cookie_status, load_cookie_file
 
 
 QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
@@ -40,9 +40,10 @@ class LoginQrSession:
 
 
 class CookieStore:
-    def __init__(self, cookie_path, backup_dir=None):
+    def __init__(self, cookie_path, backup_dir=None, backup_limit=3):
         self.cookie_path = Path(cookie_path)
         self.backup_dir = Path(backup_dir) if backup_dir else self.cookie_path.parent / "backups" / "cookie"
+        self.backup_limit = max(int(backup_limit), 0)
 
     def load(self):
         if not self.cookie_path.exists():
@@ -62,11 +63,15 @@ class CookieStore:
         self.cookie_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.cookie_path.with_name(f"{self.cookie_path.name}.{secrets.token_hex(4)}.tmp")
         temp_path.write_text(cookie + "\n", encoding="utf-8")
+        restrict_file_permissions(temp_path)
         temp_path.replace(self.cookie_path)
         return self.status(check_remote=True)
 
-    def clear(self):
-        self.backup_existing()
+    def clear(self, keep_backup=False):
+        if keep_backup:
+            self.backup_existing()
+        else:
+            self.clear_backups()
         try:
             self.cookie_path.unlink()
         except FileNotFoundError:
@@ -81,9 +86,33 @@ class CookieStore:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             backup_path = self.backup_dir / f"cookie-{timestamp}-{secrets.token_hex(3)}.txt"
             backup_path.write_text(self.cookie_path.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+            restrict_file_permissions(backup_path)
+            self.prune_backups()
             return backup_path
         except OSError:
             return None
+
+    def prune_backups(self):
+        backups = sorted(self.backup_dir.glob("cookie-*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in backups[self.backup_limit :]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def clear_backups(self):
+        for path in self.backup_dir.glob("cookie-*.txt"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def restrict_file_permissions(path):
+    try:
+        Path(path).chmod(0o600)
+    except OSError:
+        pass
 
 
 class BilibiliQrLoginService:
@@ -176,7 +205,7 @@ def normalize_cookie_text(raw_cookie):
 
 def request_json_with_cookies(url, timeout=10):
     cookie_jar = CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar), urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar), build_proxy_handler())
     request = urllib.request.Request(
         url,
         headers={

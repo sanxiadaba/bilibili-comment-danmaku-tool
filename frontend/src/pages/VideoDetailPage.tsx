@@ -203,7 +203,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       ? idToThread.get(selectedComment.normalized.rpid)
       : idToThread.get(selectedComment?.normalized.root || "");
 
-  const topLocation = locations[0];
   const peakHour = [...hourly].sort((a, b) => b.count - a.count)[0];
   const totalLikes = allComments.reduce((sum, comment) => sum + (comment.normalized.like || 0), 0);
   const activeThreadItems = selectedThread ? flattenThread(selectedThread) : [];

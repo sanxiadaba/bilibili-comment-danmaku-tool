@@ -10,6 +10,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
 
@@ -47,6 +48,23 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
 )
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 class ScraperPerformanceTests(unittest.TestCase):
+    def test_backoff_wait_can_be_cancelled_before_sleeping(self):
+        backoff = scraper.RequestBackoff(persist=False)
+        backoff.blocked_until = scraper.time.monotonic() + 60
+
+        def cancel():
+            raise RuntimeError("cancelled")
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            backoff.wait(cancel_check=cancel)
+
+    def test_configured_proxy_applies_to_all_bilibili_clients(self):
+        with mock.patch.dict("os.environ", {"BILIBILI_PROXY": "http://127.0.0.1:7890"}):
+            handler = scraper.build_proxy_handler(False)
+
+        self.assertEqual(handler.proxies["http"], "http://127.0.0.1:7890")
+        self.assertEqual(handler.proxies["https"], "http://127.0.0.1:7890")
+
     def test_child_fetch_batch_removes_serial_root_spacing(self):
         class FakeClient:
             def clone(self):

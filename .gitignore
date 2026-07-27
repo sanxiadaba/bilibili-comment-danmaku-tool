@@ -11,6 +11,8 @@ vite.config.d.ts
 # Python caches
 __pycache__/
 *.py[cod]
+.coverage
+coverage/
 
 # Local data and credentials
 data/

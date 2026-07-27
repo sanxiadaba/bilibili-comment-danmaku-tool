@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   BarChart3,
   Clock3,
   Database,
@@ -13,7 +12,6 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
-  ThumbsUp,
 } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { fetchDanmakuData, logClientEvent, refreshDanmakuData } from "../api/client";
@@ -27,7 +25,6 @@ import {
   buildDanmakuModeStats,
   buildRepeatedDanmakuContent,
   colorNumberToHex,
-  danmakuModeLabels,
   danmakuSortLabels,
   formatProgress,
   getDanmakuModeGroup,

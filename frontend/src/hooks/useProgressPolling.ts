@@ -11,17 +11,20 @@ export function useProgressPolling(enabled: boolean, kind?: string) {
     let timer: number | undefined;
 
     const tick = async () => {
+      let nextDelay: number;
       try {
         const payload = await fetchProgress();
         if (stopped) return;
         if (!kind || payload.kind === kind || payload.active) {
           setProgress(payload);
         }
+        nextDelay = progressPollingDelay(payload);
       } catch {
         // Progress is best-effort; the main request still owns the final result.
+        nextDelay = 15_000;
       }
       if (!stopped) {
-        timer = window.setTimeout(tick, 900);
+        timer = window.setTimeout(tick, progressPollingDelay(undefined, document.hidden, nextDelay));
       }
     };
 
@@ -33,4 +36,10 @@ export function useProgressPolling(enabled: boolean, kind?: string) {
   }, [enabled, kind]);
 
   return progress;
+}
+
+export function progressPollingDelay(payload?: ProgressState, hidden = false, fallback = 10_000) {
+  const queueBusy = Boolean(payload?.active || payload?.queue?.active || payload?.queue?.queued?.length);
+  const delay = payload ? (queueBusy ? 900 : 10_000) : fallback;
+  return hidden ? Math.max(delay, 30_000) : delay;
 }

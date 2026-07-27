@@ -326,7 +326,7 @@ class SpaceArchiveService:
         self.queue.update(task, **fields)
 
     def cancellation_logger(self, task, bvid, index, total):
-        def log(message):
+        def check_cancel():
             if task.get("stop_requested"):
                 self.update_task(
                     task,
@@ -353,8 +353,12 @@ class SpaceArchiveService:
                 )
                 update_progress("space", bvid, f"UP 视频抓取已暂停 {index}/{total}")
                 raise TaskCancelled("pause")
+
+        def log(message):
+            check_cancel()
             log_space_video_progress(bvid, message)
 
+        log.check_cancel = check_cancel
         return log
 
     def can_retry_task(self, task):
