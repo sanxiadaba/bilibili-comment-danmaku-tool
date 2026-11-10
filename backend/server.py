@@ -349,6 +349,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.start_request_log("GET")
         parsed = urlparse(self.path)
         try:
+            if not self.check_request_host(parsed):
+                return
             if parsed.path.startswith("/api/v1/control"):
                 self.handle_control_get_api(parsed)
                 return
@@ -380,9 +382,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 self.send_json({"error": f"未知 API：{parsed.path}"}, status=404)
                 return
             self.handle_static(parsed.path)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
-            raise
+            self.send_unhandled_error(exc)
         finally:
             self.finish_request_log(parsed.path)
 
@@ -440,7 +444,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             if parsed.path == "/api/archive/delete":
                 self.handle_archive_delete_api()
                 return
-            self.send_error(404)
+            self.send_json({"error": f"未知 API：{parsed.path}"}, status=404)
         except BadRequestError as exc:
             log_event(
                 "http.request.bad_request",
@@ -461,20 +465,41 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 level="warning",
             )
             self.send_json({"error": str(exc)}, status=413)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
-            raise
+            self.send_unhandled_error(exc)
         finally:
             self.finish_request_log(parsed.path)
 
+    def send_unhandled_error(self, exc):
+        try:
+            self.send_json({"error": f"服务器内部错误：{exc}"}, status=500)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    def check_request_host(self, parsed):
+        host = self.headers.get("Host", "")
+        if is_local_host(host):
+            return True
+        log_event(
+            "http.request.rejected_host",
+            "rejected request with a non-local Host header",
+            request_id=getattr(self, "request_id", ""),
+            path=parsed.path,
+            host=host,
+            level="warning",
+        )
+        self.send_json({"error": "只接受本机 Host 的请求"}, status=403)
+        return False
+
 
     def check_mutating_request(self, parsed):
-        host = self.headers.get("Host", "")
         origin = self.headers.get("Origin", "")
         has_origin = bool(origin)
         has_browser_guard = self.headers.get(LOCAL_BROWSER_REQUEST_HEADER) == "1"
-        if not is_local_host(host):
-            self.send_json({"error": "只接受本机 Host 的状态变更请求"}, status=403)
+        if not self.check_request_host(parsed):
             return False
         if has_origin and (not is_local_origin(origin) or not has_browser_guard):
             log_event(
@@ -1556,9 +1581,24 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
 
 
+def validate_bind_host(host, allow_remote=False):
+    """Refuse to expose this unauthenticated local tool on anything but the loopback."""
+    normalized = str(host or "").strip().lower()
+    if not normalized:
+        return "127.0.0.1"
+    if normalized in LOCAL_HOSTNAMES:
+        return normalized
+    if allow_remote:
+        return normalized
+    raise SystemExit(
+        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具。确需局域网访问请显式加 --allow-remote。"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--allow-remote", action="store_true", help="允许绑定非本机地址（无鉴权，慎用）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
@@ -1569,6 +1609,7 @@ def main():
     parser.add_argument("--log-queue-size", type=int, default=10000)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
+    validate_bind_host(args.host, allow_remote=args.allow_remote)
     configure_logging(
         args.log_dir,
         max_bytes=args.log_max_bytes,
