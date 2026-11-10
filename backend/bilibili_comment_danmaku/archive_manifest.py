@@ -1,3 +1,5 @@
+"""导出库的清单（archive_meta）生成与读取。"""
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path

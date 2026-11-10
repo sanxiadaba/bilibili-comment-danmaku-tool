@@ -1,3 +1,5 @@
+"""弹幕抓取与点赞数批量查询。"""
+
 import html
 import gzip
 import json

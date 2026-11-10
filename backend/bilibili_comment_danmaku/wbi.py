@@ -1,3 +1,5 @@
+"""WBI 签名密钥的获取、缓存与持久化。"""
+
 import hashlib
 import json
 import os

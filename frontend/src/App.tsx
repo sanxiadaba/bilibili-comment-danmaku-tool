@@ -1,3 +1,5 @@
+// 只按路径选页面：/ 视频库、/video/<BV> 评论页、/danmaku/<BV> 弹幕页。
+
 import { useEffect, useState } from "react";
 import { DanmakuPage } from "./pages/DanmakuPage";
 import { VideoDetailPage } from "./pages/VideoDetailPage";

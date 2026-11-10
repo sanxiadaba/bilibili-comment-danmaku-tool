@@ -1,3 +1,5 @@
+// 视频库：解析/抓取入口、视频列表、批量管理、任务、数据库、登录态。
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
@@ -112,6 +114,7 @@ export function VideoLibraryPage() {
     [activeDbId, databases],
   );
 
+  // --- 列表加载：数据库目录 + 视频分页 ---
   const loadDatabases = useCallback(
     async (options?: { includeDetails?: boolean; quiet?: boolean; selectId?: string }) => {
       const selectedId = options?.selectId || activeDbId;
@@ -265,6 +268,7 @@ export function VideoLibraryPage() {
     void loadDatabases({ includeDetails: true, quiet: true });
   }, [libraryView, loadDatabases]);
 
+  // --- 派生数据：当前库、UP 主分组、统计 ---
   const ownerGroups = useMemo(() => buildOwnerGroups(videos, ownerSummaries), [ownerSummaries, videos]);
 
   useEffect(() => {
@@ -304,6 +308,7 @@ export function VideoLibraryPage() {
     await runParse(target);
   }
 
+  // --- 导出 ---
   function exportSuccessNotice(
     payload: { directory_path?: string; format: string; relative_path: string },
     title: string,
@@ -435,6 +440,7 @@ export function VideoLibraryPage() {
     }
   }
 
+  // --- 删除 ---
   function queueBatchVideoDelete(selectedVideos: VideoSummary[]) {
     if (!selectedVideos.length) return;
     setDeleteTarget({ kind: "videos", videos: selectedVideos });
@@ -515,6 +521,7 @@ export function VideoLibraryPage() {
     }
   }
 
+  // --- 解析与归档任务 ---
   async function runParse(target: string) {
     setLibraryView("tasks");
     setIsParsing(true);
@@ -614,6 +621,7 @@ export function VideoLibraryPage() {
     await loadVideos({ quiet: true });
   }
 
+  // --- 导入 ---
   async function submitDatabaseImport(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const target = importPath.trim();
@@ -697,6 +705,7 @@ export function VideoLibraryPage() {
     }
   }
 
+  // --- 渲染 ---
   return (
     <main className="app-shell">
       <LibraryHeader

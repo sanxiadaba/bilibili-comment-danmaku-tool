@@ -1,3 +1,5 @@
+"""单视频解析任务：抓评论和弹幕并落库。"""
+
 from datetime import datetime, timezone
 
 from app_logging import log_event, log_exception

@@ -1,3 +1,5 @@
+"""三种长任务共用的队列：状态、暂停/恢复/停止、落盘恢复。"""
+
 import json
 import os
 import threading

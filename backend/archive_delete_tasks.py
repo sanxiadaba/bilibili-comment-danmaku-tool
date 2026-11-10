@@ -1,3 +1,5 @@
+"""删除任务：按视频或 UP 主删除本地档案，分批提交并汇报进度。"""
+
 from datetime import datetime, timezone
 import time
 

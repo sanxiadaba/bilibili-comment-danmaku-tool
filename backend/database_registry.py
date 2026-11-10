@@ -1,3 +1,5 @@
+"""数据库目录：解析 db_id、扫描 catalog、聚合视频列表、导入/导出路径。"""
+
 import re
 import shutil
 import time

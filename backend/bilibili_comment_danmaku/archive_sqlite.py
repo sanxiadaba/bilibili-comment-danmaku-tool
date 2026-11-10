@@ -1,3 +1,5 @@
+"""导出时复制表、安全删除 SQLite 文件。"""
+
 from pathlib import Path
 
 

@@ -1,3 +1,5 @@
+"""结构化日志：JSONL 落盘、按大小轮转、敏感字段脱敏。"""
+
 import json
 import logging
 import queue

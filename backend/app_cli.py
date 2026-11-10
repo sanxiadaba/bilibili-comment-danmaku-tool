@@ -1,3 +1,5 @@
+"""命令行入口：fetch-video / list-space / archive-space。"""
+
 import argparse
 import json
 import os

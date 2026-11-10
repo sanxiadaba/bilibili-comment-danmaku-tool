@@ -1,3 +1,5 @@
+// 所有后端接口都从这里出：一个接口一个函数，写操作自动带本机防护头。
+
 import type {
   ArchiveDeleteResponse,
   AuthQrPollResponse,

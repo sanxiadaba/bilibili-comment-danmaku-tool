@@ -71,7 +71,15 @@ export function VideoListPanel({
           </button>
         )}
         {!isLoading && videos.length === 0 && (
-          <div className="p-6 text-center text-sm text-muted">暂无匹配的视频</div>
+          query.trim() || selectedOwnerName ? (
+            <div className="p-6 text-center text-sm text-muted">没有匹配的视频。清空搜索，或在左侧切换到别的 UP 主试试。</div>
+          ) : (
+            <div className="grid gap-2 p-8 text-center text-sm text-muted">
+              <div className="text-base font-semibold text-ink">还没有归档任何视频</div>
+              <div>在左侧粘贴视频链接（或 BV 号）点「解析视频」；想整理某个 UP 主，就粘贴主页地址点「抓取全部视频」。</div>
+              <div>归档完成后，视频会出现在这里，点「评论」或「弹幕」就能查看。</div>
+            </div>
+          )
         )}
       </div>
     </section>

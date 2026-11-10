@@ -1,3 +1,5 @@
+"""SQLite 读写的唯一入口：schema、保存、分页、删除。"""
+
 from collections import defaultdict
 import binascii
 from pathlib import Path
@@ -13,6 +15,7 @@ DELETE_VIDEO_BATCH_SIZE = 200
 COMMENT_REFRESH_MIN_RATIO = 0.5
 
 
+# --- 表结构 ---
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -151,6 +154,7 @@ SCHEMA_VERSION = 1
 MAX_VIDEO_LIST_LIMIT = 200
 
 
+# --- 连接与初始化 ---
 def connect(db_path, readonly=False):
     if readonly:
         uri = Path(db_path).resolve().as_uri() + "?mode=ro"
@@ -339,6 +343,7 @@ def comment_save_summary(conn, bvid, skipped=False, before_count=0, scraped_coun
     return summary
 
 
+# --- 保存评论 ---
 def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=False, force=False):
     metadata = output_data["metadata"]
     video_raw = output_data["video_raw"]
@@ -594,6 +599,7 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
         conn.close()
 
 
+# --- 保存弹幕 ---
 def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
     bvid = danmaku_data["bvid"]
     items = danmaku_data.get("items") or []
@@ -793,6 +799,7 @@ def danmaku_user_hash(mid):
     return format(binascii.crc32(str(mid).encode("utf-8")) & 0xFFFFFFFF, "08x")
 
 
+# --- 读取 ---
 def load_comment_data(db_path, bvid=None, limit=None, offset=0):
     if offset is None:
         offset = 0
@@ -897,6 +904,7 @@ def video_list_filters(query="", owner_key=""):
     return where_sql, params
 
 
+# --- 视频 / UP 主列表 ---
 def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True, query="", owner_key=""):
     """List one page of video summaries.
 
@@ -1074,6 +1082,7 @@ def estimate_owner_storage_bytes(used_bytes, owner_weight, total_weight):
     return int(round(used_bytes * owner_weight / total_weight))
 
 
+# --- 删除 ---
 def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=None):
     selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
     if not selected_bvids:

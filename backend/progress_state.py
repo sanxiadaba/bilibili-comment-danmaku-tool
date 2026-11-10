@@ -1,3 +1,5 @@
+"""同步刷新任务的进度和停止标志。"""
+
 import re
 import threading
 from datetime import datetime, timezone
