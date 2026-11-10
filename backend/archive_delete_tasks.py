@@ -1,8 +1,13 @@
 from datetime import datetime, timezone
+import time
 
 from app_logging import log_event, log_exception
 from bilibili_comment_danmaku import delete_owner_from_sqlite, delete_videos_from_sqlite
+from space_archive import TaskCancelled
 from task_queue import InMemoryTaskQueue
+
+PAUSE_POLL_SECONDS = 0.2
+MAX_PAUSE_SECONDS = 3600.0
 
 
 def utc_now():
@@ -136,6 +141,23 @@ class ArchiveDeleteTaskService:
             )
             if self.vacuum_scheduler:
                 self.vacuum_scheduler(db_path, request_id)
+        except TaskCancelled:
+            self.queue.update(
+                task,
+                status="stopped",
+                message="删除任务已停止，已删除的部分可重新发起删除完成",
+                finished_at=utc_now(),
+                pause_requested=False,
+                stop_requested=False,
+            )
+            log_event(
+                "task.archive_delete.cancelled",
+                "archive delete task stopped by user",
+                request_id=request_id,
+                task_id=task.get("id", ""),
+                db=str(db_path),
+                owner_mid=owner_mid,
+            )
         except Exception as exc:
             self.queue.update(
                 task,
@@ -162,8 +184,12 @@ class ArchiveDeleteTaskService:
             "danmaku": "正在分批删除弹幕",
             "videos": "正在删除视频记录",
         }
+        state = {"paused_for": 0.0}
 
         def progress(payload):
+            self.wait_while_paused(task, state)
+            if task.get("stop_requested"):
+                raise TaskCancelled("stop")
             stage = payload.get("stage", "delete")
             chunks = int(payload.get("chunks") or 0)
             wal_peak = int(payload.get("wal_peak") or 0)
@@ -175,6 +201,25 @@ class ArchiveDeleteTaskService:
             )
 
         return progress
+
+    def wait_while_paused(self, task, state):
+        """Pause between delete batches instead of ignoring the request.
+
+        The wait is bounded so a forgotten pause cannot block the archive lock forever.
+        """
+        if not task.get("pause_requested"):
+            state["paused_for"] = 0.0
+            return
+        self.queue.update(task, status="paused", message="删除任务已暂停，等待继续")
+        while task.get("pause_requested") and not task.get("stop_requested"):
+            if state["paused_for"] >= MAX_PAUSE_SECONDS:
+                self.queue.update(task, status="running", message="暂停超时，删除任务已自动继续")
+                break
+            time.sleep(PAUSE_POLL_SECONDS)
+            state["paused_for"] += PAUSE_POLL_SECONDS
+        else:
+            state["paused_for"] = 0.0
+            self.queue.update(task, status="running", message="正在删除本地档案")
 
 
 def format_bytes(value):

@@ -516,13 +516,28 @@ def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
         video = conn.execute("SELECT owner_mid FROM videos WHERE bvid = ?", (bvid,)).fetchone()
         owner_hash = danmaku_user_hash(video["owner_mid"]) if video and video["owner_mid"] else None
         if replace:
-            conn.execute("DELETE FROM danmaku WHERE bvid = ?", (bvid,))
+            _delete_danmaku_not_in(conn, bvid, items)
         conn.executemany(
             """
-            INSERT OR REPLACE INTO danmaku (
+            INSERT INTO danmaku (
                 dmid, bvid, cid, progress, mode, font_size, color, ctime,
                 pool, user_hash, weight, like_count, is_up_owner, content, fetched_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?)
+            ON CONFLICT(dmid) DO UPDATE SET
+                bvid = excluded.bvid,
+                cid = excluded.cid,
+                progress = excluded.progress,
+                mode = excluded.mode,
+                font_size = excluded.font_size,
+                color = excluded.color,
+                ctime = excluded.ctime,
+                pool = excluded.pool,
+                user_hash = excluded.user_hash,
+                weight = excluded.weight,
+                like_count = CASE WHEN ? IS NULL THEN danmaku.like_count ELSE excluded.like_count END,
+                is_up_owner = excluded.is_up_owner,
+                content = excluded.content,
+                fetched_at = excluded.fetched_at
             """,
             [
                 (
@@ -537,12 +552,14 @@ def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
                     item.get("pool"),
                     item.get("user_hash"),
                     item.get("weight"),
-                    value_or_zero(item.get("like_count")),
+                    like_count,
                     1 if owner_hash and item.get("user_hash") == owner_hash else 0,
                     item.get("content") or "",
                     item.get("fetched_at"),
+                    like_count,
                 )
                 for item in items
+                for like_count in [None if item.get("like_count") is None else value_or_zero(item.get("like_count"))]
             ],
         )
         conn.commit()
@@ -554,6 +571,20 @@ def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
         }
     finally:
         conn.close()
+
+
+def _delete_danmaku_not_in(conn, bvid, items):
+    """Drop danmaku that the new scrape no longer contains, keeping unchanged rows in place."""
+    dmids = [str(item["dmid"]) for item in items if item.get("dmid") is not None]
+    conn.execute("DROP TABLE IF EXISTS kept_danmaku")
+    conn.execute("CREATE TEMP TABLE kept_danmaku (dmid TEXT PRIMARY KEY)")
+    if dmids:
+        conn.executemany("INSERT OR IGNORE INTO kept_danmaku (dmid) VALUES (?)", [(dmid,) for dmid in dmids])
+    conn.execute(
+        "DELETE FROM danmaku WHERE bvid = ? AND dmid NOT IN (SELECT dmid FROM kept_danmaku)",
+        (bvid,),
+    )
+    conn.execute("DROP TABLE IF EXISTS kept_danmaku")
 
 
 def load_danmaku_data(db_path, bvid=None, limit=None, offset=0):
