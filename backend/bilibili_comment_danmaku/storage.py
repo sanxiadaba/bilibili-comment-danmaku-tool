@@ -794,7 +794,12 @@ def load_comment_data(db_path, bvid=None, limit=None, offset=0):
                 **metadata,
                 "limit": limit if limit is not None else len(rows),
                 "offset": offset,
-                "has_more": offset + len(rows) < metadata["comment_total_count"],
+                # Pages are counted in threads, so has_more must compare threads, not rows.
+                "has_more": (
+                    offset + len(top_level) < metadata["top_level_comment_count"]
+                    if limit is not None
+                    else False
+                ),
             },
             "video_raw": video_raw_from_video(video),
             "comments": top_level,
@@ -1512,13 +1517,13 @@ def normalized_from_row(row):
 
 
 def select_comment_rows(conn, bvid, limit=None, offset=0):
-    pagination = ""
-    params = [bvid]
-    if limit is not None:
-        pagination = " LIMIT ? OFFSET ?"
-        params.extend([int(limit), int(offset or 0)])
-    return conn.execute(
-        f"""
+    """Select one page of comment threads.
+
+    Paging by flat rows used to split a thread across pages, so replies whose root sat on the
+    previous page were dropped and a page could look empty while has_more stayed true. Pages are
+    now counted in top-level comments and always carry their replies.
+    """
+    columns = """
         SELECT
             c.*,
             u.uname AS user_uname,
@@ -1528,11 +1533,39 @@ def select_comment_rows(conn, bvid, limit=None, offset=0):
             u.level AS user_level
         FROM comments c
         LEFT JOIN users u ON u.mid = c.mid
-        WHERE c.bvid = ?
+    """
+    if limit is None:
+        return conn.execute(
+            f"""
+            {columns}
+            WHERE c.bvid = ?
+            ORDER BY ctime ASC, rpid ASC
+            """,
+            (bvid,),
+        ).fetchall()
+
+    roots = conn.execute(
+        """
+        SELECT rpid
+        FROM comments
+        WHERE bvid = ? AND level = 1
         ORDER BY ctime ASC, rpid ASC
-        {pagination}
+        LIMIT ? OFFSET ?
         """,
-        tuple(params),
+        (bvid, int(limit), int(offset or 0)),
+    ).fetchall()
+    if not roots:
+        return []
+    root_ids = [row["rpid"] for row in roots]
+    marks = placeholders(len(root_ids))
+    return conn.execute(
+        f"""
+        {columns}
+        WHERE c.bvid = ?
+          AND (c.rpid IN ({marks}) OR c.root IN ({marks}))
+        ORDER BY ctime ASC, rpid ASC
+        """,
+        (bvid, *root_ids, *root_ids),
     ).fetchall()
 
 

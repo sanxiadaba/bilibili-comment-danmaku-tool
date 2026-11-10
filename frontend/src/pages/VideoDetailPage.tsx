@@ -160,7 +160,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     try {
       const payload = await fetchCommentData(data.metadata.bvid, dbId, {
         limit: COMMENT_PAGE_SIZE,
-        offset: data.comment_items.length,
+        // Pages are counted in top-level threads, not in flat rows.
+        offset: data.comments.length,
       });
       applyPayload(payload, "append");
     } catch (reason: unknown) {
