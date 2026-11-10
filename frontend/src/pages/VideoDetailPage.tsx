@@ -18,7 +18,7 @@ import {
   ThumbsUp,
   Users,
 } from "lucide-react";
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { fetchCommentData, logClientEvent, refreshCommentData, stopRunningTask } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
@@ -68,6 +68,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [minLikes, setMinLikes] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
   const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
@@ -172,6 +173,9 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   const loadMoreComments = useCallback(async () => {
     if (!data?.metadata.has_more || isLoadingMore) return;
+    loadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
     setIsLoadingMore(true);
     setError("");
     try {
@@ -179,12 +183,16 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
         limit: COMMENT_PAGE_SIZE,
         // Pages are counted in top-level threads, not in flat rows.
         offset: data.comments.length,
+        signal: controller.signal,
       });
       applyPayload(payload, "append");
     } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setIsLoadingMore(false);
+      if (loadMoreAbortRef.current === controller) {
+        setIsLoadingMore(false);
+      }
     }
   }, [applyPayload, data, dbId, isLoadingMore]);
 

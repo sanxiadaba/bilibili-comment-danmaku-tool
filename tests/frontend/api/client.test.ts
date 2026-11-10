@@ -102,9 +102,16 @@ describe("API client", () => {
     await fetchCommentData("BV1xx411c7mD", "archive", { signal: controller.signal });
     await fetchDanmakuData("BV1xx411c7mD", "archive", { signal: controller.signal });
 
-    expect(firstApiCall(fetchMock)[1].signal).toBe(controller.signal);
-    expect(apiCalls(fetchMock)[1][1].signal).toBe(controller.signal);
-    expect(apiCalls(fetchMock)[2][1].signal).toBe(controller.signal);
+    // Requests are also bounded by a timeout, so the caller signal is combined with it rather
+    // than passed through by identity; what matters is that aborting it cancels the request.
+    expect(firstApiCall(fetchMock)[1].signal).not.toBeUndefined();
+    expect(apiCalls(fetchMock)[1][1].signal).not.toBeUndefined();
+    expect(apiCalls(fetchMock)[2][1].signal).not.toBeUndefined();
+
+    controller.abort();
+    expect(firstApiCall(fetchMock)[1].signal?.aborted).toBe(true);
+    expect(apiCalls(fetchMock)[1][1].signal?.aborted).toBe(true);
+    expect(apiCalls(fetchMock)[2][1].signal?.aborted).toBe(true);
   });
 
   it("can skip heavy video metadata on append requests", async () => {
