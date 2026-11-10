@@ -1589,6 +1589,8 @@ def main():
     handler.db_path = prepare_database_path(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
     publish_data_dir(handler.db_path.parent)
+    # The backoff object is built at import time, before the data dir is known.
+    scraper.GLOBAL_REQUEST_BACKOFF.state_path = scraper.default_backoff_state_path()
     migrate_legacy_database(handler.db_path, handler.database_dir)
     configure_task_services(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, persist=True)
     space_archive_service.start_pending_tasks()

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import server as server_module
 from app_logging import configure_logging, logging_status, log_event, shutdown_logging
-from bilibili_comment_danmaku import prepare_database_path
+from bilibili_comment_danmaku import prepare_database_path, scraper
 from bilibili_comment_danmaku.paths import publish_data_dir
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from http_utils import safe_print
@@ -102,6 +102,8 @@ def main():
     initialize_database(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
     publish_data_dir(handler.db_path.parent)
+    # The backoff object is built at import time, before the data dir is known.
+    scraper.GLOBAL_REQUEST_BACKOFF.state_path = scraper.default_backoff_state_path()
     migrate_legacy_database(handler.db_path, handler.database_dir)
 
     cookie_file = root / "data" / DEFAULT_COOKIE_FILE.name
