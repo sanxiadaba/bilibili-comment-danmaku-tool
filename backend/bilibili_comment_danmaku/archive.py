@@ -38,20 +38,23 @@ def export_archive_to_sqlite(
     target_path = Path(target_path).resolve()
     if target_path == source_path:
         raise ValueError("导出目标不能覆盖当前主数据库")
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    remove_sqlite_file_with_sidecars(target_path)
 
     source = connect(source_path)
-    target = connect(target_path)
+    target = None
     try:
         ensure_schema(source)
         source.commit()
-        ensure_schema(target)
-
+        # Resolve the selection before touching the target so a bad request cannot leave an
+        # empty archive behind in the catalog.
         selected_bvids = select_export_bvids(source, bvids=selected_bvids or None, owner_mid=owner_mid or None)
         source.execute("DROP TABLE IF EXISTS export_bvids")
         source.execute("CREATE TEMP TABLE export_bvids (bvid TEXT PRIMARY KEY)")
         source.executemany("INSERT OR IGNORE INTO export_bvids (bvid) VALUES (?)", [(bvid,) for bvid in selected_bvids])
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        remove_sqlite_file_with_sidecars(target_path)
+        target = connect(target_path)
+        ensure_schema(target)
 
         counts = {
             "videos": copy_table_query(source, target, "videos", "bvid IN (SELECT bvid FROM export_bvids)"),
@@ -108,9 +111,16 @@ def export_archive_to_sqlite(
             "manifest": manifest,
             "size_bytes": target_path.stat().st_size if target_path.exists() else 0,
         }
+    except Exception:
+        if target is not None:
+            target.close()
+            target = None
+        remove_sqlite_file_with_sidecars(target_path)
+        raise
     finally:
         source.close()
-        target.close()
+        if target is not None:
+            target.close()
 
 
 MERGED_EXPORT_TABLES = (
@@ -251,6 +261,10 @@ def _export_databases_to_sqlite(normalized, target_path, *, archive_kind=None, l
             "manifest": manifest,
             "size_bytes": target_path.stat().st_size if target_path.exists() else 0,
         }
+    except Exception:
+        target.close()
+        remove_sqlite_file_with_sidecars(target_path)
+        raise
     finally:
         target.close()
 

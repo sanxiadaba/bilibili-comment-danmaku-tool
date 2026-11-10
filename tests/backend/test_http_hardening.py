@@ -147,18 +147,68 @@ class HostHeaderTests(LocalHttpTestCase):
         self.assertIn("application/json", content_type)
         self.assertIn("未知 API", self.json_body(payload)["error"])
 
+    def test_post_without_a_host_header_is_rejected(self):
+        # http.client always sends Host, so drop it with a raw header override.
+        status, _content_type, payload = self.request(
+            "POST",
+            "/api/tasks/stop",
+            body=b'{"kind":"all"}',
+            headers={"Content-Type": "application/json", "X-Bilibili-Tool-Request": "1", "Host": ""},
+        )
+
+        self.assertEqual(status, 403)
+        self.assertIn("本机", self.json_body(payload)["error"])
+
+
+class MutatingRequestGuardTests(LocalHttpTestCase):
+    def test_foreign_origin_is_rejected_with_403(self):
+        status, _content_type, payload = self.request(
+            "POST",
+            "/api/does-not-exist",
+            body=b"{}",
+            headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+        )
+
+        self.assertEqual(status, 403)
+        self.assertIn("本机页面", self.json_body(payload)["error"])
+
+    def test_local_origin_without_the_guard_header_is_rejected(self):
+        port = self.server.server_address[1]
+        status, _content_type, payload = self.request(
+            "POST",
+            "/api/does-not-exist",
+            body=b"{}",
+            headers={"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}"},
+        )
+
+        self.assertEqual(status, 403)
+        self.assertIn("本机页面", self.json_body(payload)["error"])
+
+    def test_local_origin_with_the_guard_header_reaches_the_route(self):
+        port = self.server.server_address[1]
+        status, _content_type, payload = self.request(
+            "POST",
+            "/api/does-not-exist",
+            body=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": f"http://127.0.0.1:{port}",
+                "X-Bilibili-Tool-Request": "1",
+            },
+        )
+
+        self.assertEqual(status, 404)
+        self.assertIn("未知 API", self.json_body(payload)["error"])
+
 
 class BindHostTests(unittest.TestCase):
     def test_loopback_hosts_are_allowed(self):
         for host in ("127.0.0.1", "localhost", "::1", ""):
             self.assertEqual(validate_bind_host(host), host or "127.0.0.1")
 
-    def test_public_bind_is_refused_without_opt_in(self):
+    def test_public_bind_is_refused(self):
         with self.assertRaises(SystemExit):
             validate_bind_host("0.0.0.0")
-
-    def test_public_bind_is_allowed_with_opt_in(self):
-        self.assertEqual(validate_bind_host("0.0.0.0", allow_remote=True), "0.0.0.0")
 
 
 class RedactionTests(unittest.TestCase):

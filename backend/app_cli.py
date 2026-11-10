@@ -96,6 +96,7 @@ def add_fetch_options(parser):
     parser.add_argument("--skip-children", action="store_true", help="Skip nested reply API requests.")
     parser.add_argument("--skip-danmaku", action="store_true", help="Only fetch comments.")
     parser.add_argument("--skip-danmaku-likes", action="store_true", help="Skip danmaku like count requests.")
+    parser.add_argument("--force", action="store_true", help="Save comments even when the scrape looks far smaller than the stored archive.")
 
 
 def run_fetch_video(args):
@@ -112,7 +113,13 @@ def run_fetch_video(args):
     )
     db_path = Path(args.db) if args.db else video_database_path_from_archive(archive, args.database_dir)
     db_path = prepare_database_path(db_path)
-    comment_summary = save_comments_to_sqlite(archive, db_path, replace=True)
+    comment_summary = save_comments_to_sqlite(archive, db_path, replace=True, guard_shrink=True, force=args.force)
+    if comment_summary.get("skipped"):
+        print(
+            f"Comments: skipped saving {comment_summary['scraped_count']} scraped comments "
+            f"(stored: {comment_summary['before_count']}); use --force to overwrite.",
+            flush=True,
+        )
 
     danmaku_summary = None
     if not args.skip_danmaku:

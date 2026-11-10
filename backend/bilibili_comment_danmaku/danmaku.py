@@ -16,12 +16,24 @@ from .scraper import (
     DEFAULT_PROXY,
     GLOBAL_REQUEST_BACKOFF,
     BilibiliRequestError,
+    ScrapeCancelled,
     install_ipv4_first_dns,
     log_backoff_wait,
     log_slow_request,
     retry_after_seconds,
     retry_delay_seconds,
 )
+
+
+def sleep_with_stop(seconds, stop_checker=None):
+    """Sleep, but let a stop request break out of long rate-limit cooldowns."""
+    remaining = float(seconds or 0)
+    while remaining > 0:
+        if stop_checker is not None and stop_checker():
+            raise ScrapeCancelled("danmaku scrape stopped on request")
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
 
 
 def extract_cid(video_raw):
@@ -35,7 +47,7 @@ def extract_cid(video_raw):
     return None
 
 
-def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
+def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None, stop_checker=None):
     log = logger or (lambda message: None)
     install_ipv4_first_dns()
     if use_proxy:
@@ -51,7 +63,7 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
     for attempt in range(1, 4):
-        backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+        backoff_wait = GLOBAL_REQUEST_BACKOFF.wait(stop_checker=stop_checker)
         log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
         started_at = time.perf_counter()
         try:
@@ -76,7 +88,7 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None):
                 f"danmaku: XML got HTTP {exc.code}; elapsed={elapsed:.1f}s "
                 f"cooling down for {delay:.0f}s before retry"
             )
-            time.sleep(delay)
+            sleep_with_stop(delay, stop_checker)
     raise BilibiliRequestError(f"danmaku XML request failed cid={cid}")
 
 
@@ -121,7 +133,7 @@ def parse_danmaku_xml(xml_bytes, bvid, cid):
     return rows
 
 
-def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=None):
+def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=None, stop_checker=None):
     if not dmids:
         return {}
     log = logger or (lambda message: None)
@@ -132,6 +144,8 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
 
     counts = {}
     for index in range(0, len(dmids), 100):
+        if stop_checker is not None and stop_checker():
+            raise ScrapeCancelled("danmaku like fetch stopped on request")
         chunk = dmids[index : index + 100]
         log(f"danmaku likes: batch {index // 100 + 1} ids={len(chunk)}")
         query = urllib.parse.urlencode({"oid": cid, "ids": ",".join(chunk)})
@@ -145,7 +159,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
         opener = urllib.request.build_opener(urllib.request.ProxyHandler() if use_proxy else urllib.request.ProxyHandler({}))
         payload = None
         for attempt in range(1, 4):
-            backoff_wait = GLOBAL_REQUEST_BACKOFF.wait()
+            backoff_wait = GLOBAL_REQUEST_BACKOFF.wait(stop_checker=stop_checker)
             log_backoff_wait(log, req.full_url, backoff_wait, attempt, 3)
             started_at = time.perf_counter()
             try:
@@ -176,7 +190,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
                     f"danmaku likes: got HTTP {exc.code}; elapsed={elapsed:.1f}s "
                     f"cooling down for {delay:.0f}s before retry"
                 )
-                time.sleep(delay)
+                sleep_with_stop(delay, stop_checker)
                 continue
 
             api_code = payload.get("code")
@@ -190,7 +204,7 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
                 )
             GLOBAL_REQUEST_BACKOFF.block_for(delay)
             log(f"danmaku likes: got API code {api_code}; cooling down for {delay:.0f}s before retry")
-            time.sleep(delay)
+            sleep_with_stop(delay, stop_checker)
 
         if payload is None:
             continue
@@ -207,14 +221,16 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
     return counts
 
 
-def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, fetch_likes=True):
+def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, fetch_likes=True, stop_checker=None):
     log = logger or (lambda message: None)
     cid = extract_cid(video_raw)
     if not cid:
         log("danmaku: skipped because video cid is missing")
         return {"bvid": bvid, "cid": None, "items": []}
+    if stop_checker is not None and stop_checker():
+        raise ScrapeCancelled("danmaku scrape stopped on request")
     log(f"danmaku: fetching xml cid={cid}")
-    xml_bytes = fetch_danmaku_xml(cid, headers=headers, use_proxy=use_proxy, logger=log)
+    xml_bytes = fetch_danmaku_xml(cid, headers=headers, use_proxy=use_proxy, logger=log, stop_checker=stop_checker)
     items = parse_danmaku_xml(xml_bytes, bvid, cid)
     log(f"danmaku: parsed xml items={len(items)}")
     if fetch_likes:
@@ -225,6 +241,7 @@ def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, 
                 headers=headers,
                 use_proxy=use_proxy,
                 logger=log,
+                stop_checker=stop_checker,
             )
         except Exception as exc:
             like_counts = None

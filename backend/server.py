@@ -11,6 +11,7 @@ from app_logging import configure_logging, logging_status, log_event, log_except
 from archive_delete_tasks import ArchiveDeleteTaskService
 from auth_store import BilibiliQrLoginService, CookieStore
 from bilibili_comment_danmaku import (
+    comment_result_is_too_small,
     export_archive_from_databases,
     export_archive_to_json,
     export_archive_to_sqlite,
@@ -85,8 +86,6 @@ DEFAULT_COMMENT_PAGE_SIZE = 500
 DEFAULT_DANMAKU_PAGE_SIZE = 2000
 LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
-# A refresh that returns less than half of what is already stored is treated as a partial scrape.
-COMMENT_REFRESH_MIN_RATIO = 0.5
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
@@ -272,22 +271,18 @@ def task_retry_defaults(database_dir):
     return {"database_dir": str(database_dir)}
 
 
-def should_skip_comment_refresh(scraped_count, before_count, min_ratio=COMMENT_REFRESH_MIN_RATIO):
-    """A refresh must not overwrite a healthy archive with a tiny or empty scrape.
+MAX_REFRESH_DELAY_SECONDS = 5.0
 
-    Without this guard a blocked, rate-limited, or anonymous partial page marks every stored
-    comment as deleted (the danmaku path already had the equivalent protection).
-    """
+
+def clamp_delay(value, default=0.35):
+    """Keep a user supplied delay finite and inside the range the API contract allows."""
     try:
-        scraped = int(scraped_count or 0)
-        before = int(before_count or 0)
+        delay = float(value)
     except (TypeError, ValueError):
-        return False
-    if before <= 0:
-        return False
-    if scraped <= 0:
-        return True
-    return scraped < before * float(min_ratio)
+        return default
+    if delay != delay or delay in (float("inf"), float("-inf")):
+        return default
+    return min(MAX_REFRESH_DELAY_SECONDS, max(0.0, delay))
 
 
 def truthy_flag(value):
@@ -305,7 +300,7 @@ def is_local_origin(origin):
 
 def is_local_host(host):
     if not host:
-        return True
+        return False
     parsed = urlparse(f"//{host}")
     return (parsed.hostname or "").lower() in LOCAL_HOSTNAMES
 
@@ -508,6 +503,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def check_mutating_request(self, parsed):
         origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
         has_origin = bool(origin)
         has_browser_guard = self.headers.get(LOCAL_BROWSER_REQUEST_HEADER) == "1"
         if not self.check_request_host(parsed):
@@ -1408,7 +1404,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
         query = parse_qs(parsed.query)
         requested_bvid = query.get("bvid", [None])[0]
-        delay = parse_float(query.get("delay", [None])[0], 0.35)
+        delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
         db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
         try:
             current = load_comment_data(db_path, bvid=requested_bvid)
@@ -1463,8 +1459,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 clear_stop("comments")
             scraped_count = output_data["metadata"]["comment_total_count"]
             force_refresh = truthy_flag(query.get("force", [None])[0])
-            if should_skip_comment_refresh(scraped_count, before_count) and not force_refresh:
-                # Never let a blocked or partial scrape rewrite the archive into "everything deleted".
+            update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
+            summary = save_comments_to_sqlite(
+                output_data, db_path, replace=True, guard_shrink=True, force=force_refresh
+            )
+            if summary.get("skipped"):
+                # A blocked or partial scrape must not turn the archive into "everything deleted".
                 payload = current
                 payload["refresh"] = {
                     "before_count": before_count,
@@ -1489,8 +1489,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 )
                 self.send_json(payload)
                 return
-            update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
-            save_comments_to_sqlite(output_data, db_path, replace=True)
             # Return one page plus the refresh summary: serialising the whole archive here used to
             # build tens of MB of JSON on every refresh.
             payload = load_comment_data(
@@ -1581,14 +1579,39 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=current["metadata"]["bvid"],
                 limit=0,
             )["metadata"]["total_count"]
-            danmaku_result = scrape_danmaku(
-                current["metadata"]["bvid"],
-                current["video_raw"],
-                headers=scraper.make_headers(current["metadata"]["bvid"], auth_cookie_store.load()),
-                logger=log,
-            )
-            scraped_count = len(danmaku_result.get("items") or [])
+            clear_stop("danmaku")
             warning = ""
+            try:
+                danmaku_result = scrape_danmaku(
+                    current["metadata"]["bvid"],
+                    current["video_raw"],
+                    headers=scraper.make_headers(current["metadata"]["bvid"], auth_cookie_store.load()),
+                    logger=log,
+                    stop_checker=lambda: is_stop_requested("danmaku"),
+                )
+            except ScrapeCancelled:
+                payload = current
+                payload["refresh"] = {
+                    "before_count": before_count,
+                    "after_count": before_count,
+                    "scraped_count": 0,
+                    "stopped": True,
+                    "reason": "已按请求停止抓取，本地档案未改动",
+                    "logs": logs[-12:],
+                }
+                finish_progress("danmaku", current["metadata"]["bvid"], "弹幕刷新已停止")
+                log_event(
+                    "task.danmaku_refresh.stopped",
+                    "danmaku refresh stopped on request",
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=current["metadata"]["bvid"],
+                    before_count=before_count,
+                )
+                self.send_json(payload)
+                return
+            finally:
+                clear_stop("danmaku")
+            scraped_count = len(danmaku_result.get("items") or [])
             if scraped_count == 0 and before_count > 0:
                 warning = "本次弹幕接口返回 0 条，已保留上一次的本地弹幕档案"
                 log(f"danmaku: got=0, kept previous archive count={before_count}")
@@ -1670,24 +1693,21 @@ def write_port_hint(path, host, port):
         pass
 
 
-def validate_bind_host(host, allow_remote=False):
+def validate_bind_host(host):
     """Refuse to expose this unauthenticated local tool on anything but the loopback."""
     normalized = str(host or "").strip().lower()
     if not normalized:
         return "127.0.0.1"
     if normalized in LOCAL_HOSTNAMES:
         return normalized
-    if allow_remote:
-        return normalized
     raise SystemExit(
-        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具。确需局域网访问请显式加 --allow-remote。"
+        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具，只允许 127.0.0.1 / localhost / ::1。"
     )
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--allow-remote", action="store_true", help="允许绑定非本机地址（无鉴权，慎用）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--port-file", default=str(ROOT / "data" / ".server-port"))
     parser.add_argument("--db", default=str(DEFAULT_DB))
@@ -1699,7 +1719,7 @@ def main():
     parser.add_argument("--log-queue-size", type=int, default=10000)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    validate_bind_host(args.host, allow_remote=args.allow_remote)
+    validate_bind_host(args.host)
     configure_logging(
         args.log_dir,
         max_bytes=args.log_max_bytes,

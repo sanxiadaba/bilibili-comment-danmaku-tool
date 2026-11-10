@@ -84,6 +84,22 @@ class ScrapeCancelled(RuntimeError):
     """Raised when the caller asked an in-flight scrape to stop."""
 
 
+def sleep_interruptible(seconds, stop_checker=None):
+    """Sleep in short slices so a stop request is not stuck behind a long cooldown."""
+    remaining = float(seconds or 0)
+    if remaining <= 0:
+        return
+    if stop_checker is None:
+        time.sleep(remaining)
+        return
+    while remaining > 0:
+        if stop_checker():
+            raise ScrapeCancelled("stop requested while waiting")
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
 class BilibiliRequestError(RuntimeError):
     def __init__(
         self,
@@ -155,7 +171,7 @@ class RequestBackoff:
         self.persist = persist
         self.load_state()
 
-    def wait(self, include_spacing=True, spacing_factor=1.0):
+    def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
         total_sleep = 0
         try:
             spacing_factor = max(float(spacing_factor), 0)
@@ -175,7 +191,7 @@ class RequestBackoff:
                         self.next_request_at = now + max(spacing, 0)
                     return total_sleep
             total_sleep += sleep_for
-            time.sleep(sleep_for)
+            sleep_interruptible(sleep_for, stop_checker)
 
     def block_for(self, seconds):
         if seconds <= 0:
@@ -334,6 +350,7 @@ class BilibiliClient:
         self.headers = dict(headers)
         self.use_proxy = use_proxy
         self.backoff = backoff or GLOBAL_REQUEST_BACKOFF
+        self.stop_checker = None
         self.cookie_jar = http.cookiejar.CookieJar()
         cookie_header = self.headers.pop("Cookie", "")
         if cookie_header:
@@ -343,6 +360,7 @@ class BilibiliClient:
 
     def clone(self):
         cloned = BilibiliClient(dict(self.headers), use_proxy=self.use_proxy, backoff=self.backoff)
+        cloned.stop_checker = self.stop_checker
         for cookie in self.cookie_jar:
             cloned.cookie_jar.set_cookie(copy.copy(cookie))
         return cloned
@@ -365,11 +383,14 @@ class BilibiliClient:
         last_error = None
         for attempt in range(1, retries + 1):
             request_elapsed = 0
+            if self.stop_checker is not None and self.stop_checker():
+                raise ScrapeCancelled("stop requested before request")
             try:
                 if wait_for_backoff:
                     backoff_wait = self.backoff.wait(
                         include_spacing=wait_for_spacing,
                         spacing_factor=spacing_factor,
+                        stop_checker=self.stop_checker,
                     )
                     log_backoff_wait(log, url, backoff_wait, attempt, retries)
                 started_at = time.perf_counter()
@@ -407,7 +428,7 @@ class BilibiliClient:
                         f"endpoint={request_endpoint_label(url)} elapsed={request_elapsed:.1f}s "
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
-                time.sleep(delay)
+                sleep_interruptible(delay, self.stop_checker)
             except BilibiliRequestError as exc:
                 if request_elapsed == 0:
                     request_elapsed = time.perf_counter() - started_at
@@ -428,7 +449,7 @@ class BilibiliClient:
                         f"endpoint={request_endpoint_label(url)} elapsed={request_elapsed:.1f}s "
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
-                time.sleep(delay)
+                sleep_interruptible(delay, self.stop_checker)
             except Exception as exc:
                 if request_elapsed == 0 and "started_at" in locals():
                     request_elapsed = time.perf_counter() - started_at
@@ -441,7 +462,7 @@ class BilibiliClient:
                     f"elapsed={request_elapsed:.1f}s retrying in {delay:.0f}s "
                     f"(attempt {attempt}/{retries}) error={type(exc).__name__}"
                 )
-                time.sleep(delay)
+                sleep_interruptible(delay, self.stop_checker)
 
         status = getattr(last_error, "code", None)
         if status:
@@ -477,7 +498,7 @@ class BilibiliClient:
                 delay = max(retry_after_seconds(exc) or 0, retry_delay_seconds(attempt, status=exc.code))
                 self.backoff.block_for(delay)
                 log(f"warning: warmup got HTTP {exc.code}; cooling down for {delay:.0f}s before retry")
-                time.sleep(delay)
+                sleep_interruptible(delay, self.stop_checker)
             except Exception as exc:
                 log(f"warning: warmup skipped after {type(exc).__name__}: {exc}")
                 return
@@ -828,7 +849,7 @@ def request_signed_json(endpoint, params_factory, client, mixin_key, log, refres
                 f"warning: signed request got {blocked_error_label(exc)}; "
                 f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{SIGNED_REQUEST_RETRIES})"
             )
-            time.sleep(delay)
+            sleep_interruptible(delay, getattr(client, "stop_checker", None))
             if refresh_mixin_key is not None:
                 try:
                     mixin_key = refresh_mixin_key()
@@ -912,12 +933,15 @@ def normalize_reply(reply, level):
     member = reply.get("member") or {}
     content = reply.get("content") or {}
     control = reply.get("reply_control") or {}
+    # "123" and 123 both appear in the API; a missing id must stay NULL rather than the string
+    # "None", which would violate the users(mid) foreign key when the archive is written.
+    user_mid = reply.get("mid_str") or reply.get("mid")
     return {
         "level": level,
         "rpid": reply.get("rpid_str") or str(reply.get("rpid")),
         "oid": reply.get("oid_str") or str(reply.get("oid")),
         "type": reply.get("type"),
-        "mid": reply.get("mid_str") or str(reply.get("mid")),
+        "mid": str(user_mid) if user_mid not in (None, "") else None,
         "root": reply.get("root_str") or str(reply.get("root")),
         "parent": reply.get("parent_str") or str(reply.get("parent")),
         "dialog": reply.get("dialog_str") or str(reply.get("dialog")),
@@ -1043,7 +1067,7 @@ def collect_main_reply_candidates(data):
     return candidates
 
 
-def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
+def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log, stop_checker=None):
     endpoint = "https://api.bilibili.com/x/v2/reply/reply"
     replies = []
     seen_rpids = set()
@@ -1053,6 +1077,8 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
     no_growth_pages = 0
 
     while True:
+        if stop_checker is not None and stop_checker():
+            raise ScrapeCancelled("comment scrape stopped on request")
         params = {
             "type": TYPE_VIDEO,
             "oid": oid,
@@ -1128,7 +1154,7 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
     return replies, api_count
 
 
-def build_threaded_output(main_replies, oid, client, delay, log, fetch_children=True):
+def build_threaded_output(main_replies, oid, client, delay, log, fetch_children=True, stop_checker=None):
     entries = []
     fetch_jobs = []
     expected_child_total = 0
@@ -1160,7 +1186,9 @@ def build_threaded_output(main_replies, oid, client, delay, log, fetch_children=
             fetch_jobs.append(entry)
 
     if fetch_children:
-        fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total)
+        fetch_children_for_entries(
+            fetch_jobs, oid, client, delay, log, expected_child_total, stop_checker=stop_checker
+        )
     elif fetch_jobs:
         log(
             f"skipping children fetch: roots={len(fetch_jobs)} "
@@ -1205,7 +1233,7 @@ def build_threaded_output(main_replies, oid, client, delay, log, fetch_children=
     return comments, comment_items, child_fetch_summary
 
 
-def fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total):
+def fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_child_total, stop_checker=None):
     if not fetch_jobs:
         return
 
@@ -1226,30 +1254,48 @@ def fetch_children_for_entries(fetch_jobs, oid, client, delay, log, expected_chi
             worker_client,
             delay,
             log,
+            stop_checker=stop_checker,
         )
         return entry, fetched_child_raw, child_api_count
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(run_job, entry) for entry in fetch_jobs]
-        for future in as_completed(futures):
-            entry, fetched_child_raw, child_api_count = future.result()
-            child_seen = {
-                child.get("rpid_str") or str(child.get("rpid"))
-                for child in entry["child_raw"]
-            }
-            for child in fetched_child_raw:
-                child_rpid = child.get("rpid_str") or str(child.get("rpid"))
-                if child_rpid not in child_seen:
-                    child_seen.add(child_rpid)
-                    entry["child_raw"].append(child)
-            entry["child_api_count"] = child_api_count
-            completed += 1
-            total_fetched += len(entry["child_raw"])
-            log(
-                f"children done {completed}/{len(fetch_jobs)} root={entry['root_rpid']} "
-                f"fetched={len(entry['child_raw'])} total_fetched={total_fetched} "
-                f"total_expected={expected_child_total}"
-            )
+        try:
+            for future in as_completed(futures):
+                if stop_checker is not None and stop_checker():
+                    raise ScrapeCancelled("comment scrape stopped on request")
+                try:
+                    entry, fetched_child_raw, child_api_count = future.result()
+                except ScrapeCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - one broken thread must not lose the scrape
+                    completed += 1
+                    log(
+                        f"children failed {completed}/{len(fetch_jobs)}: {exc} "
+                        "(keeping the replies already fetched for this thread)"
+                    )
+                    continue
+                child_seen = {
+                    child.get("rpid_str") or str(child.get("rpid"))
+                    for child in entry["child_raw"]
+                }
+                for child in fetched_child_raw:
+                    child_rpid = child.get("rpid_str") or str(child.get("rpid"))
+                    if child_rpid not in child_seen:
+                        child_seen.add(child_rpid)
+                        entry["child_raw"].append(child)
+                entry["child_api_count"] = child_api_count
+                completed += 1
+                total_fetched += len(entry["child_raw"])
+                log(
+                    f"children done {completed}/{len(fetch_jobs)} root={entry['root_rpid']} "
+                    f"fetched={len(entry['child_raw'])} total_fetched={total_fetched} "
+                    f"total_expected={expected_child_total}"
+                )
+        except ScrapeCancelled:
+            for pending in futures:
+                pending.cancel()
+            raise
 
 def sleep_between_pages(delay, page_index):
     if delay <= 0:
@@ -1293,6 +1339,7 @@ def scrape_comments(
         log("warning: no cookie provided; Bilibili may only return a partial comment list")
 
     client = BilibiliClient(make_headers(bvid, resolved_cookie), use_proxy=use_proxy)
+    client.stop_checker = stop_checker
     if cookie_has_browser_identifiers(resolved_cookie):
         log("warmup: skipped because cookie already has browser identifiers")
     else:
@@ -1321,6 +1368,7 @@ def scrape_comments(
         delay,
         log,
         fetch_children=fetch_children,
+        stop_checker=stop_checker,
     )
     expected_nested_comment_count = sum((reply.get("rcount") or 0) for reply in main_raw)
     fetched_nested_comment_count = max(len(comment_items) - len(comments), 0)

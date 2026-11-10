@@ -25,18 +25,23 @@ stop_lock = threading.Lock()
 stop_flags = {}
 
 
+STOP_KINDS = ("comments", "danmaku")
+
+
 def request_stop(kind):
     """Ask the in-flight synchronous task of this kind to stop at its next safe point."""
     kind = str(kind or "").strip() or "all"
+    kinds = STOP_KINDS if kind == "all" else (kind,)
     with stop_lock:
-        stop_flags[kind] = True
+        for item in kinds:
+            stop_flags[item] = True
     log_event("task.stop.requested", "stop requested for a running task", kind=kind)
 
 
 def is_stop_requested(kind):
-    kind = str(kind or "").strip() or "all"
+    kind = str(kind or "").strip()
     with stop_lock:
-        return bool(stop_flags.get(kind) or stop_flags.get("all"))
+        return bool(stop_flags.get(kind))
 
 
 def clear_stop(kind=None):

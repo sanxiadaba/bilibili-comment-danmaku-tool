@@ -480,6 +480,8 @@ def database_counts(conn):
 
 
 def list_database_bvid_stats(conn):
+    # Coverage/duplicate detection needs every video of the database; the old 2000 row cap made
+    # large imported archives look partially covered.
     return conn.execute(
         """
         SELECT bvid, title, owner_mid, owner_name, fetched_at,
@@ -487,7 +489,6 @@ def list_database_bvid_stats(conn):
                (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
         FROM videos
         ORDER BY fetched_at DESC, bvid
-        LIMIT 2000
         """
     ).fetchall()
 
@@ -736,7 +737,10 @@ def normalize_database_filename(name, allowed_extensions=DATABASE_EXTENSIONS):
     path = Path(name)
     suffix = path.suffix.lower() if path.suffix.lower() in allowed_extensions else ".db"
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", path.stem).strip("._-") or "archive"
-    return f"{stem[:100]}{suffix}"
+    stem = stem[:100]
+    if stem.split(".")[0].lower() in WINDOWS_RESERVED_NAMES:
+        stem = f"_{stem}"
+    return f"{stem}{suffix}"
 
 
 WINDOWS_RESERVED_NAMES = {

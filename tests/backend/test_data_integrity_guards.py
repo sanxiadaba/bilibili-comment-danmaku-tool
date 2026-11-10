@@ -18,7 +18,8 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
     list_video_summaries_page,
 )
 from database_registry import list_all_video_summaries_page  # noqa: E402
-from server import CommentDanmakuServer, should_skip_comment_refresh  # noqa: E402
+from bilibili_comment_danmaku import comment_result_is_too_small  # noqa: E402
+from server import CommentDanmakuServer  # noqa: E402
 
 
 def seed_videos(db_path, count):
@@ -143,16 +144,66 @@ class SchemaMigrationTests(unittest.TestCase):
             self.assertEqual(migrated.call_count, 0)
 
 
+class MissingMemberTests(unittest.TestCase):
+    def test_reply_without_user_fields_still_saves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "archive.db"
+            comment = make_comment("1", 1, "top", mid="42")
+            comment["normalized"]["user"] = {}
+            comment["normalized"]["mid"] = None
+
+            summary = save_comments_to_sqlite(
+                make_archive("2024-01-01T00:00:00+00:00", [comment]), db_path, replace=True
+            )
+
+            self.assertEqual(summary["total_count"], 1)
+
+    def test_normalize_reply_keeps_a_missing_mid_null(self):
+        from bilibili_comment_danmaku.scraper import normalize_reply
+
+        normalized = normalize_reply({"rpid": 1, "ctime": 0}, level=1)
+
+        self.assertIsNone(normalized["mid"])
+
+
 class CommentRefreshGuardTests(unittest.TestCase):
     def test_guard_treats_empty_and_tiny_results_as_partial(self):
-        self.assertFalse(should_skip_comment_refresh(0, 0))
-        self.assertFalse(should_skip_comment_refresh(10, 0))
-        self.assertTrue(should_skip_comment_refresh(0, 100))
-        self.assertTrue(should_skip_comment_refresh(3, 100))
-        self.assertTrue(should_skip_comment_refresh(49, 100))
-        self.assertFalse(should_skip_comment_refresh(50, 100))
-        self.assertFalse(should_skip_comment_refresh(120, 100))
-        self.assertFalse(should_skip_comment_refresh("bad", 100))
+        self.assertFalse(comment_result_is_too_small(0, 0))
+        self.assertFalse(comment_result_is_too_small(10, 0))
+        self.assertTrue(comment_result_is_too_small(0, 100))
+        self.assertTrue(comment_result_is_too_small(3, 100))
+        self.assertTrue(comment_result_is_too_small(49, 100))
+        self.assertFalse(comment_result_is_too_small(50, 100))
+        self.assertFalse(comment_result_is_too_small(120, 100))
+        self.assertFalse(comment_result_is_too_small("bad", 100))
+
+    def test_save_refuses_to_shrink_a_healthy_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "archive.db"
+            comments = [make_comment(str(index), 1, f"top {index}", mid="42") for index in range(20)]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", comments), db_path, replace=True)
+
+            smaller = [make_comment("1", 1, "top 1", mid="42")]
+            summary = save_comments_to_sqlite(
+                make_archive("2024-01-02T00:00:00+00:00", smaller), db_path, replace=True, guard_shrink=True
+            )
+
+            self.assertTrue(summary.get("skipped"))
+            self.assertEqual(summary["before_count"], 20)
+            self.assertEqual(summary["scraped_count"], 1)
+            stored = load_comment_data(db_path, bvid=BVID)["metadata"]
+            self.assertEqual(stored["active_comment_count"], 20)
+
+            forced = save_comments_to_sqlite(
+                make_archive("2024-01-02T00:00:00+00:00", smaller),
+                db_path,
+                replace=True,
+                guard_shrink=True,
+                force=True,
+            )
+            self.assertFalse(forced.get("skipped"))
+            stored = load_comment_data(db_path, bvid=BVID)["metadata"]
+            self.assertEqual(stored["active_comment_count"], 1)
 
 
 class CommentRefreshHttpTests(unittest.TestCase):
