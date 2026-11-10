@@ -172,6 +172,12 @@ export function filterComments(
   });
 }
 
+const HOUR_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+});
+
 export function hourlyBuckets(comments: CommentNode[]) {
   const buckets = new Map<string, { label: string; count: number; likes: number; timestamp: number }>();
   for (const comment of comments) {
@@ -179,11 +185,7 @@ export function hourlyBuckets(comments: CommentNode[]) {
     date.setMinutes(0, 0, 0);
     const key = date.toISOString();
     const current = buckets.get(key) || {
-      label: new Intl.DateTimeFormat("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-      }).format(date),
+      label: HOUR_FORMAT.format(date),
       count: 0,
       likes: 0,
       timestamp: date.getTime(),
@@ -195,8 +197,31 @@ export function hourlyBuckets(comments: CommentNode[]) {
   return [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
-export function locationBuckets(comments: CommentNode[]) {
-  const buckets = new Map<string, number>();
+const DAY_FORMAT = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" });
+
+/** Keep the time chart readable: a multi-year archive is grouped by day instead of by hour. */
+export function coarsenBuckets<T extends { count: number; label: string; likes: number; timestamp: number }>(
+  buckets: T[],
+  maxBuckets = 180,
+): T[] {
+  if (buckets.length <= maxBuckets) return buckets;
+  const byDay = new Map<string, T>();
+  for (const bucket of buckets) {
+    const date = new Date(bucket.timestamp);
+    date.setHours(0, 0, 0, 0);
+    const key = date.toISOString();
+    const current = byDay.get(key);
+    if (current) {
+      current.count += bucket.count;
+      current.likes += bucket.likes;
+    } else {
+      byDay.set(key, { ...bucket, label: DAY_FORMAT.format(date), timestamp: date.getTime() });
+    }
+  }
+  return [...byDay.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export function locationBuckets(comments: CommentNode[]) {  const buckets = new Map<string, number>();
   for (const comment of comments) {
     const key = cleanIpLocation(comment.normalized.ip_location);
     buckets.set(key, (buckets.get(key) || 0) + 1);
@@ -230,7 +255,13 @@ export function topLiked(comments: CommentNode[]) {
 }
 
 export function getMaxLike(comments: CommentNode[]) {
-  return Math.max(1, ...comments.map((comment) => comment.normalized.like || 0));
+  // Math.max(...arr) throws a RangeError once the list reaches ~65k entries.
+  let max = 0;
+  for (const comment of comments) {
+    const like = comment.normalized.like || 0;
+    if (like > max) max = like;
+  }
+  return Math.max(1, max);
 }
 
 export function flattenThread(comment: CommentNode): NormalizedComment[] {

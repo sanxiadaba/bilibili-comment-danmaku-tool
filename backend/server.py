@@ -5,7 +5,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlparse
 
 from app_logging import configure_logging, logging_status, log_event, log_exception, shutdown_logging
 from archive_delete_tasks import ArchiveDeleteTaskService
@@ -30,11 +30,9 @@ from bilibili_comment_danmaku.paths import publish_data_dir
 from bilibili_comment_danmaku.scraper import ScrapeCancelled
 from legacy_migration import migrate_legacy_database
 from database_registry import (
-    DATABASE_EXTENSIONS,
     DEFAULT_DATABASE_DIR,
     DEFAULT_EXPORT_DIR,
     IMPORT_EXTENSIONS,
-    database_id_for_path,
     database_info_for_path,
     export_database_path,
     find_video_database_path,
@@ -48,7 +46,6 @@ from database_registry import (
     relative_to_root,
     video_database_sources,
 )
-from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload
 from errors import BadRequestError, RequestTooLargeError
 from http_utils import JsonStaticRequestHandler, first_query_int, parse_content_length, parse_optional_int, safe_print
 from local_server import DEFAULT_PORT, create_threading_server
@@ -85,8 +82,6 @@ DEFAULT_COMMENT_PAGE_SIZE = 500
 DEFAULT_DANMAKU_PAGE_SIZE = 2000
 LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
-# A refresh that returns less than half of what is already stored is treated as a partial scrape.
-COMMENT_REFRESH_MIN_RATIO = 0.5
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
@@ -145,7 +140,9 @@ def combined_queue_snapshot():
 
 def bilibili_api_error_response(exc):
     try:
-        cookie_status = auth_cookie_store.status(check_remote=True)
+        # The error path only needs to say whether a login looked configured; hitting the nav
+        # endpoint here would add up to ten seconds while the refresh lock is still held.
+        cookie_status = auth_cookie_store.status(check_remote=False)
     except Exception:
         cookie_status = None
     return api_error_response(exc, cookie_status=cookie_status)
@@ -272,22 +269,18 @@ def task_retry_defaults(database_dir):
     return {"database_dir": str(database_dir)}
 
 
-def should_skip_comment_refresh(scraped_count, before_count, min_ratio=COMMENT_REFRESH_MIN_RATIO):
-    """A refresh must not overwrite a healthy archive with a tiny or empty scrape.
+MAX_REFRESH_DELAY_SECONDS = 5.0
 
-    Without this guard a blocked, rate-limited, or anonymous partial page marks every stored
-    comment as deleted (the danmaku path already had the equivalent protection).
-    """
+
+def clamp_delay(value, default=0.35):
+    """Keep a user supplied delay finite and inside the range the API contract allows."""
     try:
-        scraped = int(scraped_count or 0)
-        before = int(before_count or 0)
+        delay = float(value)
     except (TypeError, ValueError):
-        return False
-    if before <= 0:
-        return False
-    if scraped <= 0:
-        return True
-    return scraped < before * float(min_ratio)
+        return default
+    if delay != delay or delay in (float("inf"), float("-inf")):
+        return default
+    return min(MAX_REFRESH_DELAY_SECONDS, max(0.0, delay))
 
 
 def truthy_flag(value):
@@ -305,7 +298,7 @@ def is_local_origin(origin):
 
 def is_local_host(host):
     if not host:
-        return True
+        return False
     parsed = urlparse(f"//{host}")
     return (parsed.hostname or "").lower() in LOCAL_HOSTNAMES
 
@@ -359,9 +352,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         try:
             if not self.check_request_host(parsed):
                 return
-            if parsed.path.startswith("/api/v1/control"):
-                self.handle_control_get_api(parsed)
-                return
             if parsed.path == "/api/databases":
                 self.handle_databases_api()
                 return
@@ -404,9 +394,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         try:
             if not self.check_mutating_request(parsed):
                 return
-            if parsed.path.startswith("/api/v1/control"):
-                self.handle_control_post_api(parsed)
-                return
             if parsed.path == "/api/videos/parse":
                 self.handle_parse_video_api()
                 return
@@ -421,9 +408,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 return
             if parsed.path == "/api/refresh":
                 self.handle_refresh_api(parsed)
-                return
-            if parsed.path == "/api/logs/client":
-                self.handle_client_log_api()
                 return
             if parsed.path == "/api/tasks/stop":
                 self.handle_task_stop_api()
@@ -508,6 +492,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def check_mutating_request(self, parsed):
         origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
         has_origin = bool(origin)
         has_browser_guard = self.headers.get(LOCAL_BROWSER_REQUEST_HEADER) == "1"
         if not self.check_request_host(parsed):
@@ -706,20 +691,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         )
         self.send_json(payload)
 
-    def handle_client_log_api(self):
-        body = self.read_json_body()
-        event = str(body.get("event") or "client.event")[:120]
-        fields = body.get("fields") if isinstance(body.get("fields"), dict) else {}
-        log_event(
-            event if event.startswith("client.") else f"client.{event}",
-            str(body.get("message") or event)[:300],
-            request_id=getattr(self, "request_id", ""),
-            page=str(body.get("page") or "")[:300],
-            client_ts=str(body.get("ts") or "")[:80],
-            fields=fields,
-        )
-        self.send_json({"ok": True})
-
     def handle_task_stop_api(self):
         body = self.read_json_body()
         kind = str(body.get("kind") or "").strip().lower()
@@ -734,133 +705,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             kind=kind,
         )
         self.send_json({"ok": True, "kind": kind, "message": "已请求停止，当前请求会在下一个分页处退出"})
-
-    def handle_control_get_api(self, parsed):
-        path = parsed.path.rstrip("/")
-        if path in {"", "/api/v1/control"}:
-            self.send_json(control_capabilities())
-            return
-        if path == "/api/v1/control/openapi.json":
-            self.send_json(control_openapi_document())
-            return
-        if path in {"/api/v1/control/status", "/api/v1/control/progress"}:
-            payload = get_progress_snapshot()
-            if path.endswith("/status"):
-                payload = {
-                    "ok": True,
-                    "version": "v1",
-                    "health": {
-                        "db": str(self.db_path),
-                        "database_dir": str(self.database_dir),
-                        "logging": logging_status(),
-                    },
-                    "progress": payload,
-                }
-            self.send_json(payload)
-            return
-        if path == "/api/v1/control/databases":
-            self.handle_databases_api()
-            return
-        if path == "/api/v1/control/videos":
-            self.handle_videos_api()
-            return
-        if path == "/api/v1/control/comments":
-            self.handle_comments_api(parsed)
-            return
-        if path == "/api/v1/control/danmaku":
-            self.handle_danmaku_api(parsed)
-            return
-        self.send_json({"error": f"未知控制 API：{parsed.path}"}, status=404)
-
-    def handle_control_post_api(self, parsed):
-        path = parsed.path.rstrip("/")
-        if path == "/api/v1/control/actions":
-            body = self.read_json_body()
-            try:
-                action, params = normalize_control_action_payload(body)
-            except LookupError as exc:
-                self.send_json({"error": str(exc), "capabilities": control_capabilities()}, status=404)
-                return
-            except ValueError as exc:
-                self.send_json({"error": str(exc)}, status=400)
-                return
-            self.dispatch_control_action(action, params)
-            return
-        if path == "/api/v1/control/videos/parse":
-            self.handle_parse_video_api()
-            return
-        if path == "/api/v1/control/space/archive":
-            self.handle_space_archive_api()
-            return
-        if path == "/api/v1/control/space/tasks/control":
-            self.handle_space_task_control_api()
-            return
-        if path == "/api/v1/control/archive/export":
-            self.handle_database_export_api()
-            return
-        if path == "/api/v1/control/archive/delete":
-            self.handle_archive_delete_api()
-            return
-        if path == "/api/v1/control/databases/import":
-            self.handle_database_import_api()
-            return
-        if path == "/api/v1/control/comments/refresh":
-            body = self.read_json_body()
-            self.handle_refresh_api(self.control_query_parsed(parsed, body, ("bvid", "db_id", "delay")))
-            return
-        if path == "/api/v1/control/danmaku/refresh":
-            body = self.read_json_body()
-            self.handle_danmaku_refresh_api(self.control_query_parsed(parsed, body, ("bvid", "db_id")))
-            return
-        self.send_json({"error": f"未知控制 API：{parsed.path}", "capabilities": control_capabilities()}, status=404)
-
-    def dispatch_control_action(self, action, params):
-        if action == "videos.parse":
-            self.run_with_json_body(params, self.handle_parse_video_api)
-            return
-        if action == "space.archive":
-            self.run_with_json_body(params, self.handle_space_archive_api)
-            return
-        if action == "space.tasks.control":
-            self.run_with_json_body(params, self.handle_space_task_control_api)
-            return
-        if action == "archive.export":
-            self.run_with_json_body(params, self.handle_database_export_api)
-            return
-        if action == "archive.delete":
-            self.run_with_json_body(params, self.handle_archive_delete_api)
-            return
-        if action == "databases.import":
-            self.run_with_json_body(params, self.handle_database_import_api)
-            return
-        if action == "comments.refresh":
-            parsed = self.control_query_parsed(urlparse(self.path), params, ("bvid", "db_id", "delay"))
-            self.handle_refresh_api(parsed)
-            return
-        if action == "danmaku.refresh":
-            parsed = self.control_query_parsed(urlparse(self.path), params, ("bvid", "db_id"))
-            self.handle_danmaku_refresh_api(parsed)
-            return
-        self.send_json({"error": f"不支持的控制动作：{action}"}, status=404)
-
-    def run_with_json_body(self, body, handler):
-        original_body = getattr(self, "_json_body_override", None)
-        self._json_body_override = dict(body)
-        try:
-            handler()
-        finally:
-            if original_body is None:
-                self._json_body_override = None
-            else:
-                self._json_body_override = original_body
-
-    def control_query_parsed(self, parsed, body, keys):
-        query = parse_qs(parsed.query)
-        for key in keys:
-            value = body.get(key)
-            if value is not None and value != "":
-                query[key] = [str(value)]
-        return parsed._replace(query=urlencode({key: values[-1] for key, values in query.items() if values}))
 
     def handle_parse_video_api(self):
         body = self.read_json_body()
@@ -1278,7 +1122,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 raise ValueError("上传请求体为空")
             if length > MAX_MULTIPART_BODY_BYTES:
                 raise RequestTooLargeError(f"上传文件过大，上限为 {MAX_MULTIPART_BODY_BYTES} 字节")
-            raw = self.rfile.read(length)
+            raw = self.read_exact_body(length)
             files = parse_multipart_files(raw, self.headers.get("Content-Type", ""))
         except RequestTooLargeError as exc:
             self.send_json({"error": str(exc)}, status=413)
@@ -1408,7 +1252,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
         query = parse_qs(parsed.query)
         requested_bvid = query.get("bvid", [None])[0]
-        delay = parse_float(query.get("delay", [None])[0], 0.35)
+        delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
         db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
         try:
             current = load_comment_data(db_path, bvid=requested_bvid)
@@ -1463,8 +1307,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 clear_stop("comments")
             scraped_count = output_data["metadata"]["comment_total_count"]
             force_refresh = truthy_flag(query.get("force", [None])[0])
-            if should_skip_comment_refresh(scraped_count, before_count) and not force_refresh:
-                # Never let a blocked or partial scrape rewrite the archive into "everything deleted".
+            update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
+            summary = save_comments_to_sqlite(
+                output_data, db_path, replace=True, guard_shrink=True, force=force_refresh
+            )
+            if summary.get("skipped"):
+                # A blocked or partial scrape must not turn the archive into "everything deleted".
                 payload = current
                 payload["refresh"] = {
                     "before_count": before_count,
@@ -1489,8 +1337,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 )
                 self.send_json(payload)
                 return
-            update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
-            save_comments_to_sqlite(output_data, db_path, replace=True)
             # Return one page plus the refresh summary: serialising the whole archive here used to
             # build tens of MB of JSON on every refresh.
             payload = load_comment_data(
@@ -1581,14 +1427,39 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=current["metadata"]["bvid"],
                 limit=0,
             )["metadata"]["total_count"]
-            danmaku_result = scrape_danmaku(
-                current["metadata"]["bvid"],
-                current["video_raw"],
-                headers=scraper.make_headers(current["metadata"]["bvid"], auth_cookie_store.load()),
-                logger=log,
-            )
-            scraped_count = len(danmaku_result.get("items") or [])
+            clear_stop("danmaku")
             warning = ""
+            try:
+                danmaku_result = scrape_danmaku(
+                    current["metadata"]["bvid"],
+                    current["video_raw"],
+                    headers=scraper.make_headers(current["metadata"]["bvid"], auth_cookie_store.load()),
+                    logger=log,
+                    stop_checker=lambda: is_stop_requested("danmaku"),
+                )
+            except ScrapeCancelled:
+                payload = current
+                payload["refresh"] = {
+                    "before_count": before_count,
+                    "after_count": before_count,
+                    "scraped_count": 0,
+                    "stopped": True,
+                    "reason": "已按请求停止抓取，本地档案未改动",
+                    "logs": logs[-12:],
+                }
+                finish_progress("danmaku", current["metadata"]["bvid"], "弹幕刷新已停止")
+                log_event(
+                    "task.danmaku_refresh.stopped",
+                    "danmaku refresh stopped on request",
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=current["metadata"]["bvid"],
+                    before_count=before_count,
+                )
+                self.send_json(payload)
+                return
+            finally:
+                clear_stop("danmaku")
+            scraped_count = len(danmaku_result.get("items") or [])
             if scraped_count == 0 and before_count > 0:
                 warning = "本次弹幕接口返回 0 条，已保留上一次的本地弹幕档案"
                 log(f"danmaku: got=0, kept previous archive count={before_count}")
@@ -1670,24 +1541,21 @@ def write_port_hint(path, host, port):
         pass
 
 
-def validate_bind_host(host, allow_remote=False):
+def validate_bind_host(host):
     """Refuse to expose this unauthenticated local tool on anything but the loopback."""
     normalized = str(host or "").strip().lower()
     if not normalized:
         return "127.0.0.1"
     if normalized in LOCAL_HOSTNAMES:
         return normalized
-    if allow_remote:
-        return normalized
     raise SystemExit(
-        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具。确需局域网访问请显式加 --allow-remote。"
+        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具，只允许 127.0.0.1 / localhost / ::1。"
     )
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--allow-remote", action="store_true", help="允许绑定非本机地址（无鉴权，慎用）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--port-file", default=str(ROOT / "data" / ".server-port"))
     parser.add_argument("--db", default=str(DEFAULT_DB))
@@ -1699,7 +1567,7 @@ def main():
     parser.add_argument("--log-queue-size", type=int, default=10000)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    validate_bind_host(args.host, allow_remote=args.allow_remote)
+    validate_bind_host(args.host)
     configure_logging(
         args.log_dir,
         max_bytes=args.log_max_bytes,
@@ -1721,6 +1589,8 @@ def main():
     handler.db_path = prepare_database_path(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
     publish_data_dir(handler.db_path.parent)
+    # The backoff object is built at import time, before the data dir is known.
+    scraper.GLOBAL_REQUEST_BACKOFF.state_path = scraper.default_backoff_state_path()
     migrate_legacy_database(handler.db_path, handler.database_dir)
     configure_task_services(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, persist=True)
     space_archive_service.start_pending_tasks()
@@ -1741,7 +1611,7 @@ def main():
         database_dir=str(handler.database_dir),
         logging=logging_status(),
     )
-    safe_print(f"Bilibili comment/danmaku service started.")
+    safe_print("Bilibili comment/danmaku service started.")
     safe_print(f"Open: {url}")
     safe_print(f"SQLite database: {Path(args.db).resolve()}")
     safe_print(f"Hotplug database directory: {handler.database_dir}")

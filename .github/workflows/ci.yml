@@ -4,26 +4,24 @@ on:
   push:
     branches-ignore:
       - main
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend:
     name: Backend tests
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -33,27 +31,21 @@ jobs:
       - name: Run unittest suite
         env:
           PYTHONIOENCODING: utf-8
-        run: python -B -m unittest discover -s tests/backend -p "test_*.py" -v
+        run: python -B -m unittest discover -s tests/backend -p "test_*.py"
 
   frontend:
-    name: Frontend tests and typecheck
-    runs-on: windows-latest
+    name: Frontend tests, typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
-          package-manager-cache: false
-
-      - name: Setup pnpm
-        shell: powershell
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.5.2 --activate
-          pnpm --version
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

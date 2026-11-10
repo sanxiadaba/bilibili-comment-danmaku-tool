@@ -1,6 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ExportChoiceDialog } from "../../../../frontend/src/components/video-library/ExportChoiceDialog";
 import { BatchManagementPanel } from "../../../../frontend/src/components/video-library/BatchManagementPanel";
 import { ManagementPanel } from "../../../../frontend/src/components/video-library/ManagementPanel";
 import { OwnerFilterButton } from "../../../../frontend/src/components/video-library/OwnerFilterButton";
@@ -205,15 +204,12 @@ describe("video library management components", () => {
         importPath="D:/backup/archive.json"
         isImporting={false}
         isLoading={false}
-        queue={{ active: null, queued: [], recent: [] }}
-        view="database"
         onImportPathChange={() => undefined}
         onPickFiles={() => undefined}
         onPickFolder={() => undefined}
         onRefresh={() => undefined}
         onSelect={() => undefined}
         onSubmitImport={(event) => event.preventDefault()}
-        onViewChange={() => undefined}
       />,
     );
 
@@ -226,36 +222,7 @@ describe("video library management components", () => {
     expect(html).toContain("20 评论");
   });
 
-  it("renders auth management controls inside management panel", () => {
-    const html = renderToStaticMarkup(
-      <ManagementPanel
-        activeDbId="main"
-        cookieStatus={makeCookieStatus({ is_login: true })}
-        databases={[makeDatabase()]}
-        hotplugDir="D:/data/hotplug"
-        importPath=""
-        isImporting={false}
-        isLoading={false}
-        queue={{ active: null, queued: [], recent: [] }}
-        view="auth"
-        onCookieStatusChange={() => undefined}
-        onImportPathChange={() => undefined}
-        onPickFiles={() => undefined}
-        onPickFolder={() => undefined}
-        onRefresh={() => undefined}
-        onSelect={() => undefined}
-        onSubmitImport={(event) => event.preventDefault()}
-        onViewChange={() => undefined}
-      />,
-    );
-
-    expect(html).toContain("登录态");
-    expect(html).toContain("扫码登录");
-    expect(html).toContain("手动 Cookie");
-    expect(html).toContain("保存并检测");
-  });
-
-  it("renders owner export affordance and export format choices", () => {
+  it("renders owner export affordances", () => {
     const onClick = vi.fn();
     const owner: OwnerGroup = {
       bvids: ["BV1xx411c7mD"],
@@ -277,7 +244,6 @@ describe("video library management components", () => {
         storageBytes={owner.storageBytes}
         videoCount={owner.videoCount}
         onClick={onClick}
-        onDelete={() => undefined}
         onExportJson={() => undefined}
         onExportSqlite={() => undefined}
       />,
@@ -289,14 +255,7 @@ describe("video library management components", () => {
     expect(ownerHtml).toContain("12 MB");
     expect(ownerHtml).toContain("DB");
     expect(ownerHtml).toContain("JSON");
-    expect(ownerHtml).toContain("删除");
 
-    const dialogHtml = renderToStaticMarkup(
-      <ExportChoiceDialog target={{ kind: "video", video: makeVideo({ title: "Video A" }) }} onChoose={() => undefined} onClose={() => undefined} />,
-    );
-    expect(dialogHtml).toContain("Video A");
-    expect(dialogHtml).toContain("SQLite");
-    expect(dialogHtml).toContain("JSON");
   });
 
   it("shows full database owner totals separately from loaded video rows", () => {

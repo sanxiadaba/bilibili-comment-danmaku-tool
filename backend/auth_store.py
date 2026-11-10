@@ -43,15 +43,23 @@ class CookieStore:
     def __init__(self, cookie_path, backup_dir=None):
         self.cookie_path = Path(cookie_path)
         self.backup_dir = Path(backup_dir) if backup_dir else self.cookie_path.parent / "backups" / "cookie"
+        self._remote_cache = (0.0, None)
 
     def load(self):
         if not self.cookie_path.exists():
             return ""
         return load_cookie_file(self.cookie_path)
 
-    def status(self, *, check_remote=True):
+    def status(self, *, check_remote=True, max_age_seconds=30):
+        """Cookie state, with a short cache so page loads do not probe Bilibili every time."""
+        if check_remote:
+            checked_at, cached = self._remote_cache
+            if cached is not None and time.time() - checked_at < max_age_seconds:
+                return dict(cached)
         payload = inspect_cookie_status(self.cookie_path, check_remote=check_remote)
         payload["source"] = "managed_file"
+        if check_remote:
+            self._remote_cache = (time.time(), dict(payload))
         return payload
 
     def save(self, raw_cookie):
@@ -63,6 +71,7 @@ class CookieStore:
         temp_path = self.cookie_path.with_name(f"{self.cookie_path.name}.{secrets.token_hex(4)}.tmp")
         temp_path.write_text(cookie + "\n", encoding="utf-8")
         temp_path.replace(self.cookie_path)
+        self._remote_cache = (0.0, None)
         return self.status(check_remote=True)
 
     def clear(self):
@@ -72,6 +81,7 @@ class CookieStore:
             self.cookie_path.unlink()
         except FileNotFoundError:
             pass
+        self._remote_cache = (0.0, None)
         return self.status(check_remote=False)
 
     def backup_existing(self):

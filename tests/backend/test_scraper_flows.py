@@ -14,7 +14,6 @@ from pathlib import Path
 from helpers import BVID, make_archive, make_comment
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
     list_database_catalog,
@@ -37,7 +36,7 @@ from bilibili_comment_danmaku.archive import (  # noqa: E402
     export_archive_to_sqlite,
     import_archive_json_to_sqlite,
 )
-from bilibili_comment_danmaku import scraper  # noqa: E402
+from bilibili_comment_danmaku import scraper, wbi  # noqa: E402
 from bilibili_comment_danmaku.storage import (  # noqa: E402
     danmaku_user_hash,
     load_comment_data,
@@ -627,23 +626,23 @@ class ScraperPerformanceTests(unittest.TestCase):
                 }
 
         original_time = scraper.time.time
-        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_env = os.environ.get(wbi.WBI_CACHE_PATH_ENV)
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
                 scraper.time.time = lambda: 1000
-                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+                wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
                 first = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
                 second = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None)
         finally:
             scraper.time.time = original_time
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+            wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
             if original_env is None:
-                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+                os.environ.pop(wbi.WBI_CACHE_PATH_ENV, None)
             else:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertEqual(first, second)
         self.assertEqual(len(calls), 1)
@@ -666,22 +665,22 @@ class ScraperPerformanceTests(unittest.TestCase):
                 }
 
         original_time = scraper.time.time
-        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_env = os.environ.get(wbi.WBI_CACHE_PATH_ENV)
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
                 scraper.time.time = lambda: 1000
-                scraper.WBI_MIXIN_KEY_CACHE["value"] = "cached-key"
-                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 2000
+                wbi.WBI_MIXIN_KEY_CACHE["value"] = "cached-key"
+                wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 2000
                 value = scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None, force_refresh=True)
         finally:
             scraper.time.time = original_time
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+            wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
             if original_env is None:
-                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+                os.environ.pop(wbi.WBI_CACHE_PATH_ENV, None)
             else:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertNotEqual(value, "cached-key")
         self.assertEqual(len(calls), 1)
@@ -703,20 +702,20 @@ class ScraperPerformanceTests(unittest.TestCase):
                     },
                 }
 
-        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_env = os.environ.get(wbi.WBI_CACHE_PATH_ENV)
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
-                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+                wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
                 scraper.get_wbi_mixin_key(FakeClient(), lambda _message: None, force_refresh=True)
         finally:
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+            wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
             if original_env is None:
-                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+                os.environ.pop(wbi.WBI_CACHE_PATH_ENV, None)
             else:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertEqual(kwargs_seen[0]["wait_for_backoff"], False)
 
@@ -726,16 +725,16 @@ class ScraperPerformanceTests(unittest.TestCase):
                 raise TimeoutError("nav timed out")
 
         original_time = scraper.time.time
-        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_env = os.environ.get(wbi.WBI_CACHE_PATH_ENV)
         original_fallback = scraper.fetch_wbi_nav_with_system_opener
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 cache_path = Path(tmpdir) / "wbi.json"
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(cache_path)
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = str(cache_path)
                 scraper.time.time = lambda: 1000
-                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
-                scraper.persist_wbi_mixin_key("e" * 32, expires_at=2000)
+                wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+                wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                wbi.persist_wbi_mixin_key("e" * 32, expires_at=2000)
                 scraper.fetch_wbi_nav_with_system_opener = lambda *_args, **_kwargs: (_ for _ in ()).throw(
                     TimeoutError("fallback timed out")
                 )
@@ -745,12 +744,12 @@ class ScraperPerformanceTests(unittest.TestCase):
         finally:
             scraper.time.time = original_time
             scraper.fetch_wbi_nav_with_system_opener = original_fallback
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+            wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
             if original_env is None:
-                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+                os.environ.pop(wbi.WBI_CACHE_PATH_ENV, None)
             else:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertEqual(value, "e" * 32)
         self.assertTrue(any("reused persisted WBI" in item for item in logs))
@@ -760,13 +759,13 @@ class ScraperPerformanceTests(unittest.TestCase):
             def request_json(self, _url, **_kwargs):
                 raise TimeoutError("nav timed out")
 
-        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_env = os.environ.get(wbi.WBI_CACHE_PATH_ENV)
         original_fallback = scraper.fetch_wbi_nav_with_system_opener
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
-                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+                wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
                 scraper.fetch_wbi_nav_with_system_opener = lambda *_args, **_kwargs: (_ for _ in ()).throw(
                     TimeoutError("fallback timed out")
                 )
@@ -775,12 +774,12 @@ class ScraperPerformanceTests(unittest.TestCase):
                     scraper.get_wbi_mixin_key(FailingClient(), lambda _message: None, force_refresh=True)
         finally:
             scraper.fetch_wbi_nav_with_system_opener = original_fallback
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+            wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
             if original_env is None:
-                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+                os.environ.pop(wbi.WBI_CACHE_PATH_ENV, None)
             else:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = original_env
 
     def test_wbi_mixin_key_uses_system_opener_fallback(self):
         class FailingClient:
@@ -804,24 +803,24 @@ class ScraperPerformanceTests(unittest.TestCase):
 
         fallback_headers = []
         logs = []
-        original_env = os.environ.get(scraper.WBI_CACHE_PATH_ENV)
+        original_env = os.environ.get(wbi.WBI_CACHE_PATH_ENV)
         original_fallback = scraper.fetch_wbi_nav_with_system_opener
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
-                scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-                scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = str(Path(tmpdir) / "wbi.json")
+                wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+                wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
                 scraper.fetch_wbi_nav_with_system_opener = fallback
 
                 value = scraper.get_wbi_mixin_key(FailingClient(), logs.append, force_refresh=True)
         finally:
             scraper.fetch_wbi_nav_with_system_opener = original_fallback
-            scraper.WBI_MIXIN_KEY_CACHE["value"] = None
-            scraper.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
+            wbi.WBI_MIXIN_KEY_CACHE["value"] = None
+            wbi.WBI_MIXIN_KEY_CACHE["expires_at"] = 0
             if original_env is None:
-                os.environ.pop(scraper.WBI_CACHE_PATH_ENV, None)
+                os.environ.pop(wbi.WBI_CACHE_PATH_ENV, None)
             else:
-                os.environ[scraper.WBI_CACHE_PATH_ENV] = original_env
+                os.environ[wbi.WBI_CACHE_PATH_ENV] = original_env
 
         self.assertEqual(len(value), 32)
         self.assertEqual(fallback_headers[0]["Cookie"], "SESSDATA=secret")

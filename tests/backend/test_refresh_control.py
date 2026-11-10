@@ -50,6 +50,14 @@ class StopFlagTests(unittest.TestCase):
         self.assertFalse(progress_state.is_stop_requested("comments"))
         self.assertFalse(progress_state.is_stop_requested("danmaku"))
 
+    def test_stop_all_does_not_poison_the_next_comment_refresh(self):
+        # Regression: a bare "all" flag used to survive clear_stop("comments"), so every later
+        # comment refresh aborted on its first page until the process was restarted.
+        progress_state.request_stop("all")
+        progress_state.clear_stop("comments")
+
+        self.assertFalse(progress_state.is_stop_requested("comments"))
+
 
 class ScraperStopTests(unittest.TestCase):
     def test_main_reply_loop_stops_before_the_first_request(self):
@@ -92,7 +100,7 @@ class RefreshControlHttpTests(unittest.TestCase):
             },
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
         self.thread.start()
 
     def tearDown(self):

@@ -8,6 +8,7 @@ from .archive import (
     read_archive_meta,
 )
 from .storage import (
+    comment_result_is_too_small,
     delete_owner_from_sqlite,
     delete_videos_from_sqlite,
     list_video_summaries_page,
@@ -23,6 +24,7 @@ from .url_utils import extract_bvid
 
 __all__ = [
     "DEFAULT_BVID",
+    "comment_result_is_too_small",
     "extract_bvid",
     "export_archive_from_databases",
     "export_archive_to_sqlite",

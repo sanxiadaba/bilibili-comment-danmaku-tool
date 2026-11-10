@@ -20,7 +20,6 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // The backend receives client telemetry through /api/logs/client; avoid a hard dependency here.
     console.error("unhandled render error", error, info.componentStack);
   }
 
@@ -29,7 +28,6 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   };
 
   private goHome = () => {
-    window.history.pushState({}, "", "/");
     window.location.assign("/");
   };
 

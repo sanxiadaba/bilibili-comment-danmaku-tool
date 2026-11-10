@@ -41,14 +41,15 @@ class DataDirTests(unittest.TestCase):
             self.assertEqual(paths.default_data_dir().name, "data")
 
     def test_publish_points_state_files_at_the_runtime_dir(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
-            paths.publish_data_dir("D:/runtime/data")
+        with mock.patch.dict(os.environ, {}, clear=False), tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime-data"
+            paths.publish_data_dir(str(runtime_dir))
             try:
-                self.assertEqual(paths.state_file("x.json"), Path("D:/runtime/data") / "x.json")
-                self.assertEqual(default_wbi_cache_path(), Path("D:/runtime/data") / "wbi_mixin_key.json")
+                self.assertEqual(paths.state_file("x.json"), runtime_dir / "x.json")
+                self.assertEqual(default_wbi_cache_path(), runtime_dir / "wbi_mixin_key.json")
                 self.assertEqual(
                     scraper.default_backoff_state_path(),
-                    Path("D:/runtime/data") / "bilibili_backoff_state.json",
+                    runtime_dir / "bilibili_backoff_state.json",
                 )
             finally:
                 os.environ.pop(paths.DATA_DIR_ENV, None)

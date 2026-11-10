@@ -7,7 +7,7 @@ from pathlib import Path
 
 import server as server_module
 from app_logging import configure_logging, logging_status, log_event, shutdown_logging
-from bilibili_comment_danmaku import prepare_database_path
+from bilibili_comment_danmaku import prepare_database_path, scraper
 from bilibili_comment_danmaku.paths import publish_data_dir
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from http_utils import safe_print
@@ -17,7 +17,6 @@ from server import (
     DEFAULT_COOKIE_FILE,
     DEFAULT_DB,
     DEFAULT_LOG_DIR,
-    DEFAULT_SPACE_CACHE_DIR,
     DEFAULT_STATIC,
     CommentDanmakuServer,
     configure_task_services,
@@ -76,7 +75,6 @@ def main():
     root = app_root()
     parser = argparse.ArgumentParser(description="Run Bilibili comment/danmaku tool as a local desktop app.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--allow-remote", action="store_true", help="允许绑定非本机地址（无鉴权，慎用）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--db", default=str(root / "data" / DEFAULT_DB.name))
@@ -85,7 +83,7 @@ def main():
     parser.add_argument("--database-dir", default=str(root / "data" / "databases"))
     parser.add_argument("--space-cache-dir", default=str(root / "data" / "space_cache"))
     args = parser.parse_args()
-    validate_bind_host(args.host, allow_remote=args.allow_remote)
+    validate_bind_host(args.host)
 
     log_dir = Path(args.log_dir).resolve()
     configure_logging(log_dir, console=False)
@@ -104,6 +102,8 @@ def main():
     initialize_database(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
     publish_data_dir(handler.db_path.parent)
+    # The backoff object is built at import time, before the data dir is known.
+    scraper.GLOBAL_REQUEST_BACKOFF.state_path = scraper.default_backoff_state_path()
     migrate_legacy_database(handler.db_path, handler.database_dir)
 
     cookie_file = root / "data" / DEFAULT_COOKIE_FILE.name

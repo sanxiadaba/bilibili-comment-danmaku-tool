@@ -21,7 +21,7 @@ if (-not (Test-Path $entry)) {
     throw "Missing desktop entry: $entry"
 }
 
-pnpm build
+pnpm build:dist
 
 if (-not (Test-Path (Join-Path $distDir "index.html"))) {
     throw "Frontend dist was not generated."
@@ -109,7 +109,7 @@ $nuitkaArgs = @(
 )
 
 if (Get-Command uvx -ErrorAction SilentlyContinue) {
-    uvx --from nuitka nuitka.cmd @nuitkaArgs
+    uvx --from nuitka==4.3.5 nuitka.cmd @nuitkaArgs
 } else {
     python -m nuitka @nuitkaArgs
 }
@@ -388,7 +388,7 @@ Remove-Item -Force -LiteralPath $launcherSource
 New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "data") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "logs") | Out-Null
 
-foreach ($leftover in @("desktop_entry.build", "desktop_entry.dist", "desktop_entry.onefile-build", "data")) {
+foreach ($leftover in @("desktop_entry.dist", "desktop_entry.onefile-build", "data")) {
     $leftoverPath = Join-Path $releaseRoot $leftover
     if (Test-Path $leftoverPath) {
         Remove-Item -Recurse -Force -LiteralPath $leftoverPath

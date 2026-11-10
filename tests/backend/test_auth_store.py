@@ -49,6 +49,23 @@ class AuthStoreTests(unittest.TestCase):
             backups = list(store.backup_dir.glob("cookie-*.txt"))
             self.assertEqual(backups, [])
 
+    def test_cookie_status_reuses_a_recent_remote_check(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
+            store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            store.cookie_path.write_text("SESSDATA=secret\n", encoding="utf-8")
+
+            with mock.patch("auth_store.inspect_cookie_status") as status:
+                status.return_value = {"status": "valid", "exists": True}
+
+                first = store.status(check_remote=True)
+                second = store.status(check_remote=True)
+
+            self.assertEqual(first["status"], "valid")
+            self.assertEqual(second["status"], "valid")
+            # Two page loads within the cache window probe Bilibili once.
+            self.assertEqual(status.call_count, 1)
+
     def test_cookie_store_backs_up_existing_cookie_before_overwrite(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")

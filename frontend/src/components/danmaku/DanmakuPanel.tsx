@@ -1,6 +1,5 @@
 import { ThumbsUp } from "lucide-react";
 import type { DanmakuData, DanmakuItem } from "../../types";
-import { formatFullDateTime, formatNumber } from "../../lib/utils";
 import { OwnerBadge } from "../common";
 import { VirtualList } from "../ui/VirtualList";
 import { ColorSwatch } from "./ColorSwatch";
@@ -9,14 +8,10 @@ import { formatProgress } from "./danmakuUtils";
 type DanmakuPanelProps = {
   danmaku: DanmakuData | null;
   items?: DanmakuItem[];
-  compact?: boolean;
 };
 
-export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: DanmakuPanelProps) {
+export function DanmakuPanel({ danmaku, items: panelItems }: DanmakuPanelProps) {
   const items = panelItems || danmaku?.items || [];
-  const buckets = danmaku?.buckets || [];
-  const max = Math.max(1, ...buckets.map((bucket) => bucket.count));
-  const fetchedAt = danmaku?.metadata.fetched_at ? formatFullDateTime(danmaku.metadata.fetched_at) : "";
 
   if (!danmaku || danmaku.metadata.total_count === 0) {
     return (
@@ -26,79 +21,15 @@ export function DanmakuPanel({ danmaku, items: panelItems, compact = false }: Da
     );
   }
 
-  if (compact) {
-    return (
-      <VirtualList
-        className="surface-muted max-h-[640px] overflow-y-auto rounded-md p-2"
-        empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
-        estimateSize={72}
-        getKey={(item) => item.dmid}
-        items={items}
-        renderItem={(item) => <DanmakuRow item={item} />}
-      />
-    );
-  }
-
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="min-w-0">
-        <div className="mb-3 grid gap-2 text-sm sm:grid-cols-3">
-          <DanmakuMetric label="CID" value={danmaku.metadata.cid || "-"} />
-          <DanmakuMetric label="覆盖时间" value={formatProgress(danmaku.metadata.max_progress)} />
-          <DanmakuMetric label="抓取时间" value={fetchedAt || "-"} />
-        </div>
-        <div className="surface-muted h-56 w-full max-w-full overflow-hidden rounded-md p-3">
-          <div className="flex h-44 min-w-0 items-end gap-1 border-b border-line">
-            {buckets.map((bucket) => (
-              <div
-                className="group flex min-w-0 flex-1 flex-col items-center justify-end"
-                key={bucket.bucket_start}
-                title={`${bucket.label}：${bucket.count} 条`}
-              >
-                <div
-                  className="w-full rounded-t bg-amber"
-                  style={{ height: `${Math.max(4, (bucket.count / max) * 100)}%` }}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted">
-            <span className="min-w-0 truncate">{buckets[0]?.label || "00:00"}</span>
-            <span className="shrink-0">按视频进度聚合</span>
-            <span className="min-w-0 truncate text-right">{buckets.at(-1)?.label || "-"}</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="surface-muted min-w-0 rounded-md">
-        <div className="flex h-11 items-center justify-between border-b border-line px-3 text-sm">
-          <span className="font-semibold text-ink">弹幕明细</span>
-          <span className="text-muted">{formatNumber(items.length)} 条</span>
-        </div>
-        <VirtualList
-          className="max-h-[640px] overflow-y-auto p-2"
-          empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
-          estimateSize={72}
-          getKey={(item) => item.dmid}
-          items={items}
-          renderItem={(item) => <DanmakuRow item={item} />}
-        />
-      </div>
-    </div>
-  );
-}
-
-type DanmakuMetricProps = {
-  label: string;
-  value: string;
-};
-
-function DanmakuMetric({ label, value }: DanmakuMetricProps) {
-  return (
-    <div className="surface-muted min-w-0 rounded-md px-3 py-2">
-      <div className="text-xs text-muted">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold text-ink">{value}</div>
-    </div>
+    <VirtualList
+      className="surface-muted max-h-[640px] overflow-y-auto rounded-md p-2"
+      empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
+      estimateSize={72}
+      getKey={(item) => item.dmid}
+      items={items}
+      renderItem={(item) => <DanmakuRow item={item} />}
+    />
   );
 }
 

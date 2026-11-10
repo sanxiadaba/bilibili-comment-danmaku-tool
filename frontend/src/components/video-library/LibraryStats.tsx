@@ -1,17 +1,9 @@
 import { AlertTriangle, Eye, Heart, MessageCircle, PlayCircle, Sparkles } from "lucide-react";
 import { StatTile } from "../ui/StatTile";
-
-export type LibraryTotals = {
-  views: number;
-  comments: number;
-  active: number;
-  deleted: number;
-  likes: number;
-  danmaku: number;
-};
+import type { VideoTotals } from "../../lib/videoLibrary";
 
 type LibraryStatsProps = {
-  totals: LibraryTotals;
+  totals: VideoTotals;
   videoCount: number;
 };
 

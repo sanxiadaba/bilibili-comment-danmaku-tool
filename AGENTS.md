@@ -1,85 +1,43 @@
-# Agent 开发手册
+# Agent 手册
 
-这个项目是本地 Bilibili 评论、楼中楼、弹幕归档工具。改动要小、准、可验证；不要把旧结构、旧端口或本机环境假设写回代码。
+Bilibili 评论/弹幕归档工具（Python 标准库后端 + React 前端）。运行、命令、数据布局见 `README.md`，这里只写改动时必须遵守的规则。
 
 ## 硬规则
 
-- 每个问题从 `main` 新建分支；用户明确要求后才合并回 `main`。
-- Git / GitHub 使用代理：`http://127.0.0.1:7890`。
-- 前端命令用 `pnpm`；Python 环境/工具需要时优先 `uv`。
+- 每个问题从 `main` 新建分支（`codex/<short-purpose>`）；用户明确同意后才合并回 `main`。
+- Git / GitHub 走代理：`http://127.0.0.1:7890`。
+- 前端命令用 `pnpm`；需要额外 Python 工具时用 `uv`。
 - 不提交 `data/`、`logs/`、`dist/`、`release/`、`node_modules/`、Cookie、数据库、`.env`、缓存文件。
+- 源码 UTF-8 无 BOM；终端显示乱码不等于文件坏，先跑 `pnpm test:encoding`。
 - 提交前看 `git status -sb`，确认没有误带本地数据。
-- 源码必须是 UTF-8 无 BOM；PowerShell 显示中文乱码不等于文件损坏，先跑 `pnpm test:encoding`。
 
-## 当前事实
+## 数据安全
 
-- 默认服务端口是 `8001`，占用时自动递增，不要再写回 `8000`。
-- 新归档是一视频一库：`data/databases/<UP主>/<BVID>.db`。
-- 页面/API 中的 `main` 是聚合视图 id，不代表必须有 `data/comment_danmaku.db`。
-- CI 没有 `data/cookie.txt`；代码和测试必须支持无 Cookie 匿名运行。
-- 需要登录态时，UI 走登录状态管理；CLI 可传 `--cookie` 或 `--cookie-file`。
-- Windows 包不是 onefile；根目录只放一个可见 exe，依赖在 `_internal/`，运行数据在 `data/`，日志在 `logs/`。
+- SQLite 是事实来源。改 schema 必须能在用户已有 `.db` 上跑通（`ensure_schema_if_needed`），不能丢数据。
+- 写库前先确认目标记录；删除/导出一次只作用于一个具体数据库，聚合视图（`main`）要显式拒绝并要求选库。
+- 用 `replace=True` 覆盖评论时传 `guard_shrink=True`：远端返回明显偏少时保留本地档案。
+- 弹幕远端为空时不得覆盖已有档案；点赞数未知时保留旧值。
+- 写库路径禁止一次拼接超过 SQLite 变量上限（32766）的 `IN (...)`；大批量用临时表或分批。
 
-## 常用命令
+## 后端
 
-```powershell
-pnpm test
-pnpm test:backend
-pnpm test:frontend
-pnpm build
-pnpm server
-pnpm dev
-pnpm package:windows
-```
+- Bilibili HTTP：`scraper.py`、`danmaku.py`、`wbi.py`；`space_archive.py` 自带空间列表请求与退避。
+- 长任务（UP 归档、单视频解析、删除）必须进任务队列，能暂停/恢复/停止，进度可通过 `/api/progress` 观察。
+- 评论/弹幕刷新是同步请求，必须响应停止标志（`stop_checker`），冷却等待也要可中断。
+- 日志走 `app_logging.py`；Cookie、token、密码一律脱敏，消息正文也要脱敏。
+- 服务只绑定 loopback；没有鉴权，不要加远程访问。
 
-本地地址通常是：
+## 前端
 
-```text
-http://127.0.0.1:8001/
-```
+- API 封装在 `frontend/src/api/client.ts`；状态变更请求自动带 `X-Bilibili-Tool-Request` 头。
+- 每个会覆盖状态的请求都要有 AbortController 或单调请求序号，慢响应不得覆盖新状态。
+- 大列表用 `VirtualList` 分页/虚拟滚动，不要一次渲染全量。
+- 界面是工具型界面：紧凑、可扫描、中文优先；不要加动画装饰。
 
-## 测试纪律
+## 测试与 CI
 
-- 不要让测试依赖本机 Cookie、真实数据库、已有 release 目录或网络状态。
-- 后端新增行为优先补 unittest；前端行为补 Vitest。
-- 单视频单库、无 Cookie、端口递增、release workflow、CLI、打包脚本都已有回归测试，改相关逻辑时同步更新。
-- 影响构建、打包、workflow 时跑 `pnpm build`；只改文档时至少检查 diff 和编码。
-- 真实 UP 主 `https://space.bilibili.com/1538787344` 可用于手动验证，不放进默认单元测试。
-
-## Release workflow
-
-- 自动发布只在合并到 `main` 的 merge commit 上发生。
-- 只改 README、AGENTS、普通文档不应触发发布。
-- workflow action 版本要避免 Node 20 警告；当前使用 Node 24 系列 action。
-- `setup-uv` 没有 Python 依赖锁文件时关闭 cache，避免无效缓存警告。
-- 发布失败先看真实失败步骤，不要被后续“dist 未生成”这类连锁错误误导。
-
-## 后端注意
-
-- Bilibili HTTP 逻辑集中在 `scraper.py`、`danmaku.py`、`wbi.py`。
-- SQLite schema/migration 必须兼容用户已有数据。
-- 长任务必须能暂停、停止、恢复，并通过进度/队列 API 可观察。
-- 评论刷新保留“本次未返回”的历史评论；弹幕刷新不能用远端空结果覆盖本地已有弹幕。
-- 日志走 `app_logging.py`，敏感字段必须脱敏。
-
-## 前端注意
-
-- API 封装在 `frontend/src/api/client.ts`；状态变更请求必须带本地防护 header。
-- 页面切库、路由、筛选时注意取消旧请求，避免慢响应覆盖新状态。
-- 大列表继续使用分页/虚拟滚动，不要一次性拉全量详情。
-- UI 是工具型界面，保持紧凑、清晰、可扫描。
-
-## Git 流程
-
-```powershell
-git switch main
-git pull --ff-only origin main
-git switch -c codex/<short-purpose>
-# edit, test
-git status -sb
-git add <files>
-git commit -m "<imperative summary>"
-git push origin codex/<short-purpose>
-```
-
-用户确认合并后，再合并到 `main`、推送、删除本地和远程分支。
+- 测试不能依赖本机 Cookie、真实数据库、已有 release 目录或网络。
+- 后端行为改动用 unittest 覆盖（尤其数据保护、删除、分页、任务状态）；前端行为用 Vitest。
+- 改构建、打包或 workflow 时跑 `pnpm build`；只改文档至少检查 `git diff` 和编码。
+- CI 用 `ubuntu-latest`，只有 tag 或手动 dispatch 才打包 Windows 包；不要引入需要 Windows runner 的日常检查。
+- Release workflow 只在 tag / `workflow_dispatch` 触发；不要恢复"每次 merge 自动发版"。

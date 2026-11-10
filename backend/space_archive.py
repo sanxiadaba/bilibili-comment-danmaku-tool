@@ -20,6 +20,8 @@ from task_queue import InMemoryTaskQueue
 
 
 SPACE_PAGE_SIZE = 20
+SPACE_MAX_PAGES = 2000
+SPACE_MAX_STAGNANT_PAGES = 3
 SPACE_PAGE_TIMEOUT_SECONDS = 20
 SPACE_PAGE_HARD_TIMEOUT_SECONDS = 35
 SPACE_PAGE_RETRIES = 4
@@ -98,6 +100,8 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
     mixin = scraper.get_wbi_mixin_key(client, log)
     endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
     items = []
+    seen_bvids = set()
+    stagnant_pages = 0
     page = 1
     while True:
         update_progress("space", mid, f"UP视频列表请求 page={page}")
@@ -106,11 +110,25 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
         vlist = ((data.get("list") or {}).get("vlist") or [])
         total = (data.get("page") or {}).get("count") or 0
         update_progress("space", mid, f"UP视频列表页 page={page} got={len(vlist)} total={total}")
-        items.extend(vlist)
+        # The API can repeat a page or over-report the count; never loop on the same videos.
+        fresh = []
+        for video in vlist:
+            bvid = str(video.get("bvid") or "")
+            if bvid and bvid not in seen_bvids:
+                seen_bvids.add(bvid)
+                fresh.append(video)
+        stagnant_pages = 0 if fresh else stagnant_pages + 1
+        items.extend(fresh)
         if max_items and len(items) >= max_items:
             items = items[:max_items]
             break
         if not vlist or len(items) >= total:
+            break
+        if stagnant_pages >= SPACE_MAX_STAGNANT_PAGES:
+            log(f"UP视频列表连续 {stagnant_pages} 页没有新视频，停止翻页（已收 {len(items)} 条）")
+            break
+        if page >= SPACE_MAX_PAGES:
+            log(f"UP视频列表达到 {SPACE_MAX_PAGES} 页上限，停止翻页（已收 {len(items)} 条）")
             break
         page += 1
         time.sleep(random.uniform(2.0, 5.0))
@@ -202,53 +220,6 @@ def space_request_backoff():
         state_path=str(paths.state_file(SPACE_BACKOFF_STATE_NAME)),
         persist=True,
     )
-
-
-def db_status(db_path, mid):
-    conn = connect(db_path)
-    try:
-        ensure_schema(conn)
-        conn.commit()
-        rows = conn.execute(
-            """
-            SELECT
-                v.bvid,
-                v.fetched_at,
-                v.video_cid,
-                v.api_comment_count,
-                v.stat_reply,
-                v.stat_danmaku,
-                COALESCE(c.comments, 0) AS comments,
-                COALESCE(d.danmaku, 0) AS danmaku
-            FROM videos v
-            LEFT JOIN (
-                SELECT bvid, COUNT(*) AS comments
-                FROM comments
-                GROUP BY bvid
-            ) c ON c.bvid = v.bvid
-            LEFT JOIN (
-                SELECT bvid, COUNT(*) AS danmaku
-                FROM danmaku
-                GROUP BY bvid
-            ) d ON d.bvid = v.bvid
-            WHERE v.owner_mid = ?
-            """,
-            (str(mid),),
-        ).fetchall()
-        return {
-            row["bvid"]: {
-                "fetched_at": row["fetched_at"],
-                "video_cid": row["video_cid"],
-                "api_comment_count": row["api_comment_count"],
-                "stat_reply": row["stat_reply"],
-                "stat_danmaku": row["stat_danmaku"],
-                "comments": row["comments"] or 0,
-                "danmaku": row["danmaku"] or 0,
-            }
-            for row in rows
-        }
-    finally:
-        conn.close()
 
 
 def db_status_for_bvid(db_path, bvid):
@@ -560,7 +531,15 @@ class SpaceArchiveService:
                     current_db_path = video_database_path_from_archive(comments, database_dir)
                     self.update_task(task, message=f"正在保存评论 {index}/{total}")
                     update_progress("space", current_bvid, f"UP视频保存评论 {index}/{total} bvid={current_bvid}")
-                    save_comments_to_sqlite(comments, current_db_path, replace=True)
+                    comment_save = save_comments_to_sqlite(
+                        comments, current_db_path, replace=True, guard_shrink=True
+                    )
+                    if comment_save.get("skipped"):
+                        update_progress(
+                            "space",
+                            current_bvid,
+                            f"UP视频评论数量异常，已保留本地档案 {index}/{total} bvid={current_bvid}",
+                        )
 
                     headers = scraper.make_headers(current_bvid, cookie)
                     danmaku_result = scrape_danmaku(
@@ -568,7 +547,10 @@ class SpaceArchiveService:
                         comments.get("video_raw"),
                         headers=headers,
                         logger=video_logger,
-                        fetch_likes=True,
+                        # Like counts cost one rate-limited request per 100 danmaku. Archiving a
+                        # whole space would spend most of its time on them, so bulk runs skip them;
+                        # refreshing a single video still collects them.
+                        fetch_likes=False,
                     )
                     if danmaku_result.get("items"):
                         self.update_task(task, message=f"正在保存弹幕 {index}/{total}")

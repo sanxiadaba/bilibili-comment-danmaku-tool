@@ -13,7 +13,6 @@ import {
   fetchVideos,
   importDatabase,
   importDatabaseFiles,
-  logClientEvent,
   openLocalPath,
   parseVideo,
   pollAuthQrCode,
@@ -31,9 +30,8 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}) {
   });
 }
 
-/** Every API call also emits a telemetry POST; assertions should look at the real request. */
 function apiCalls(fetchMock: { mock: { calls: unknown[][] } }) {
-  return fetchMock.mock.calls.filter(([url]) => !String(url).startsWith("/api/logs/client"));
+  return fetchMock.mock.calls;
 }
 
 function firstApiCall(fetchMock: { mock: { calls: unknown[][] } }) {
@@ -291,24 +289,5 @@ describe("API client", () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new DOMException("timeout", "TimeoutError"))) as typeof fetch;
 
     await expect(fetchVideos("main", { limit: 40 })).rejects.toThrow(/请求超时/);
-  });
-
-  it("sends client logs with the local guard header", () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
-    globalThis.fetch = fetchMock;
-
-    logClientEvent("client.test", "hello", { bvid: "BV1xx411c7mD" });
-
-    const call = fetchMock.mock.calls.find(([url]) => String(url) === "/api/logs/client") as [string, RequestInit];
-    expect(call).toBeTruthy();
-    const headers = new Headers(call[1].headers);
-    expect(headers.get("X-Bilibili-Tool-Request")).toBe("1");
-    expect(call[1].method).toBe("POST");
-  });
-
-  it("ignores client log failures", () => {
-    globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down"))) as typeof fetch;
-
-    expect(() => logClientEvent("client.test", "ignored")).not.toThrow();
   });
 });

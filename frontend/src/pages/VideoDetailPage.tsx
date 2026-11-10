@@ -19,7 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { fetchCommentData, logClientEvent, refreshCommentData, stopRunningTask } from "../api/client";
+import { fetchCommentData,refreshCommentData, stopRunningTask } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
 import { CommentDetail } from "../components/comments/CommentDetail";
@@ -40,6 +40,7 @@ import {
   flattenThread,
   formatFullDateTime,
   formatNumber,
+  coarsenBuckets,
   getCommentAuthor,
   getCommentAvatar,
   getMaxLike,
@@ -69,6 +70,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [selectedId, setSelectedId] = useState("");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const requestSeqRef = useRef(0);
   const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
@@ -103,10 +106,9 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }, []);
 
   const refreshComments = useCallback(async () => {
-    logClientEvent("client.user.comments.refresh_start", "user started comment refresh", {
-      db_id: dbId,
-      bvid: data?.metadata.bvid || bvid,
-    });
+    requestSeqRef.current += 1;
+    loadAbortRef.current?.abort();
+    loadMoreAbortRef.current?.abort();
     setIsRefreshing(true);
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
@@ -134,19 +136,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             : `已刷新，暂无新增评论，档案共 ${after} 条，仍可见 ${active} 条，未返回 ${deleted} 条`,
         );
       }
-      logClientEvent("client.user.comments.refresh_success", "comment refresh completed", {
-        db_id: dbId,
-        bvid: payload.metadata.bvid,
-        after_count: after,
-        active_count: active,
-        deleted_count: deleted,
-        added_count: added,
-      });
     } catch (reason: unknown) {
-      logClientEvent("client.user.comments.refresh_error", reason instanceof Error ? reason.message : String(reason), {
-        db_id: dbId,
-        bvid: data?.metadata.bvid || bvid,
-      });
       setError(reason instanceof Error ? reason.message : String(reason));
       setRefreshMessage("");
     } finally {
@@ -154,28 +144,37 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     }
   }, [applyPayload, bvid, data?.metadata.bvid, dbId]);
 
-  useEffect(() => {
+  const loadComments = useCallback(async () => {
+    loadAbortRef.current?.abort();
     const controller = new AbortController();
-    fetchCommentData(bvid, dbId, { limit: COMMENT_PAGE_SIZE, signal: controller.signal })
-      .then((payload) => {
-        applyPayload(payload);
-        setError("");
-        setRefreshMessage("");
-      })
-      .catch((reason: unknown) => {
-        if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setError(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => {
-      controller.abort();
-    };
+    loadAbortRef.current = controller;
+    const seq = ++requestSeqRef.current;
+    setError("");
+    try {
+      const payload = await fetchCommentData(bvid, dbId, { limit: COMMENT_PAGE_SIZE, signal: controller.signal });
+      if (seq !== requestSeqRef.current) return;
+      applyPayload(payload);
+      setRefreshMessage("");
+    } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (seq !== requestSeqRef.current) return;
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   }, [applyPayload, bvid, dbId]);
+
+  useEffect(() => {
+    void loadComments();
+    return () => {
+      loadAbortRef.current?.abort();
+    };
+  }, [loadComments]);
 
   const loadMoreComments = useCallback(async () => {
     if (!data?.metadata.has_more || isLoadingMore) return;
     loadMoreAbortRef.current?.abort();
     const controller = new AbortController();
     loadMoreAbortRef.current = controller;
+    const seq = requestSeqRef.current;
     setIsLoadingMore(true);
     setError("");
     try {
@@ -185,9 +184,11 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
         offset: data.comments.length,
         signal: controller.signal,
       });
+      if (seq !== requestSeqRef.current) return;
       applyPayload(payload, "append");
     } catch (reason: unknown) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (seq !== requestSeqRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       if (loadMoreAbortRef.current === controller) {
@@ -204,8 +205,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     () => sortComments(filterComments(allComments, deferredQuery, levelFilter, location, minLikes), sortMode),
     [allComments, deferredQuery, levelFilter, location, minLikes, sortMode],
   );
-  const hourly = useMemo(() => hourlyBuckets(allComments), [allComments]);
-  const filteredHourly = useMemo(() => hourlyBuckets(filteredComments), [filteredComments]);
+  const hourly = useMemo(() => coarsenBuckets(hourlyBuckets(allComments)), [allComments]);
+  const filteredHourly = useMemo(() => coarsenBuckets(hourlyBuckets(filteredComments)), [filteredComments]);
   const authors = useMemo(() => topAuthors(allComments).slice(0, 6), [allComments]);
   const likedComments = useMemo(() => topLiked(allComments), [allComments]);
   const maxLike = useMemo(() => getMaxLike(allComments), [allComments]);
@@ -229,18 +230,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       ? idToThread.get(selectedComment.normalized.rpid)
       : idToThread.get(selectedComment?.normalized.root || "");
 
-  const topLocation = locations[0];
   const peakHour = [...hourly].sort((a, b) => b.count - a.count)[0];
   const totalLikes = allComments.reduce((sum, comment) => sum + (comment.normalized.like || 0), 0);
   const activeThreadItems = selectedThread ? flattenThread(selectedThread) : [];
   function resetFilters() {
-    logClientEvent("client.user.comments.reset_filters", "user reset comment filters", {
-      bvid: data?.metadata.bvid,
-      previous_sort: sortMode,
-      previous_level: levelFilter,
-      previous_location: location,
-      previous_min_likes: minLikes,
-    });
     setQuery("");
     setSortMode("like_desc");
     setLevelFilter("all");
@@ -249,12 +242,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }
 
   function exportFiltered() {
-    logClientEvent("client.user.comments.export", "user exported filtered comments", {
-      bvid: data?.metadata.bvid,
-      filtered_count: filteredComments.length,
-      total_count: allComments.length,
-      sort: sortMode,
-    });
     const header = [
       "level",
       "rpid",
@@ -308,10 +295,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
           <button
             className="btn-primary mt-5 inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium"
             type="button"
-            onClick={refreshComments}
+            onClick={() => void loadComments()}
           >
-            <RefreshCcw className={cn(isRefreshing && "animate-spin")} size={16} aria-hidden="true" />
-            {isRefreshing ? "重新抓取中" : "重试"}
+            <RefreshCcw size={16} aria-hidden="true" />
+            重试
           </button>
         </div>
       </main>
@@ -373,12 +360,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             <a
               className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath("/", dbId)}
-              onClick={() =>
-                logClientEvent("client.user.comments.nav_library", "user opened video library from comments", {
-                  db_id: dbId,
-                  bvid: data.metadata.bvid,
-                })
-              }
             >
               <Database size={16} aria-hidden="true" />
               视频库
@@ -386,12 +367,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             <a
               className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath(`/danmaku/${data.metadata.bvid}`, dbId)}
-              onClick={() =>
-                logClientEvent("client.user.comments.nav_danmaku", "user opened danmaku page from comments", {
-                  db_id: dbId,
-                  bvid: data.metadata.bvid,
-                })
-              }
             >
               <Sparkles size={16} aria-hidden="true" />
               弹幕页
@@ -419,11 +394,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               href={data.metadata.source_url}
               rel="noreferrer"
               target="_blank"
-              onClick={() =>
-                logClientEvent("client.user.comments.open_source_video", "user opened source video from comments", {
-                  bvid: data.metadata.bvid,
-                })
-              }
             >
               <ExternalLink size={16} aria-hidden="true" />
               打开视频
@@ -568,12 +538,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                 active={selectedComment?.normalized.rpid === comment.normalized.rpid}
                 comment={comment}
                 onSelect={() => {
-                  logClientEvent("client.user.comments.select_item", "user selected comment item", {
-                    bvid: data.metadata.bvid,
-                    rpid: comment.normalized.rpid,
-                    like: comment.normalized.like || 0,
-                    level: comment.normalized.level,
-                  });
                   setSelectedId(comment.normalized.rpid);
                 }}
               />
@@ -626,13 +590,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                   key={comment.normalized.rpid}
                   type="button"
                   onClick={() => setSelectedId(comment.normalized.rpid)}
-                  onClickCapture={() =>
-                    logClientEvent("client.user.comments.select_top_liked", "user selected top liked comment", {
-                      bvid: data.metadata.bvid,
-                      rpid: comment.normalized.rpid,
-                      like: comment.normalized.like || 0,
-                    })
-                  }
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">

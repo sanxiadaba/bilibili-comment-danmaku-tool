@@ -112,19 +112,6 @@ export function buildOwnerGroups(videos: VideoSummary[], ownerSummaries: OwnerSu
   });
 }
 
-export function filterVideos(videos: VideoSummary[], ownerFilter: string, query: string) {
-  const needle = query.trim().toLowerCase();
-  const ownerScopedVideos = ownerFilter === "all" ? videos : videos.filter((video) => ownerKey(video) === ownerFilter);
-  if (!needle) return ownerScopedVideos;
-  return ownerScopedVideos.filter((video) => {
-    return (
-      video.title.toLowerCase().includes(needle) ||
-      video.bvid.toLowerCase().includes(needle) ||
-      (video.owner_name || "").toLowerCase().includes(needle)
-    );
-  });
-}
-
 export function summarizeVideos(videos: VideoSummary[]): VideoTotals {
   return videos.reduce(
     (acc, video) => {
@@ -180,6 +167,32 @@ export function databaseIdForDeleteTarget(target: DeleteTarget, activeDbId: stri
   if (target.kind === "video") return target.video.db_id || activeDbId;
   if (target.kind === "videos") return singleDatabaseIdForVideos(target.videos, activeDbId);
   return activeDbId;
+}
+
+export type DeleteRequest = { db_id: string } & { owner_mid?: string; bvid?: string; bvids?: string[] };
+
+/**
+ * Turn one UI delete target into the per-database requests the backend expects.
+ *
+ * The aggregate "main" view has no database file, so videos are grouped by their own db_id.
+ * Owner targets need one concrete database; callers show a notice when {@link requests} is empty.
+ */
+export function deleteRequestsForTarget(target: DeleteTarget, activeDbId: string): DeleteRequest[] {
+  if (target.kind === "video") {
+    const dbId = target.video.db_id || activeDbId;
+    return dbId && dbId !== "main" ? [{ db_id: dbId, bvid: target.video.bvid }] : [];
+  }
+  if (target.kind === "videos") {
+    const grouped = new Map<string, string[]>();
+    for (const video of target.videos) {
+      const dbId = video.db_id || activeDbId;
+      if (!dbId || dbId === "main") return [];
+      grouped.set(dbId, [...(grouped.get(dbId) || []), video.bvid]);
+    }
+    return Array.from(grouped, ([db_id, bvids]) => ({ db_id, bvids }));
+  }
+  if (activeDbId === "main") return [];
+  return [{ db_id: activeDbId, ...deletePayloadForTarget(target) }];
 }
 
 export function deleteTargetVideoCount(target: DeleteTarget) {

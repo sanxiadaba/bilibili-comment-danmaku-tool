@@ -5,9 +5,9 @@ import {
   databaseIdForDeleteTarget,
   dbPath,
   deletePayloadForTarget,
+  deleteRequestsForTarget,
   deleteTargetVideoCount,
   extractBvid,
-  filterVideos,
   formatBytes,
   initialDatabaseId,
   mergeVideosByBvid,
@@ -98,15 +98,12 @@ describe("video library helpers", () => {
     expect(singleDatabaseIdForVideos([makeVideo({ db_id: "" })], "fallback")).toBe("fallback");
   });
 
-  it("filters videos and summarizes library totals", () => {
+  it("summarizes library totals", () => {
     const videos = [
       makeVideo({ bvid: "BV1Alpha001", title: "Alpha", owner_mid: "42", owner_name: "Alice", stat_view: 10, comment_total_count: 2, active_comment_count: 1, deleted_comment_count: 1, comment_like_count: 5, danmaku_count: 7 }),
       makeVideo({ bvid: "BV1Beta0001", title: "Beta", owner_mid: "7", owner_name: "Bob", stat_view: 20, comment_total_count: 3, active_comment_count: 3, deleted_comment_count: 0, comment_like_count: 6, danmaku_count: 8 }),
     ];
 
-    expect(filterVideos(videos, "mid:42", "")).toEqual([videos[0]]);
-    expect(filterVideos(videos, "all", "bob")).toEqual([videos[1]]);
-    expect(filterVideos(videos, "all", "BV1ALPHA")).toEqual([videos[0]]);
     expect(summarizeVideos(videos)).toEqual({ views: 30, comments: 5, active: 4, deleted: 1, likes: 11, danmaku: 15 });
   });
 
@@ -132,5 +129,18 @@ describe("video library helpers", () => {
     formatBytes(2048);
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+
+  it("plans one delete request per database and refuses owner deletes in the aggregate view", () => {
+    const first = makeVideo({ bvid: "BV1Alpha001", db_id: "db:a" });
+    const second = makeVideo({ bvid: "BV1Beta0001", db_id: "db:b" });
+    const owner = buildOwnerGroups([makeVideo({ owner_mid: "42", owner_name: "Alice" })])[0];
+
+    expect(deleteRequestsForTarget({ kind: "videos", videos: [first, second] }, "main")).toEqual([
+      { db_id: "db:a", bvids: ["BV1Alpha001"] },
+      { db_id: "db:b", bvids: ["BV1Beta0001"] },
+    ]);
+    expect(deleteRequestsForTarget({ kind: "owner", owner }, "main")).toEqual([]);
+    expect(deleteRequestsForTarget({ kind: "owner", owner }, "db:a")).toEqual([{ db_id: "db:a", owner_mid: "42" }]);
   });
 });

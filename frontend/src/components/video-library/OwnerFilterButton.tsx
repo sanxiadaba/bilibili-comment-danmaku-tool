@@ -1,4 +1,4 @@
-import { Database, Download, Trash2 } from "lucide-react";
+import { Database, Download } from "lucide-react";
 import { cn, formatNumber } from "../../lib/utils";
 import { formatBytes } from "../../lib/videoLibrary";
 
@@ -6,12 +6,10 @@ type OwnerFilterButtonProps = {
   active: boolean;
   commentCount: number;
   danmakuCount: number;
-  exportDisabled?: boolean;
   exporting?: boolean;
   name: string;
   storageBytes?: number;
   videoCount: number;
-  onDelete?: () => void;
   onExportJson?: () => void;
   onExportSqlite?: () => void;
   onClick: () => void;
@@ -21,17 +19,15 @@ export function OwnerFilterButton({
   active,
   commentCount,
   danmakuCount,
-  exportDisabled = false,
   exporting = false,
   name,
   storageBytes,
   videoCount,
-  onDelete,
   onExportJson,
   onExportSqlite,
   onClick,
 }: OwnerFilterButtonProps) {
-  const hasActions = onExportSqlite || onExportJson || onDelete;
+  const hasActions = onExportSqlite || onExportJson;
 
   return (
     <div
@@ -60,7 +56,7 @@ export function OwnerFilterButton({
               type="button"
               aria-label={`导出 ${name} 的 SQLite 数据库`}
               title={`导出 ${name} 的 SQLite 数据库`}
-              disabled={exportDisabled}
+              disabled={exporting}
               onClick={onExportSqlite}
             >
               <Database className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
@@ -73,24 +69,11 @@ export function OwnerFilterButton({
               type="button"
               aria-label={`导出 ${name} 的 JSON 文件`}
               title={`导出 ${name} 的 JSON 文件`}
-              disabled={exportDisabled}
+              disabled={exporting}
               onClick={onExportJson}
             >
               <Download className={cn(exporting && "animate-bounce")} size={15} aria-hidden="true" />
               JSON
-            </button>
-          )}
-          {onDelete && (
-            <button
-              className="inline-flex items-center justify-center gap-1 border-t border-line px-2 py-1.5 text-xs font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-wait disabled:opacity-60"
-              type="button"
-              aria-label={`删除 ${name} 的本地档案`}
-              title={`删除 ${name} 的本地档案`}
-              disabled={exportDisabled}
-              onClick={onDelete}
-            >
-              <Trash2 size={15} aria-hidden="true" />
-              删除
             </button>
           )}
         </div>

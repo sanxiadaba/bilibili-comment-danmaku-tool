@@ -179,7 +179,18 @@ class VideoParseTaskService:
                 return
             self.queue.update(task, current_bvid=bvid, message="正在保存评论", progress=82)
             update_progress("parse", bvid, "评论抓取完成，正在保存评论归档")
-            save_comments_to_sqlite(output_data, db_path, replace=True)
+            comment_save = save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=True)
+            if comment_save.get("skipped"):
+                log("comments: remote returned far fewer comments, kept the stored archive")
+                log_event(
+                    "task.parse.comments_refresh_skipped",
+                    "parse kept the stored comments because the scrape was far smaller",
+                    request_id=request_id,
+                    bvid=bvid,
+                    before_count=comment_save.get("before_count"),
+                    scraped_count=comment_save.get("scraped_count"),
+                    level="warning",
+                )
 
             if self.stop_or_pause_requested(task, bvid, 86):
                 return

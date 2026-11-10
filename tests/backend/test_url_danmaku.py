@@ -14,7 +14,6 @@ from pathlib import Path
 from helpers import BVID, make_archive, make_comment
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
     list_database_catalog,

@@ -9,6 +9,8 @@ DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
 DELETE_COMMENT_BATCH_SIZE = 5000
 DELETE_DANMAKU_BATCH_SIZE = 10000
 DELETE_VIDEO_BATCH_SIZE = 200
+# A refresh that keeps less than half of the stored comments is treated as a bad scrape.
+COMMENT_REFRESH_MIN_RATIO = 0.5
 
 
 SCHEMA_SQL = """
@@ -287,16 +289,79 @@ def extract_video_cid(video_raw):
     return None
 
 
-def save_comments_to_sqlite(output_data, db_path, replace=True):
+def comment_result_is_too_small(scraped_count, before_count, min_ratio=COMMENT_REFRESH_MIN_RATIO):
+    """True when a scrape is too small to be allowed to replace a healthy archive.
+
+    A blocked, rate-limited or anonymous scrape returns few or no comments. Saving that with
+    replace=True marks every stored comment as deleted, so callers pass guard_shrink=True and
+    keep the archive instead.
+    """
+    try:
+        scraped = int(scraped_count or 0)
+        before = int(before_count or 0)
+    except (TypeError, ValueError):
+        return False
+    if before <= 0:
+        return False
+    if scraped <= 0:
+        return True
+    return scraped < before * float(min_ratio)
+
+
+def active_comment_count(conn, bvid):
+    row = conn.execute(
+        "SELECT COUNT(*) FROM comments WHERE bvid = ? AND is_deleted = 0", (bvid,)
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def comment_save_summary(conn, bvid, skipped=False, before_count=0, scraped_count=0):
+    summary = {
+        "db": "",
+        "bvid": bvid,
+        "top_level_comment_count": conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE bvid = ? AND level = 1", (bvid,)
+        ).fetchone()[0],
+        "nested_comment_count": conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE bvid = ? AND level = 2", (bvid,)
+        ).fetchone()[0],
+        "total_count": conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE bvid = ?", (bvid,)
+        ).fetchone()[0],
+        "deleted_count": conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE bvid = ? AND is_deleted = 1", (bvid,)
+        ).fetchone()[0],
+    }
+    if skipped:
+        summary["skipped"] = True
+        summary["before_count"] = int(before_count or 0)
+        summary["scraped_count"] = int(scraped_count or 0)
+    return summary
+
+
+def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=False, force=False):
     metadata = output_data["metadata"]
     video_raw = output_data["video_raw"]
     owner = video_raw.get("owner") or {}
     stat = video_raw.get("stat") or {}
     video_cid = extract_video_cid(video_raw)
     fetched_at = metadata["fetched_at"]
+    nodes = list(iter_nodes(output_data))
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
+        if replace and guard_shrink and not force:
+            before_count = active_comment_count(conn, metadata["bvid"])
+            if comment_result_is_too_small(len(nodes), before_count):
+                summary = comment_save_summary(
+                    conn,
+                    metadata["bvid"],
+                    skipped=True,
+                    before_count=before_count,
+                    scraped_count=len(nodes),
+                )
+                summary["db"] = str(Path(db_path).resolve())
+                return summary
         if replace:
             conn.execute(
                 """
@@ -379,7 +444,7 @@ def save_comments_to_sqlite(output_data, db_path, replace=True):
         picture_rows = []
         emote_rows = []
         scraped_rpids = []
-        for node in iter_nodes(output_data):
+        for node in nodes:
             normalized = node["normalized"]
             user = normalized.get("user") or {}
             if user.get("mid"):
@@ -457,6 +522,17 @@ def save_comments_to_sqlite(output_data, db_path, replace=True):
             """,
             list(user_rows.values()),
         )
+        # A reply can reference a mid whose member object is missing from the payload; keep a
+        # placeholder row so the foreign key does not roll back the whole batch.
+        referenced_mids = {
+            str(row[5]) for row in comment_rows if row[5] not in (None, "", "None")
+        }
+        missing_mids = sorted(referenced_mids - set(user_rows))
+        if missing_mids:
+            conn.executemany(
+                "INSERT OR IGNORE INTO users (mid) VALUES (?)",
+                [(mid,) for mid in missing_mids],
+            )
         if scraped_rpids:
             # A single IN (...) list is capped by SQLite's variable limit (32766 by default), so
             # popular videos could never be saved. Stage the ids in a temp table instead.
@@ -511,22 +587,9 @@ def save_comments_to_sqlite(output_data, db_path, replace=True):
             emote_rows,
         )
         conn.commit()
-        return {
-            "db": str(Path(db_path).resolve()),
-            "bvid": metadata["bvid"],
-            "top_level_comment_count": conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE bvid = ? AND level = 1", (metadata["bvid"],)
-            ).fetchone()[0],
-            "nested_comment_count": conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE bvid = ? AND level = 2", (metadata["bvid"],)
-            ).fetchone()[0],
-            "total_count": conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE bvid = ?", (metadata["bvid"],)
-            ).fetchone()[0],
-            "deleted_count": conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE bvid = ? AND is_deleted = 1", (metadata["bvid"],)
-            ).fetchone()[0],
-        }
+        summary = comment_save_summary(conn, metadata["bvid"])
+        summary["db"] = str(Path(db_path).resolve())
+        return summary
     finally:
         conn.close()
 
@@ -536,7 +599,7 @@ def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
     items = danmaku_data.get("items") or []
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         video = conn.execute("SELECT owner_mid FROM videos WHERE bvid = ?", (bvid,)).fetchone()
         owner_hash = danmaku_user_hash(video["owner_mid"]) if video and video["owner_mid"] else None
         if replace:
@@ -617,7 +680,7 @@ def load_danmaku_data(db_path, bvid=None, limit=None, offset=0):
     offset = max(0, int(offset or 0))
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         conn.commit()
         if bvid:
             video = conn.execute("SELECT * FROM videos WHERE bvid = ?", (bvid,)).fetchone()
@@ -1020,7 +1083,7 @@ def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=Non
     size_before = db_path.stat().st_size if db_path.exists() else 0
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         existing_rows = conn.execute(
             f"""
             SELECT bvid, title, owner_mid, owner_name
@@ -1079,7 +1142,7 @@ def delete_owner_from_sqlite(db_path, owner_mid, vacuum=True, progress_callback=
 
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         rows = conn.execute(
             """
             SELECT bvid
@@ -1104,7 +1167,7 @@ def vacuum_database(db_path):
     checkpoint_database(db_path, truncate=True)
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         conn.commit()
         conn.execute("VACUUM")
     finally:
@@ -1128,16 +1191,6 @@ def wal_path_for(db_path):
 def wal_file_size(db_path):
     path = wal_path_for(db_path)
     return path.stat().st_size if path.exists() else 0
-
-
-def checkpoint_database_if_large(db_path, threshold_bytes=DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES):
-    if wal_file_size(db_path) < threshold_bytes:
-        return {
-            "checkpointed": False,
-            "wal_before": wal_file_size(db_path),
-            "wal_after": wal_file_size(db_path),
-        }
-    return checkpoint_database(db_path, truncate=True)
 
 
 def checkpoint_database(db_path, truncate=False):
@@ -1183,7 +1236,7 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
     set_database_journal_mode(db_path, "DELETE")
     conn = connect(db_path)
     try:
-        ensure_schema(conn, journal_mode=None)
+        ensure_schema_if_needed(conn, journal_mode=None)
         deleted_user_mids = collect_comment_mids(conn, selected_bvids)
         while True:
             batch = fetch_comment_rpid_batch(conn, selected_bvids, DELETE_COMMENT_BATCH_SIZE)
@@ -1290,37 +1343,27 @@ def chunked(items, size):
         yield list(items[index : index + size])
 
 
-def delete_video_rows(conn, bvids):
-    params = list(bvids)
-    marks = placeholders(len(params))
-    deleted_user_rows = conn.execute(f"SELECT DISTINCT mid FROM comments WHERE bvid IN ({marks}) AND mid IS NOT NULL AND mid != ''", params).fetchall()
-    deleted_user_mids = [row["mid"] for row in deleted_user_rows]
-    conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
-    conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
-    conn.execute(f"DELETE FROM comments WHERE bvid IN ({marks})", params)
-    conn.execute(f"DELETE FROM danmaku WHERE bvid IN ({marks})", params)
-    conn.execute(f"DELETE FROM videos WHERE bvid IN ({marks})", params)
-    cleanup_unreferenced_users(conn, deleted_user_mids)
-
-
 def cleanup_unreferenced_users(conn, mids=None):
     selected_mids = sorted({str(mid).strip() for mid in (mids or []) if str(mid).strip()})
     if not selected_mids:
         return
-    marks = placeholders(len(selected_mids))
-    conn.execute(
-        f"""
-        DELETE FROM users
-        WHERE mid IN ({marks})
-          AND NOT EXISTS (
-              SELECT 1
-              FROM comments
-              WHERE comments.mid = users.mid
-              LIMIT 1
-          )
-        """,
-        selected_mids,
-    )
+    # One IN (...) list is limited by SQLite's variable count; a popular video can reference
+    # tens of thousands of users, so delete in batches.
+    for batch in chunked(selected_mids, DELETE_COMMENT_BATCH_SIZE):
+        marks = placeholders(len(batch))
+        conn.execute(
+            f"""
+            DELETE FROM users
+            WHERE mid IN ({marks})
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM comments
+                  WHERE comments.mid = users.mid
+                  LIMIT 1
+              )
+            """,
+            batch,
+        )
 
 
 def count_archive_rows(conn, bvids):

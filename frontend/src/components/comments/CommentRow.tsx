@@ -33,6 +33,8 @@ export function CommentRow({ comment, active, onSelect }: CommentRowProps) {
       tabIndex={0}
       onClick={onSelect}
       onKeyDown={(event) => {
+        // Keys pressed on the avatar link belong to the link, not to the row.
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onSelect();

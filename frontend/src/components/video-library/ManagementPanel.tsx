@@ -1,63 +1,41 @@
-import { Database, Download, FolderOpen, KeyRound, RefreshCcw, Settings, Upload } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Download, FolderOpen, RefreshCcw, Settings, Upload } from "lucide-react";
 import type React from "react";
 import { InfoRow } from "../common";
 import { cn, formatNumber } from "../../lib/utils";
 import { formatBytes } from "../../lib/videoLibrary";
-import type { CookieStatus, DatabaseInfo, ProgressQueue } from "../../types";
-import { AuthPanel } from "./AuthPanel";
-import { ProgressQueuePanel } from "./ProgressQueuePanel";
-import type { ManagementView } from "./types";
-
-const AUTH_TAB_LABEL = "\u767b\u5f55\u6001";
-const AUTH_LABEL_VALID = "\u5df2\u767b\u5f55";
-const AUTH_LABEL_STALE = "\u5f85\u66f4\u65b0";
-const AUTH_LABEL_MISSING = "\u672a\u914d\u7f6e";
+import type { DatabaseInfo } from "../../types";
 
 type ManagementPanelProps = {
   activeDbId: string;
-  cookieStatus?: CookieStatus | null;
   databases: DatabaseInfo[];
   hotplugDir: string;
   importPath: string;
   isImporting: boolean;
   isLoading: boolean;
-  queue?: ProgressQueue;
-  view: ManagementView;
-  onCookieStatusChange?: (status: CookieStatus | null) => void;
   onImportPathChange: (value: string) => void;
   onPickFiles: () => void;
   onPickFolder: () => void;
   onRefresh: () => void;
   onSelect: (dbId: string) => void;
-  onViewChange: (view: ManagementView) => void;
   onSubmitImport: (event: React.FormEvent<HTMLFormElement>) => void;
 };
 
 export function ManagementPanel({
   activeDbId,
-  cookieStatus,
   databases,
   hotplugDir,
   importPath,
   isImporting,
   isLoading,
-  queue,
-  view,
-  onCookieStatusChange,
   onImportPathChange,
   onPickFiles,
   onPickFolder,
   onRefresh,
   onSelect,
-  onViewChange,
   onSubmitImport,
 }: ManagementPanelProps) {
-  const queuedCount = queue?.queued?.length || 0;
-  const hasActiveTask = Boolean(queue?.active);
   const activeDatabase = databases.find((database) => database.id === activeDbId);
   const healthyCount = databases.filter((database) => database.ok).length;
-  const authLabel = cookieStatus?.is_login ? AUTH_LABEL_VALID : cookieStatus?.exists ? AUTH_LABEL_STALE : AUTH_LABEL_MISSING;
   const activeDatabaseName = activeDatabase?.name || (activeDbId === "main" ? "全部视频" : activeDbId);
 
   return (
@@ -69,63 +47,27 @@ export function ManagementPanel({
             管理工具
           </h2>
           <div className="mt-1 text-sm text-muted">
-            队列 {hasActiveTask ? "运行中" : "空闲"} · {queuedCount} 个排队 · 数据库 {healthyCount}/{databases.length} 可用
+            数据库 {healthyCount}/{databases.length} 可用
           </div>
         </div>
-        <div className="inline-flex rounded-md border border-line bg-[#f6f9fc]/90 p-1 shadow-inner">
-          <ManagementTab
-            active={view === "queue"}
-            icon={RefreshCcw}
-            label="抓取队列"
-            meta={hasActiveTask || queuedCount ? `${queuedCount} 排队` : "空闲"}
-            onClick={() => onViewChange("queue")}
-          />
-          <ManagementTab active={view === "database"} icon={Database} label="数据库" meta={`${databases.length} 个`} onClick={() => onViewChange("database")} />
-          <ManagementTab active={view === "auth"} icon={KeyRound} label={AUTH_TAB_LABEL} meta={authLabel} onClick={() => onViewChange("auth")} />
-        </div>
       </div>
-      {view === "queue" ? (
-        <ProgressQueuePanel queue={queue} embedded />
-      ) : view === "auth" ? (
-        <div className="p-4">
-          <AuthPanel cookieStatus={cookieStatus} onStatusChange={onCookieStatusChange || (() => undefined)} />
-        </div>
-      ) : (
-        <DatabaseManagerPanel
-          activeDatabaseName={activeDatabaseName}
-          activeDbId={activeDbId}
-          databases={databases}
-          healthyCount={healthyCount}
-          hotplugDir={hotplugDir}
-          importPath={importPath}
-          isImporting={isImporting}
-          isLoading={isLoading}
-          onImportPathChange={onImportPathChange}
-          onPickFiles={onPickFiles}
-          onPickFolder={onPickFolder}
-          onRefresh={onRefresh}
-          onSelect={onSelect}
-          onSubmitImport={onSubmitImport}
-        />
-      )}
+      <DatabaseManagerPanel
+        activeDatabaseName={activeDatabaseName}
+        activeDbId={activeDbId}
+        databases={databases}
+        healthyCount={healthyCount}
+        hotplugDir={hotplugDir}
+        importPath={importPath}
+        isImporting={isImporting}
+        isLoading={isLoading}
+        onImportPathChange={onImportPathChange}
+        onPickFiles={onPickFiles}
+        onPickFolder={onPickFolder}
+        onRefresh={onRefresh}
+        onSelect={onSelect}
+        onSubmitImport={onSubmitImport}
+      />
     </section>
-  );
-}
-
-function ManagementTab({ active, icon: Icon, label, meta, onClick }: { active: boolean; icon: LucideIcon; label: string; meta: string; onClick: () => void }) {
-  return (
-    <button
-      className={cn(
-        "inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition",
-        active ? "bg-white text-ink shadow-sm ring-1 ring-line" : "text-muted hover:bg-white hover:text-ink",
-      )}
-      type="button"
-      onClick={onClick}
-    >
-      <Icon className={cn(label === "抓取队列" && active && "text-bilibili")} size={16} aria-hidden="true" />
-      <span>{label}</span>
-      <span className={cn("hidden text-xs sm:inline", active ? "text-white/75" : "text-muted")}>{meta}</span>
-    </button>
   );
 }
 

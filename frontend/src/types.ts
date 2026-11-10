@@ -184,6 +184,8 @@ export type DanmakuData = {
     scraped_count: number;
     logs?: string[];
     warning?: string;
+    stopped?: boolean;
+    reason?: string;
   };
 };
 
@@ -235,8 +237,6 @@ export type OwnerGroup = {
 };
 
 export type ExportFormat = "sqlite" | "json";
-
-export type ExportTarget = { kind: "owner"; owner: OwnerGroup } | { kind: "video"; video: VideoSummary };
 
 export type DeleteTarget =
   | { kind: "owner"; owner: OwnerGroup }

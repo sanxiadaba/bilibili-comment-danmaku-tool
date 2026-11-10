@@ -15,7 +15,6 @@ from helpers import BVID, make_archive, make_comment
 
 from archive_delete_tasks import ArchiveDeleteTaskService  # noqa: E402
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     export_database_path,
     import_database_file,

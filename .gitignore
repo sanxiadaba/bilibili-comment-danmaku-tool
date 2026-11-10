@@ -1,23 +1,20 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 
 # Frontend build output
 dist/
 release/
 *.tsbuildinfo
-vite.config.js
-vite.config.d.ts
 
 # Python caches
 __pycache__/
 *.py[cod]
+.venv/
+.pytest_cache/
 
 # Local data and credentials
 data/
 cookie.txt
-comment_danmaku*.db
-comment-danmaku*.db
-comment_danmaku*.db
 *.db
 *.db-journal
 *.db-shm
@@ -26,6 +23,7 @@ comment_danmaku*.db
 *.sqlite3
 .env
 .env.*
+!.env.example
 
 # Logs
 logs/
@@ -37,3 +35,4 @@ server.err
 Thumbs.db
 .vscode/
 .idea/
+*.orig
