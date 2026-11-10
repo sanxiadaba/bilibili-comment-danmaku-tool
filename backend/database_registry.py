@@ -89,6 +89,126 @@ def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
     return None
 
 
+VIDEO_SOURCE_STAT_SQL = """
+SELECT videos.bvid,
+       (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
+       (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
+FROM videos
+WHERE videos.bvid IN (SELECT bvid FROM source_bvids)
+"""
+
+OWNER_VIDEO_SOURCE_STAT_SQL = """
+SELECT videos.bvid,
+       (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
+       (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
+FROM videos
+WHERE videos.owner_mid = ?
+"""
+
+
+def _open_readonly(db_path):
+    path = Path(db_path).resolve()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return connect_readonly(path)
+    except Exception:
+        return None
+
+
+def database_video_stats(db_path, bvids=(), owner_mid=""):
+    """Read per-video comment/danmaku counts from one database without mutating it.
+
+    Returns a list of dicts with ``bvid``/``comment_count``/``danmaku_count``, or an empty list
+    when the file is missing, corrupt, or belongs to an older schema.
+    """
+    bvids = [str(value).strip() for value in (bvids or []) if str(value).strip()]
+    conn = _open_readonly(db_path)
+    if conn is None:
+        return []
+    try:
+        if owner_mid:
+            rows = conn.execute(OWNER_VIDEO_SOURCE_STAT_SQL, (str(owner_mid),)).fetchall()
+        else:
+            if not bvids:
+                return []
+            conn.execute("DROP TABLE IF EXISTS source_bvids")
+            conn.execute("CREATE TEMP TABLE source_bvids (bvid TEXT PRIMARY KEY)")
+            conn.executemany("INSERT OR IGNORE INTO source_bvids (bvid) VALUES (?)", [(bvid,) for bvid in bvids])
+            rows = conn.execute(VIDEO_SOURCE_STAT_SQL).fetchall()
+        return [
+            {
+                "bvid": row["bvid"],
+                "comment_count": int(row["comment_count"] or 0),
+                "danmaku_count": int(row["danmaku_count"] or 0),
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def video_database_sources(bvids, database_dir=DEFAULT_DATABASE_DIR, fallback_db_path=None):
+    """Resolve requested BVIDs to the per-video databases that hold them.
+
+    Returns ``(sources, missing)`` where ``sources`` is ``[(db_path, [bvid, ...]), ...]``.
+    ``fallback_db_path`` covers archives that still live in the legacy single-file database.
+    """
+    grouped = {}
+    missing = []
+    legacy_only = []
+    for raw in bvids or []:
+        bvid = str(raw).strip()
+        if not bvid:
+            continue
+        path = find_video_database_path(bvid, database_dir)
+        if path is None:
+            legacy_only.append(bvid)
+            continue
+        bucket = grouped.setdefault(path, [])
+        if bvid not in bucket:
+            bucket.append(bvid)
+
+    if legacy_only:
+        found = {row["bvid"] for row in database_video_stats(fallback_db_path, bvids=legacy_only)} if fallback_db_path else set()
+        for bvid in legacy_only:
+            if bvid in found:
+                legacy_path = Path(fallback_db_path).resolve()
+                bucket = grouped.setdefault(legacy_path, [])
+                if bvid not in bucket:
+                    bucket.append(bvid)
+            elif bvid not in missing:
+                missing.append(bvid)
+    return list(grouped.items()), missing
+
+
+def owner_video_database_sources(owner_mid, database_dir=DEFAULT_DATABASE_DIR, fallback_db_path=None):
+    """Resolve one UP's videos across every catalog database, newest copy winning ties."""
+    owner_mid = str(owner_mid or "").strip()
+    if not owner_mid:
+        return []
+    candidates = [Path(path).resolve() for path, _db_id in iter_catalog_database_paths(database_dir=database_dir)]
+    if fallback_db_path:
+        fallback = Path(fallback_db_path).resolve()
+        if fallback.exists() and fallback not in candidates:
+            candidates.append(fallback)
+
+    best = {}
+    for candidate in candidates:
+        for row in database_video_stats(candidate, owner_mid=owner_mid):
+            rank = (row["comment_count"], row["danmaku_count"])
+            current = best.get(row["bvid"])
+            if current is None or rank > current[0]:
+                best[row["bvid"]] = (rank, candidate)
+
+    grouped = {}
+    for bvid in sorted(best):
+        grouped.setdefault(best[bvid][1], []).append(bvid)
+    return list(grouped.items())
+
+
 def database_id_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
     path = Path(path).resolve()
     main_db_path = Path(main_db_path).resolve()

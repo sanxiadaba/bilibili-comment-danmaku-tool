@@ -98,7 +98,10 @@ CONTROL_ACTIONS = {
     "archive.export": {
         "method": "POST",
         "endpoint": f"{CONTROL_NAMESPACE}/archive/export",
-        "description": "Export selected videos or one UP owner archive. format=json only writes JSON; format=sqlite only writes SQLite.",
+        "description": (
+            "Export selected videos or one UP owner archive. format=json only writes JSON; format=sqlite only writes SQLite. "
+            "db_id=main (or omitted) resolves each video to its own per-video database and merges the result."
+        ),
         "async": False,
         "schema": {
             "type": "object",
@@ -118,7 +121,11 @@ CONTROL_ACTIONS = {
     "archive.delete": {
         "method": "POST",
         "endpoint": f"{CONTROL_NAMESPACE}/archive/delete",
-        "description": "Delete selected videos or all videos from one UP owner from a local archive database, including comments, danmaku, pictures and emotes.",
+        "description": (
+            "Delete selected videos or all videos from one UP owner from a local archive database, including comments, "
+            "danmaku, pictures and emotes. Requires a concrete db_id: the aggregate main view has no database file of "
+            "its own and is rejected with 400."
+        ),
         "async": False,
         "schema": {
             "type": "object",
@@ -130,7 +137,7 @@ CONTROL_ACTIONS = {
             },
             "oneOf": [{"required": ["bvid"]}, {"required": ["bvids"]}, {"required": ["owner_mid"]}],
         },
-        "example": {"bvid": "BV1xx411c7mD", "db_id": "main"},
+        "example": {"bvid": "BV1xx411c7mD", "db_id": "db:Owner_42/BV1xx411c7mD.db"},
     },
     "databases.import": {
         "method": "POST",

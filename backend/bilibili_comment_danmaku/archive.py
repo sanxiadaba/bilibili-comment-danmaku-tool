@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from .archive_manifest import build_archive_manifest, read_archive_meta, write_archive_meta
+from .archive_manifest import (
+    build_archive_manifest,
+    fetch_manifest_video_rows,
+    manifest_from_video_rows,
+    read_archive_meta,
+    write_archive_meta,
+)
 from .archive_sqlite import copy_table_query, remove_sqlite_file_with_sidecars
 from .storage import (
     connect,
@@ -105,6 +111,215 @@ def export_archive_to_sqlite(
     finally:
         source.close()
         target.close()
+
+
+MERGED_EXPORT_TABLES = (
+    ("videos", "videos", "bvid IN (SELECT bvid FROM export_bvids)"),
+    (
+        "users",
+        "users",
+        """
+        mid IN (
+            SELECT DISTINCT mid
+            FROM comments
+            WHERE bvid IN (SELECT bvid FROM export_bvids)
+              AND mid IS NOT NULL
+              AND mid <> ''
+        )
+        """,
+    ),
+    ("comments", "comments", "bvid IN (SELECT bvid FROM export_bvids)"),
+    (
+        "comment_pictures",
+        "comment_pictures",
+        "rpid IN (SELECT rpid FROM comments WHERE bvid IN (SELECT bvid FROM export_bvids))",
+    ),
+    (
+        "comment_emotes",
+        "comment_emotes",
+        "rpid IN (SELECT rpid FROM comments WHERE bvid IN (SELECT bvid FROM export_bvids))",
+    ),
+    ("danmaku", "danmaku", "bvid IN (SELECT bvid FROM export_bvids)"),
+)
+
+
+def export_archive_from_databases(
+    sources,
+    target_path,
+    *,
+    archive_kind=None,
+    label="",
+    owner_mid="",
+    owner_name="",
+    export_format="sqlite",
+):
+    """Export videos that live in separate per-video databases into one archive.
+
+    ``sources`` is an iterable of ``(db_path, bvids)`` pairs. Each source contributes only the
+    listed videos, so the aggregate "main" view can export an owner or a selection without
+    touching the legacy single-file database.
+    """
+    normalized = []
+    for source_path, source_bvids in sources or []:
+        bvids = [str(value).strip() for value in (source_bvids or []) if str(value).strip()]
+        if not bvids or not source_path:
+            continue
+        normalized.append((Path(source_path).resolve(), bvids))
+    if not normalized:
+        raise LookupError("没有可导出的本地视频档案")
+
+    fmt = str(export_format or "sqlite").strip().lower()
+    if fmt not in {"sqlite", "json"}:
+        raise ValueError("导出格式只支持 sqlite 或 json")
+    options = {
+        "archive_kind": archive_kind,
+        "label": label,
+        "owner_mid": owner_mid,
+        "owner_name": owner_name,
+    }
+    if fmt == "json":
+        return _export_databases_to_json(normalized, target_path, **options)
+    return _export_databases_to_sqlite(normalized, target_path, **options)
+
+
+def _stage_source_bvids(source, bvids):
+    source.execute("DROP TABLE IF EXISTS export_bvids")
+    source.execute("CREATE TEMP TABLE export_bvids (bvid TEXT PRIMARY KEY)")
+    source.executemany("INSERT OR IGNORE INTO export_bvids (bvid) VALUES (?)", [(bvid,) for bvid in bvids])
+
+
+def _merged_source_counts(source):
+    counts = {}
+    for key, table, where_sql in MERGED_EXPORT_TABLES:
+        counts[key] = source.execute(f"SELECT COUNT(*) FROM {table} WHERE {where_sql}").fetchone()[0]
+    return counts
+
+
+def _export_databases_to_sqlite(normalized, target_path, *, archive_kind=None, label="", owner_mid="", owner_name=""):
+    target_path = Path(target_path).resolve()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    remove_sqlite_file_with_sidecars(target_path)
+
+    counts = {key: 0 for key, _table, _where in MERGED_EXPORT_TABLES}
+    video_rows = []
+    selected_bvids = []
+    source_paths = []
+    target = connect(target_path)
+    try:
+        ensure_schema(target)
+        for source_path, source_bvids in normalized:
+            if source_path == target_path:
+                raise ValueError("导出目标不能覆盖源数据库")
+            if source_path in source_paths:
+                continue
+            source_paths.append(source_path)
+            source = connect(source_path)
+            try:
+                ensure_schema(source)
+                source.commit()
+                _stage_source_bvids(source, source_bvids)
+                for key, table, where_sql in MERGED_EXPORT_TABLES:
+                    counts[key] += copy_table_query(source, target, table, where_sql)
+                video_rows.extend(fetch_manifest_video_rows(source))
+                for bvid in source_bvids:
+                    if bvid not in selected_bvids:
+                        selected_bvids.append(bvid)
+            finally:
+                source.close()
+
+        manifest = manifest_from_video_rows(
+            video_rows,
+            selected_bvids,
+            counts,
+            archive_kind=archive_kind,
+            label=label,
+            owner_mid=owner_mid,
+            owner_name=owner_name,
+            source_path=";".join(str(path) for path in source_paths),
+            target_path=target_path,
+        )
+        write_archive_meta(target, manifest)
+        target.commit()
+        target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        target.execute("PRAGMA journal_mode = DELETE")
+        target.commit()
+        return {
+            "path": str(target_path),
+            "json_path": "",
+            "bvids": selected_bvids,
+            "counts": counts,
+            "manifest": manifest,
+            "size_bytes": target_path.stat().st_size if target_path.exists() else 0,
+        }
+    finally:
+        target.close()
+
+
+def _export_databases_to_json(normalized, target_path, *, archive_kind=None, label="", owner_mid="", owner_name=""):
+    target_path = Path(target_path).resolve()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    counts = {key: 0 for key, _table, _where in MERGED_EXPORT_TABLES}
+    video_rows = []
+    selected_bvids = []
+    source_paths = []
+    videos = []
+    for source_path, source_bvids in normalized:
+        if source_path not in source_paths:
+            source_paths.append(source_path)
+            source = connect(source_path)
+            try:
+                ensure_schema(source)
+                source.commit()
+                _stage_source_bvids(source, source_bvids)
+                for key, values in _merged_source_counts(source).items():
+                    counts[key] += values
+                video_rows.extend(fetch_manifest_video_rows(source))
+            finally:
+                source.close()
+        for bvid in source_bvids:
+            if bvid in selected_bvids:
+                continue
+            selected_bvids.append(bvid)
+            comments = load_comment_data(source_path, bvid=bvid)
+            danmaku = load_danmaku_data(source_path, bvid=bvid, limit=None)
+            videos.append(
+                {
+                    "bvid": bvid,
+                    "metadata": comments.get("metadata") or {},
+                    "video_raw": comments.get("video_raw") or {},
+                    "comments": comments.get("comments") or [],
+                    "comment_items": comments.get("comment_items") or [],
+                    "danmaku": danmaku,
+                }
+            )
+
+    manifest = manifest_from_video_rows(
+        video_rows,
+        selected_bvids,
+        counts,
+        archive_kind=archive_kind,
+        label=label,
+        owner_mid=owner_mid,
+        owner_name=owner_name,
+        source_path=";".join(str(path) for path in source_paths),
+        target_path=target_path,
+    )
+    payload = {
+        "format": "bilibili-comment-danmaku-json-data",
+        "schema_version": 2,
+        "manifest": manifest,
+        "videos": videos,
+    }
+    target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "path": str(target_path),
+        "json_path": str(target_path),
+        "bvids": selected_bvids,
+        "counts": counts,
+        "manifest": manifest,
+        "size_bytes": target_path.stat().st_size if target_path.exists() else 0,
+    }
 
 
 def export_archive_to_json(

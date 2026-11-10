@@ -1,6 +1,7 @@
 from .danmaku import scrape_danmaku
 from .scraper import DEFAULT_BVID, inspect_cookie_status, scrape_comments, scrape_comments_to_sqlite
 from .archive import (
+    export_archive_from_databases,
     export_archive_to_sqlite,
     export_archive_to_json,
     import_archive_json_to_sqlite,
@@ -23,6 +24,7 @@ from .url_utils import extract_bvid
 __all__ = [
     "DEFAULT_BVID",
     "extract_bvid",
+    "export_archive_from_databases",
     "export_archive_to_sqlite",
     "export_archive_to_json",
     "import_archive_json_to_sqlite",
