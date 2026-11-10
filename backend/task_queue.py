@@ -5,6 +5,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app_logging import log_event
+
 
 DEFAULT_HISTORY_LIMIT = 10
 RUNTIME_TASK_FIELDS = {
@@ -45,6 +47,7 @@ class InMemoryTaskQueue:
         self.history = []
         self.worker_running = False
         self.next_id = 0
+        self._persist_failure_logged = False
         self.load_state()
 
     def enqueue(self, fields):
@@ -306,15 +309,20 @@ class InMemoryTaskQueue:
         if payload.get("kind") and payload.get("kind") != self.kind:
             return
 
-        self.next_id = int(payload.get("next_id") or 0)
+        try:
+            self.next_id = int(payload.get("next_id") or 0)
+        except (TypeError, ValueError):
+            self.next_id = 0
+        history = payload.get("history")
+        queued = payload.get("queued")
         self.history = [
             task
-            for task in payload.get("history", [])
+            for task in (history if isinstance(history, list) else [])
             if isinstance(task, dict) and task.get("status") in {"finished", "failed", "stopped"}
         ][: self.history_limit]
 
         recovered = []
-        for task in payload.get("queued", []):
+        for task in queued if isinstance(queued, list) else []:
             if isinstance(task, dict):
                 recovered.append(self.recover_pending_task(task))
         active = payload.get("active")
@@ -336,14 +344,17 @@ class InMemoryTaskQueue:
     def recover_pending_task(self, task):
         now = utc_now()
         recovered = dict(task)
+        # A task the user paused must stay paused across restarts; only running/queued work resumes.
+        paused = str(task.get("status") or "") == "paused" or bool(task.get("pause_requested"))
         recovered.update(
             {
                 "kind": recovered.get("kind", self.kind),
-                "status": "queued",
-                "message": "service restarted; queued to resume",
+                "status": "paused" if paused else "queued",
+                "message": "service restarted; still paused" if paused else "service restarted; queued to resume",
                 "updated_at": now,
                 "started_at": "",
                 "finished_at": "",
+                "pause_requested": paused,
             }
         )
         return recovered
@@ -365,10 +376,22 @@ class InMemoryTaskQueue:
             temp_path = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
             temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             temp_path.replace(self.state_path)
-        except OSError:
+        except OSError as exc:
             if temp_path:
                 try:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
-            pass
+            self._log_persist_failure(exc)
+
+    def _log_persist_failure(self, exc):
+        if self._persist_failure_logged:
+            return
+        self._persist_failure_logged = True
+        log_event(
+            "task_queue.persist_error",
+            f"task queue state could not be written: {exc}",
+            level="warning",
+            kind=self.kind,
+            state_path=str(self.state_path),
+        )

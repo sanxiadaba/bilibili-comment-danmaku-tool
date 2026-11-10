@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from bilibili_comment_danmaku import (
     scrape_danmaku,
     vacuum_database,
 )
+from bilibili_comment_danmaku import scraper
 from database_registry import (
     DATABASE_EXTENSIONS,
     DEFAULT_DATABASE_DIR,
@@ -77,6 +79,8 @@ DEFAULT_COMMENT_PAGE_SIZE = 500
 DEFAULT_DANMAKU_PAGE_SIZE = 2000
 LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
+# A refresh that returns less than half of what is already stored is treated as a partial scrape.
+COMMENT_REFRESH_MIN_RATIO = 0.5
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
@@ -262,6 +266,28 @@ def task_retry_defaults(database_dir):
     return {"database_dir": str(database_dir)}
 
 
+def should_skip_comment_refresh(scraped_count, before_count, min_ratio=COMMENT_REFRESH_MIN_RATIO):
+    """A refresh must not overwrite a healthy archive with a tiny or empty scrape.
+
+    Without this guard a blocked, rate-limited, or anonymous partial page marks every stored
+    comment as deleted (the danmaku path already had the equivalent protection).
+    """
+    try:
+        scraped = int(scraped_count or 0)
+        before = int(before_count or 0)
+    except (TypeError, ValueError):
+        return False
+    if before <= 0:
+        return False
+    if scraped <= 0:
+        return True
+    return scraped < before * float(min_ratio)
+
+
+def truthy_flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def is_local_origin(origin):
     if not origin:
         return True
@@ -325,6 +351,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.start_request_log("GET")
         parsed = urlparse(self.path)
         try:
+            if not self.check_request_host(parsed):
+                return
             if parsed.path.startswith("/api/v1/control"):
                 self.handle_control_get_api(parsed)
                 return
@@ -356,9 +384,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 self.send_json({"error": f"未知 API：{parsed.path}"}, status=404)
                 return
             self.handle_static(parsed.path)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
-            raise
+            self.send_unhandled_error(exc)
         finally:
             self.finish_request_log(parsed.path)
 
@@ -416,7 +446,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             if parsed.path == "/api/archive/delete":
                 self.handle_archive_delete_api()
                 return
-            self.send_error(404)
+            self.send_json({"error": f"未知 API：{parsed.path}"}, status=404)
         except BadRequestError as exc:
             log_event(
                 "http.request.bad_request",
@@ -437,20 +467,41 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 level="warning",
             )
             self.send_json({"error": str(exc)}, status=413)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         except Exception as exc:
             self.log_unhandled_exception(exc, parsed.path)
-            raise
+            self.send_unhandled_error(exc)
         finally:
             self.finish_request_log(parsed.path)
 
+    def send_unhandled_error(self, exc):
+        try:
+            self.send_json({"error": f"服务器内部错误：{exc}"}, status=500)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    def check_request_host(self, parsed):
+        host = self.headers.get("Host", "")
+        if is_local_host(host):
+            return True
+        log_event(
+            "http.request.rejected_host",
+            "rejected request with a non-local Host header",
+            request_id=getattr(self, "request_id", ""),
+            path=parsed.path,
+            host=host,
+            level="warning",
+        )
+        self.send_json({"error": "只接受本机 Host 的请求"}, status=403)
+        return False
+
 
     def check_mutating_request(self, parsed):
-        host = self.headers.get("Host", "")
         origin = self.headers.get("Origin", "")
         has_origin = bool(origin)
         has_browser_guard = self.headers.get(LOCAL_BROWSER_REQUEST_HEADER) == "1"
-        if not is_local_host(host):
-            self.send_json({"error": "只接受本机 Host 的状态变更请求"}, status=403)
+        if not self.check_request_host(parsed):
             return False
         if has_origin and (not is_local_origin(origin) or not has_browser_guard):
             log_event(
@@ -486,6 +537,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             limit = first_query_int(query, "limit", 40)
             offset = first_query_int(query, "offset", 0)
             include_meta = query.get("include_meta", ["1"])[0] not in {"0", "false", "False"}
+            search = query.get("q", [""])[0] or ""
+            owner_key = query.get("owner", [""])[0] or ""
             if db_id == "main":
                 page = list_all_video_summaries_page(
                     self.db_path,
@@ -493,9 +546,18 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     limit=limit,
                     offset=offset,
                     include_owners=include_meta,
+                    query=search,
+                    owner_key=owner_key,
                 )
             else:
-                page = list_video_summaries_page(db_path, limit=limit, offset=offset, include_owners=include_meta)
+                page = list_video_summaries_page(
+                    db_path,
+                    limit=limit,
+                    offset=offset,
+                    include_owners=include_meta,
+                    query=search,
+                    owner_key=owner_key,
+                )
             log_event(
                 "api.videos.list",
                 "listed local videos",
@@ -1348,6 +1410,33 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 logger=log,
             )
             scraped_count = output_data["metadata"]["comment_total_count"]
+            force_refresh = truthy_flag(query.get("force", [None])[0])
+            if should_skip_comment_refresh(scraped_count, before_count) and not force_refresh:
+                # Never let a blocked or partial scrape rewrite the archive into "everything deleted".
+                payload = current
+                payload["refresh"] = {
+                    "before_count": before_count,
+                    "scraped_count": scraped_count,
+                    "after_count": before_count,
+                    "active_count": payload["metadata"].get("active_comment_count"),
+                    "deleted_count": payload["metadata"].get("deleted_comment_count"),
+                    "added_count": 0,
+                    "skipped": True,
+                    "reason": "远端只返回了少量评论，已保留本地档案；确认要覆盖请带 force=1 重试",
+                    "logs": logs[-12:],
+                }
+                finish_progress("comments", current["metadata"]["bvid"], "评论刷新已跳过：远端返回数量异常")
+                log_event(
+                    "task.comments_refresh.skipped",
+                    "skipped comment refresh because the remote result was far smaller",
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=current["metadata"]["bvid"],
+                    before_count=before_count,
+                    scraped_count=scraped_count,
+                    level="warning",
+                )
+                self.send_json(payload)
+                return
             update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
             save_comments_to_sqlite(output_data, db_path, replace=True)
             payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
@@ -1436,6 +1525,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             danmaku_result = scrape_danmaku(
                 current["metadata"]["bvid"],
                 current["video_raw"],
+                headers=scraper.make_headers(current["metadata"]["bvid"], auth_cookie_store.load()),
                 logger=log,
             )
             scraped_count = len(danmaku_result.get("items") or [])
@@ -1505,10 +1595,36 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
 
 
+def write_port_hint(path, host, port):
+    """Publish the actual port so the dev proxy can follow the auto-increment."""
+    try:
+        target = Path(path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"host": str(host), "port": int(port)}), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def validate_bind_host(host, allow_remote=False):
+    """Refuse to expose this unauthenticated local tool on anything but the loopback."""
+    normalized = str(host or "").strip().lower()
+    if not normalized:
+        return "127.0.0.1"
+    if normalized in LOCAL_HOSTNAMES:
+        return normalized
+    if allow_remote:
+        return normalized
+    raise SystemExit(
+        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具。确需局域网访问请显式加 --allow-remote。"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--allow-remote", action="store_true", help="允许绑定非本机地址（无鉴权，慎用）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--port-file", default=str(ROOT / "data" / ".server-port"))
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
@@ -1518,6 +1634,7 @@ def main():
     parser.add_argument("--log-queue-size", type=int, default=10000)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
+    validate_bind_host(args.host, allow_remote=args.allow_remote)
     configure_logging(
         args.log_dir,
         max_bytes=args.log_max_bytes,
@@ -1543,6 +1660,7 @@ def main():
     video_parse_service.start_pending_tasks()
     archive_delete_service.start_pending_tasks()
     server, actual_port = create_threading_server(args.host, args.port, handler)
+    write_port_hint(args.port_file, args.host, actual_port)
     url = f"http://{args.host}:{actual_port}/"
     log_event(
         "service.start",

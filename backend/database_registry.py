@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bilibili_comment_danmaku.archive import import_archive_json_to_sqlite, read_archive_meta
-from bilibili_comment_danmaku.storage import connect, connect_readonly, ensure_schema, list_video_summaries_page
+from bilibili_comment_danmaku.storage import (
+    connect,
+    connect_readonly,
+    ensure_schema,
+    ensure_schema_if_needed,
+    list_video_summaries_page,
+)
 from errors import BadRequestError
 
 
@@ -15,7 +21,6 @@ DEFAULT_DATABASE_DIR = ROOT / "data" / "databases"
 DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
-AGGREGATE_VIDEO_LIST_LIMIT = 100000
 
 
 def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
@@ -229,7 +234,37 @@ def iter_catalog_database_paths(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DA
             yield path.resolve(), f"db:{path.relative_to(database_dir).as_posix()}"
 
 
-def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, limit=40, offset=0, include_owners=True):
+def video_owner_key(video):
+    """Mirror of storage.VIDEO_OWNER_KEY_SQL for videos that came from several databases."""
+    owner_mid = str(video.get("owner_mid") or "").strip()
+    if owner_mid:
+        return f"mid:{owner_mid}"
+    return f"name:{str(video.get('owner_name') or '').strip() or 'Unknown'}"
+
+
+def video_matches_filters(video, query="", owner_key=""):
+    needle = str(query or "").strip().lower()
+    if needle:
+        haystack = " ".join(
+            [str(video.get("title") or ""), str(video.get("bvid") or ""), str(video.get("owner_name") or "")]
+        ).lower()
+        if needle not in haystack:
+            return False
+    owner_key = str(owner_key or "").strip()
+    if owner_key and video_owner_key(video) != owner_key:
+        return False
+    return True
+
+
+def list_all_video_summaries_page(
+    main_db_path=DEFAULT_DB,
+    database_dir=DEFAULT_DATABASE_DIR,
+    limit=40,
+    offset=0,
+    include_owners=True,
+    query="",
+    owner_key="",
+):
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
     by_bvid = {}
@@ -237,9 +272,11 @@ def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_
         if not Path(db_path).exists():
             continue
         try:
+            # limit=None reads every video in the database; the per-request page size is applied
+            # after merging, otherwise large databases silently lose everything past row 200.
             page = list_video_summaries_page(
                 db_path,
-                limit=AGGREGATE_VIDEO_LIST_LIMIT,
+                limit=None,
                 offset=0,
                 include_owners=False,
             )
@@ -252,6 +289,8 @@ def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_
                 by_bvid[item["bvid"]] = item
 
     videos = sorted(by_bvid.values(), key=video_summary_sort_key, reverse=True)
+    if query or owner_key:
+        videos = [video for video in videos if video_matches_filters(video, query, owner_key)]
     total = len(videos)
     selected = videos[offset : offset + limit]
     payload = {
@@ -384,7 +423,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
         conn = connect(path) if include_details else connect_readonly(path)
         try:
             if include_details:
-                ensure_schema(conn)
+                ensure_schema_if_needed(conn)
                 conn.commit()
             archive_meta = read_archive_meta(conn)
             storage = database_storage_info(conn, path)
@@ -700,9 +739,24 @@ def normalize_database_filename(name, allowed_extensions=DATABASE_EXTENSIONS):
     return f"{stem[:100]}{suffix}"
 
 
+WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
 def normalize_path_component(name):
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(name or "")).strip("._-")
-    return (stem or "archive")[:100]
+    stem = (stem or "archive")[:100]
+    # Windows refuses CON/NUL/COM1… as file or directory names, so an owner named "aux"
+    # would otherwise break archiving with a confusing OSError.
+    if stem.split(".")[0].lower() in WINDOWS_RESERVED_NAMES:
+        stem = f"_{stem}"
+    return stem
 
 
 def parse_multipart_files(raw, content_type):

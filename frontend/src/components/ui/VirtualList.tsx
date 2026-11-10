@@ -27,6 +27,7 @@ export function VirtualList<T>({
   renderItem,
 }: VirtualListProps<T>) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [sizes, setSizes] = useState<Record<string, number>>({});
@@ -46,7 +47,14 @@ export function VirtualList<T>({
     const observer = new ResizeObserver(updateViewport);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [items.length]);
+
+  useLayoutEffect(
+    () => () => {
+      if (scrollFrameRef.current) window.cancelAnimationFrame(scrollFrameRef.current);
+    },
+    [],
+  );
 
   const metrics = useMemo(() => {
     const offsets: number[] = [];
@@ -108,11 +116,20 @@ export function VirtualList<T>({
   }, []);
 
   const handleScroll = useCallback(() => {
-    setScrollTop(containerRef.current?.scrollTop || 0);
+    if (scrollFrameRef.current) return;
+    // Coalesce scroll events into one frame: the range maths is O(log n) per frame, not per event.
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      setScrollTop(containerRef.current?.scrollTop || 0);
+    });
   }, []);
 
   if (!items.length) {
-    return <div className={className}>{empty}</div>;
+    return (
+      <div className={className} ref={containerRef}>
+        {empty}
+      </div>
+    );
   }
 
   return (

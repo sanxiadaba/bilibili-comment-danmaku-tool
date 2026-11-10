@@ -9,7 +9,7 @@ from bilibili_comment_danmaku import (
     scrape_comments,
     scrape_danmaku,
 )
-from bilibili_comment_danmaku.scraper import inspect_cookie_status
+from bilibili_comment_danmaku.scraper import inspect_cookie_status, load_cookie_file, make_headers
 from database_registry import video_database_path_from_archive
 from progress_state import fail_progress, finish_progress, make_progress_logger, parse_float, start_progress, update_progress
 from space_archive import api_error_response
@@ -189,6 +189,7 @@ class VideoParseTaskService:
             danmaku_result = scrape_danmaku(
                 bvid,
                 output_data["video_raw"],
+                headers=make_headers(bvid, load_cookie_file(self.cookie_file)),
                 logger=danmaku_log,
             )
             if len(danmaku_result.get("items") or []) > 0:

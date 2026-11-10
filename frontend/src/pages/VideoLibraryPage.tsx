@@ -90,6 +90,15 @@ export function VideoLibraryPage() {
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const videosRequestRef = useRef(0);
   const videosAbortRef = useRef<AbortController | null>(null);
+  const databasesRequestRef = useRef(0);
+  const databasesAbortRef = useRef<AbortController | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
+  const filtersRef = useRef({ query: "", ownerKey: "all" });
+  const activeDbIdRef = useRef(activeDbId);
+
+  useEffect(() => {
+    activeDbIdRef.current = activeDbId;
+  }, [activeDbId]);
   const parseProgress = useProgressPolling(isParsing, "parse");
   const spaceProgress = useProgressPolling(true);
   const [parseDelay, setParseDelay] = useState(() => {
@@ -109,11 +118,20 @@ export function VideoLibraryPage() {
   const loadDatabases = useCallback(
     async (options?: { includeDetails?: boolean; quiet?: boolean; selectId?: string }) => {
       const selectedId = options?.selectId || activeDbId;
+      databasesAbortRef.current?.abort();
+      const controller = new AbortController();
+      databasesAbortRef.current = controller;
+      const requestId = databasesRequestRef.current + 1;
+      databasesRequestRef.current = requestId;
       if (!options?.quiet) {
         setIsLoadingDatabases(true);
       }
       try {
-        const payload = await fetchDatabases(selectedId, { includeDetails: options?.includeDetails ?? false });
+        const payload = await fetchDatabases(selectedId, {
+          includeDetails: options?.includeDetails ?? false,
+          signal: controller.signal,
+        });
+        if (databasesRequestRef.current !== requestId) return;
         setDatabases(payload.databases);
         setHotplugDir(payload.hotplug_dir);
         if (selectedId !== "main" && !payload.databases.some((database) => database.id === selectedId)) {
@@ -123,9 +141,13 @@ export function VideoLibraryPage() {
           setMessage("所选数据库已不存在，已切回全部视频");
         }
       } catch (reason: unknown) {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        if (databasesRequestRef.current !== requestId) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       } finally {
-        setIsLoadingDatabases(false);
+        if (databasesRequestRef.current === requestId) {
+          setIsLoadingDatabases(false);
+        }
       }
     },
     [activeDbId],
@@ -147,6 +169,8 @@ export function VideoLibraryPage() {
         includeMeta: options?.includeMeta ?? !options?.append,
         limit: VIDEO_PAGE_SIZE,
         offset,
+        query: filtersRef.current.query,
+        ownerKey: filtersRef.current.ownerKey,
         signal: controller.signal,
       });
       if (videosRequestRef.current !== requestId) return;
@@ -185,6 +209,26 @@ export function VideoLibraryPage() {
   }, [activeDbId, loadVideos]);
 
   useEffect(() => {
+    filtersRef.current = { query, ownerKey: ownerFilter };
+  }, [ownerFilter, query]);
+
+  useEffect(() => {
+    // Search and owner filters are applied server-side over the whole library, not just the
+    // rows already loaded; the debounce keeps typing from firing a request per keystroke.
+    const handle = window.setTimeout(() => {
+      void loadVideos({ quiet: true });
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [loadVideos, ownerFilter, query]);
+
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
     if (!isArchivingSpace || hasSpaceQueueWork) return;
     setIsArchivingSpace(false);
     void loadVideos();
@@ -216,7 +260,7 @@ export function VideoLibraryPage() {
   const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
   const selectedOwnerName = selectedOwner?.name;
 
-  const filteredVideos = useMemo(() => filterVideos(videos, ownerFilter, query), [ownerFilter, query, videos]);
+  const filteredVideos = videos;
 
   const totals = useMemo(() => summarizeVideos(videos), [videos]);
 
@@ -486,9 +530,14 @@ export function VideoLibraryPage() {
         title: "删除任务已提交",
         message: "本地档案会在后台删除，任务列表会显示进度；完成后数据库空间也会在后台整理。",
       });
-      window.setTimeout(() => {
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+      const refreshDbId = targetDbId;
+      refreshTimerRef.current = window.setTimeout(() => {
+        // Bail out if the user switched database while the delete ran.
+        if (activeDbIdRef.current !== refreshDbId) return;
+        refreshTimerRef.current = null;
         void loadVideos({ quiet: true });
-        void loadDatabases({ quiet: true, selectId: activeDbId });
+        void loadDatabases({ quiet: true, selectId: refreshDbId });
       }, 8000);
       logClientEvent("client.user.archive_delete.success", "archive delete task queued", {
         db_id: targetDbId,

@@ -1,6 +1,7 @@
 import json
 import logging
 import queue
+import re
 import sys
 import traceback
 import atexit
@@ -92,19 +93,34 @@ class ResilientStreamHandler(logging.StreamHandler):
             return False
 
 
+class RedactFilter(logging.Filter):
+    """Strip credential-looking values from the rendered message before any handler writes it."""
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        redacted = redact_text(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
 class JsonLineFormatter(logging.Formatter):
     def format(self, record):
         payload = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "event": getattr(record, "event_name", record.getMessage()),
-            "message": record.getMessage(),
+            "message": redact_text(record.getMessage()),
         }
         event_data = getattr(record, "event_data", None)
         if isinstance(event_data, dict):
             payload.update({key: value for key, value in event_data.items() if value is not None})
         if record.exc_info:
-            payload["exception"] = "".join(traceback.format_exception(*record.exc_info)).strip()
+            payload["exception"] = redact_text("".join(traceback.format_exception(*record.exc_info)).strip())
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -140,12 +156,14 @@ def configure_logging(
     )
     file_handler.setLevel(level_no)
     file_handler.setFormatter(JsonLineFormatter())
+    file_handler.addFilter(RedactFilter())
 
     handlers = [file_handler]
     if console:
         console_handler = ResilientStreamHandler(sys.stdout)
         console_handler.setLevel(level_no)
         console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        console_handler.addFilter(RedactFilter())
         handlers.append(console_handler)
 
     _LOG_QUEUE = queue.Queue(maxsize=queue_size)
@@ -292,3 +310,18 @@ def sanitize_value(value):
 def is_sensitive_key(key):
     lowered = str(key).lower()
     return any(marker in lowered for marker in ("cookie", "token", "password", "secret", "credential"))
+
+
+SENSITIVE_VALUE_PATTERN = re.compile(
+    r"(?i)\b("
+    r"sessdata|sessdata_buvid|bili_jct|dedeuserid|dedeuserid__ckmd5|"
+    r"buvid3|buvid4|ac_time_value|bili_ticket|access_key|refresh_token"
+    r")\s*=\s*([^&;\s\"']+)"
+)
+
+
+def redact_text(text):
+    """Remove credential values from free-form text such as log messages or tracebacks."""
+    if not text:
+        return text
+    return SENSITIVE_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}=***", str(text))

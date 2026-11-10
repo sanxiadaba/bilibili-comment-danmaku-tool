@@ -227,13 +227,15 @@ def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, 
                 logger=log,
             )
         except Exception as exc:
-            like_counts = {}
+            like_counts = None
             log(f"danmaku likes: skipped because {exc}")
     else:
-        like_counts = {}
+        like_counts = None
         log("danmaku likes: skipped by fast archive mode")
     for item in items:
-        item["like_count"] = like_counts.get(item["dmid"], 0)
+        # None means "unknown": saving must keep whatever like count is already stored instead
+        # of overwriting it with 0 when the like API was skipped or failed.
+        item["like_count"] = None if like_counts is None else like_counts.get(item["dmid"], 0)
     log(f"danmaku: cid={cid} got={len(items)}")
     time.sleep(0.05)
     return {"bvid": bvid, "cid": str(cid), "items": items}

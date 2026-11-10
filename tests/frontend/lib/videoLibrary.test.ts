@@ -64,7 +64,7 @@ describe("video library helpers", () => {
 
     expect(ownerName(makeVideo({ owner_name: " Alice " }))).toBe("Alice");
     expect(ownerKey(makeVideo({ owner_mid: "42", owner_name: "Alice" }))).toBe("mid:42");
-    expect(ownerKey(makeVideo({ owner_mid: "", owner_name: "Alice" }))).toBe("name:alice");
+    expect(ownerKey(makeVideo({ owner_mid: "", owner_name: "Alice" }))).toBe("name:Alice");
   });
 
   it("builds owner groups from videos and backend summaries", () => {

@@ -1,4 +1,5 @@
 import json
+import math
 import random
 import re
 import time
@@ -39,14 +40,49 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+SPACE_CACHE_MAX_AGE_SECONDS = 6 * 3600
+
+
+def cache_is_stale(cached_at, max_age_seconds=SPACE_CACHE_MAX_AGE_SECONDS):
+    if not cached_at:
+        return True
+    try:
+        cached = datetime.fromisoformat(str(cached_at))
+    except (TypeError, ValueError):
+        return True
+    if cached.tzinfo is None:
+        cached = cached.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - cached).total_seconds() > max_age_seconds
+
+
+def read_space_cache(cache_path, mid):
+    """Return cached items only when the cache is readable, complete and fresh.
+
+    Trusting the cache forever means newly published videos of that UP never get archived.
+    """
+    if not cache_path or not cache_path.exists():
+        return None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log_event("task.space_archive.cache_broken", "ignored unreadable UP video cache", mid=mid, level="warning")
+        return None
+    if not isinstance(cached, dict) or cached.get("partial"):
+        return None
+    if cache_is_stale(cached.get("cached_at")):
+        log_event("task.space_archive.cache_stale", "refreshing an expired UP video cache", mid=mid)
+        return None
+    items = cached.get("items")
+    return items if isinstance(items, list) else None
+
+
 def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0):
     max_items = max(0, first_int(max_items, 0))
-    if use_cache and cache_path and cache_path.exists():
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        items = cached.get("items") if isinstance(cached, dict) else None
-        if isinstance(items, list) and not cached.get("partial"):
-            log_event("task.space_archive.cache_hit", "loaded cached UP video list", mid=mid, total=len(items))
-            return items[:max_items] if max_items else items
+    if use_cache:
+        cached_items = read_space_cache(cache_path, mid)
+        if cached_items is not None:
+            log_event("task.space_archive.cache_hit", "loaded cached UP video list", mid=mid, total=len(cached_items))
+            return cached_items[:max_items] if max_items else cached_items
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
@@ -262,6 +298,22 @@ def database_dir_for_task(task):
     return parent if parent.name == "databases" else parent / "databases"
 
 
+COMPLETENESS_RATIO = 0.9
+
+
+def meets_expected(saved_count, expected_count, ratio=COMPLETENESS_RATIO):
+    """A scrape counts as complete only when it is close enough to the expected count."""
+    try:
+        saved = int(saved_count or 0)
+        expected = int(expected_count or 0)
+    except (TypeError, ValueError):
+        return False
+    if expected <= 0:
+        return True
+    required = math.ceil(expected * float(ratio))
+    return saved >= max(1, required)
+
+
 def is_complete(item, status):
     bvid = item.get("bvid")
     saved = status.get(bvid or "")
@@ -271,8 +323,13 @@ def is_complete(item, status):
     expected_comments = first_int(item.get("comment"), saved.get("stat_reply"), saved.get("api_comment_count"))
     expected_danmaku = first_int(item.get("video_review"), saved.get("stat_danmaku"))
 
-    comments_complete = expected_comments == 0 or saved["comments"] > 0 or saved.get("api_comment_count") == 0
-    danmaku_complete = expected_danmaku == 0 or saved["danmaku"] > 0
+    # A video archived during a partial scrape must stay incomplete, otherwise it is never retried.
+    comments_complete = (
+        expected_comments == 0
+        or meets_expected(saved["comments"], expected_comments)
+        or saved.get("api_comment_count") == 0
+    )
+    danmaku_complete = expected_danmaku == 0 or meets_expected(saved["danmaku"], expected_danmaku)
     return bool(comments_complete and danmaku_complete)
 
 
