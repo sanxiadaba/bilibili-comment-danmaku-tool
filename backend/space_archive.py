@@ -11,6 +11,7 @@ from app_logging import log_event, log_exception
 from bilibili_comment_danmaku import save_comments_to_sqlite, save_danmaku_to_sqlite, scrape_comments, scrape_danmaku
 from bilibili_comment_danmaku import scraper
 from bilibili_comment_danmaku.scraper import inspect_cookie_status
+from bilibili_comment_danmaku import paths
 from bilibili_comment_danmaku.scraper import BilibiliRequestError
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from database_registry import find_video_database_path, video_database_path_from_archive
@@ -24,7 +25,7 @@ SPACE_PAGE_HARD_TIMEOUT_SECONDS = 35
 SPACE_PAGE_RETRIES = 4
 SPACE_PAGE_RISK_RETRY_DELAYS = (8, 20, 45)
 SPACE_PAGE_TIMEOUT_RETRY_DELAYS = (3, 8, 15)
-SPACE_BACKOFF_STATE_PATH = "data/space_cache/space_backoff_state.json"
+SPACE_BACKOFF_STATE_NAME = "space_cache/space_backoff_state.json"
 SPACE_DM_IMG_LIST = "[]"
 SPACE_DM_IMG_STR = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
 SPACE_DM_COVER_IMG_STR = "QU5HTEUgKEludGVsLCBJbnRlbChSKSBVSEQgR3JhcGhpY3MgRGlyZWN0M0QxMSB2c181XzAgcHNfNV8wLCBEM0QxMSk"
@@ -198,7 +199,7 @@ def space_request_backoff():
     return scraper.RequestBackoff(
         min_interval=0.6,
         interval_jitter=(0.2, 0.8),
-        state_path=SPACE_BACKOFF_STATE_PATH,
+        state_path=str(paths.state_file(SPACE_BACKOFF_STATE_NAME)),
         persist=True,
     )
 
