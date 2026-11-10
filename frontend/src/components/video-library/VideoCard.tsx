@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ChevronRight, Eye, Sparkles } from "lucide-react";
 import { logClientEvent } from "../../api/client";
 import { formatFullDateTime, formatNumber, normalizeImageUrl } from "../../lib/utils";
@@ -9,7 +10,7 @@ type VideoCardProps = {
   video: VideoSummary;
 };
 
-export function VideoCard({ dbId, video }: VideoCardProps) {
+function VideoCardBase({ dbId, video }: VideoCardProps) {
   const targetDbId = video.db_id || dbId;
   return (
     <article className="interactive-card grid gap-3 rounded-md border border-line bg-white/70 p-3 text-left transition hover:border-bilibili hover:bg-white md:grid-cols-[180px_minmax(0,1fr)_auto]">
@@ -68,3 +69,5 @@ export function VideoCard({ dbId, video }: VideoCardProps) {
     </article>
   );
 }
+
+export const VideoCard = memo(VideoCardBase);

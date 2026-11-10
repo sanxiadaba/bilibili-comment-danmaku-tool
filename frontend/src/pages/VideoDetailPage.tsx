@@ -18,8 +18,8 @@ import {
   ThumbsUp,
   Users,
 } from "lucide-react";
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { fetchCommentData, logClientEvent, refreshCommentData } from "../api/client";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { fetchCommentData, logClientEvent, refreshCommentData, stopRunningTask } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
 import { CommentDetail } from "../components/comments/CommentDetail";
@@ -68,6 +68,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [minLikes, setMinLikes] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
   const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
@@ -92,6 +93,15 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     setLastLoadedAt(new Date().toISOString());
   }, []);
 
+  const stopRefresh = useCallback(async () => {
+    try {
+      const payload = await stopRunningTask("comments");
+      setRefreshMessage(payload.message || "已请求停止抓取");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
   const refreshComments = useCallback(async () => {
     logClientEvent("client.user.comments.refresh_start", "user started comment refresh", {
       db_id: dbId,
@@ -103,6 +113,14 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     try {
       const payload = await refreshCommentData(data?.metadata.bvid || bvid, dbId);
       applyPayload(payload);
+      if (payload.refresh?.stopped) {
+        setRefreshMessage(payload.refresh.reason || "已停止抓取，本地档案未改动");
+        return;
+      }
+      if (payload.refresh?.skipped) {
+        setRefreshMessage(payload.refresh.reason || "远端返回数量异常，已保留本地档案");
+        return;
+      }
       const added = payload.refresh?.added_count ?? 0;
       const after = payload.refresh?.after_count ?? payload.metadata.comment_total_count;
       const active = payload.refresh?.active_count ?? payload.metadata.active_comment_count ?? after;
@@ -155,18 +173,26 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
 
   const loadMoreComments = useCallback(async () => {
     if (!data?.metadata.has_more || isLoadingMore) return;
+    loadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
     setIsLoadingMore(true);
     setError("");
     try {
       const payload = await fetchCommentData(data.metadata.bvid, dbId, {
         limit: COMMENT_PAGE_SIZE,
-        offset: data.comment_items.length,
+        // Pages are counted in top-level threads, not in flat rows.
+        offset: data.comments.length,
+        signal: controller.signal,
       });
       applyPayload(payload, "append");
     } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setIsLoadingMore(false);
+      if (loadMoreAbortRef.current === controller) {
+        setIsLoadingMore(false);
+      }
     }
   }, [applyPayload, data, dbId, isLoadingMore]);
 
@@ -379,6 +405,15 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               <RefreshCcw className={cn(isRefreshing && "animate-spin")} size={16} aria-hidden="true" />
               {isRefreshing ? "重新抓取中" : "刷新评论"}
             </button>
+            {isRefreshing && (
+              <button
+                className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
+                type="button"
+                onClick={() => void stopRefresh()}
+              >
+                停止抓取
+              </button>
+            )}
             <a
               className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={data.metadata.source_url}

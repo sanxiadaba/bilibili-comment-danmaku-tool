@@ -44,22 +44,34 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
 
   useEffect(() => {
     if (!qrSession || qrState?.status === "confirmed" || qrState?.status === "expired") return;
-    const timer = window.setInterval(async () => {
+    let stopped = false;
+    let timer: number | undefined;
+
+    // A fixed interval stacks overlapping polls when one request is slow; chain timeouts instead.
+    const poll = async () => {
       try {
         const payload = await pollAuthQrCode(qrSession.session_id);
+        if (stopped) return;
         setQrState(payload);
         setMessage(payload.message || "");
         if (payload.cookie_status) {
           onStatusChange(payload.cookie_status);
         }
-        if (payload.status === "confirmed" || payload.status === "expired") {
-          window.clearInterval(timer);
-        }
+        if (payload.status === "confirmed" || payload.status === "expired") return;
       } catch (reason: unknown) {
+        if (stopped) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       }
-    }, 1800);
-    return () => window.clearInterval(timer);
+      if (!stopped) {
+        timer = window.setTimeout(poll, 1800);
+      }
+    };
+
+    timer = window.setTimeout(poll, 1800);
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
   }, [onStatusChange, qrSession, qrState?.status]);
 
   async function startQrLogin() {
@@ -196,7 +208,19 @@ export function AuthPanel({ cookieStatus, onStatusChange }: AuthPanelProps) {
             {isSaving ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <KeyRound size={16} aria-hidden="true" />}
             保存并检测
           </button>
-          <input ref={fileRef} className="hidden" type="file" accept=".txt,.cookies" onChange={(event) => void importCookieFile(event.target.files)} />
+          <input
+            ref={fileRef}
+            className="hidden"
+            type="file"
+            accept=".txt,.cookies"
+            onChange={(event) => {
+              const input = event.target;
+              void importCookieFile(input.files).finally(() => {
+                // Reset so importing the same file twice still fires a change event.
+                input.value = "";
+              });
+            }}
+          />
         </form>
       </div>
 

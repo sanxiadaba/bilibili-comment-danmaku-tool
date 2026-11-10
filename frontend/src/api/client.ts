@@ -16,10 +16,13 @@ import type {
 } from "../types";
 
 type LogFields = Record<string, string | number | boolean | null | undefined>;
-type RequestOptions = RequestInit & { signal?: AbortSignal };
+type RequestOptions = RequestInit & { signal?: AbortSignal; timeoutMs?: number };
 
 const MUTATING_REQUEST_HEADER = "X-Bilibili-Tool-Request";
 const POST_REQUEST: RequestOptions = { cache: "no-store", method: "POST" };
+const DEFAULT_TIMEOUT_MS = 60_000;
+// Refreshes scrape Bilibili page by page and can legitimately run for minutes.
+const NO_TIMEOUT = 0;
 
 export async function fetchDatabases(
   activeId = "main",
@@ -141,7 +144,7 @@ export async function refreshDanmakuData(bvid?: string, dbId = "main") {
   return requestJson<DanmakuData>(
     "danmaku.refresh",
     `/api/danmaku/refresh?${query.toString()}`,
-    POST_REQUEST,
+    { ...POST_REQUEST, timeoutMs: NO_TIMEOUT },
     { bvid, db_id: dbId },
   );
 }
@@ -215,6 +218,15 @@ export async function deleteArchiveData(payload: { bvid?: string; bvids?: string
   );
 }
 
+export async function stopRunningTask(kind: "comments" | "danmaku" | "all" = "all") {
+  return requestJson<{ ok: boolean; kind: string; message: string }>(
+    "tasks.stop",
+    `/api/tasks/stop?ts=${Date.now()}`,
+    postJsonInit({ kind }),
+    { kind },
+  );
+}
+
 export async function refreshCommentData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
@@ -222,7 +234,7 @@ export async function refreshCommentData(bvid?: string, dbId = "main") {
   return requestJson<CommentData>(
     "comments.refresh",
     `/api/refresh?${query.toString()}`,
-    POST_REQUEST,
+    { ...POST_REQUEST, timeoutMs: NO_TIMEOUT },
     { bvid, db_id: dbId },
   );
 }
@@ -276,7 +288,7 @@ async function requestJson<T>(event: string, url: string, init?: RequestOptions,
   logClientEvent(`client.api.${event}.start`, "API request started", { ...fields, method, path });
 
   try {
-    const response = await fetch(url, withMutatingRequestHeader(init));
+    const response = await fetch(url, withMutatingRequestHeader(withSignalTimeout(init)));
     const payload = await parseJsonResponse<T>(response);
     logClientEvent(`client.api.${event}.success`, "API request succeeded", {
       ...fields,
@@ -287,6 +299,11 @@ async function requestJson<T>(event: string, url: string, init?: RequestOptions,
     });
     return payload;
   } catch (reason: unknown) {
+    if (reason instanceof DOMException && reason.name === "TimeoutError") {
+      const timeoutError = new Error(`请求超时（${Math.round(DEFAULT_TIMEOUT_MS / 1000)} 秒），后端可能正在处理长任务`);
+      logClientEvent(`client.api.${event}.error`, timeoutError.message, { ...fields, method, path });
+      throw timeoutError;
+    }
     logClientEvent(`client.api.${event}.error`, reason instanceof Error ? reason.message : String(reason), {
       ...fields,
       duration_ms: Math.round(performance.now() - startedAt),
@@ -295,6 +312,19 @@ async function requestJson<T>(event: string, url: string, init?: RequestOptions,
     });
     throw reason;
   }
+}
+
+/** Bound every request so a stalled backend cannot leave the UI on a spinner forever. */
+function withSignalTimeout(init?: RequestOptions): RequestOptions | undefined {
+  if (!init) return init;
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = init;
+  if (!timeoutMs || typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") return rest;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!rest.signal) return { ...rest, signal: timeoutSignal };
+  if (typeof AbortSignal.any === "function") {
+    return { ...rest, signal: AbortSignal.any([rest.signal, timeoutSignal]) };
+  }
+  return rest;
 }
 
 function postJsonInit(body: unknown): RequestOptions {
