@@ -3,6 +3,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+MANIFEST_VIDEO_ROWS_SQL = """
+SELECT bvid, title, owner_mid, owner_name, fetched_at,
+       COALESCE(comment_total_count, 0) AS declared_comment_count,
+       (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
+       (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
+FROM videos
+WHERE bvid IN (SELECT bvid FROM export_bvids)
+ORDER BY fetched_at DESC, bvid
+"""
+
+
+def fetch_manifest_video_rows(source):
+    """Read manifest rows for the bvids staged in the connection's export_bvids temp table."""
+    return source.execute(MANIFEST_VIDEO_ROWS_SQL).fetchall()
+
+
 def build_archive_manifest(
     source,
     selected_bvids,
@@ -15,17 +31,33 @@ def build_archive_manifest(
     source_path=None,
     target_path=None,
 ):
-    video_rows = source.execute(
-        """
-        SELECT bvid, title, owner_mid, owner_name, fetched_at,
-               COALESCE(comment_total_count, 0) AS declared_comment_count,
-               (SELECT COUNT(*) FROM comments WHERE comments.bvid = videos.bvid) AS comment_count,
-               (SELECT COUNT(*) FROM danmaku WHERE danmaku.bvid = videos.bvid) AS danmaku_count
-        FROM videos
-        WHERE bvid IN (SELECT bvid FROM export_bvids)
-        ORDER BY fetched_at DESC, bvid
-        """
-    ).fetchall()
+    return manifest_from_video_rows(
+        fetch_manifest_video_rows(source),
+        selected_bvids,
+        counts,
+        archive_kind=archive_kind,
+        label=label,
+        owner_mid=owner_mid,
+        owner_name=owner_name,
+        source_path=source_path,
+        target_path=target_path,
+    )
+
+
+def manifest_from_video_rows(
+    video_rows,
+    selected_bvids,
+    counts,
+    *,
+    archive_kind=None,
+    label="",
+    owner_mid="",
+    owner_name="",
+    source_path=None,
+    target_path=None,
+):
+    video_rows = sorted(video_rows, key=lambda row: str(row["bvid"] or ""))
+    video_rows.sort(key=lambda row: str(row["fetched_at"] or ""), reverse=True)
     inferred_kind = archive_kind or infer_archive_kind(video_rows, owner_mid)
     return {
         "format": "bilibili-comment-danmaku-archive",
