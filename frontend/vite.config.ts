@@ -38,5 +38,10 @@ export default defineConfig({
   },
   test: {
     include: ["../tests/frontend/**/*.{test,spec}.{ts,tsx}"],
+    environment: "jsdom",
+    setupFiles: [path.resolve(process.cwd(), "tests/frontend/setup.ts")],
+    environmentOptions: {
+      jsdom: { url: "http://127.0.0.1:8001/" },
+    },
   },
 });

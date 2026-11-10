@@ -287,6 +287,12 @@ describe("API client", () => {
     await expect(fetchProgress()).rejects.toThrow(/API/);
   });
 
+  it("turns a request timeout into a readable error", async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new DOMException("timeout", "TimeoutError"))) as typeof fetch;
+
+    await expect(fetchVideos("main", { limit: 40 })).rejects.toThrow(/请求超时/);
+  });
+
   it("sends client logs with the local guard header", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
     globalThis.fetch = fetchMock;
