@@ -547,7 +547,10 @@ class SpaceArchiveService:
                         comments.get("video_raw"),
                         headers=headers,
                         logger=video_logger,
-                        fetch_likes=True,
+                        # Like counts cost one rate-limited request per 100 danmaku. Archiving a
+                        # whole space would spend most of its time on them, so bulk runs skip them;
+                        # refreshing a single video still collects them.
+                        fetch_likes=False,
                     )
                     if danmaku_result.get("items"):
                         self.update_task(task, message=f"正在保存弹幕 {index}/{total}")

@@ -166,6 +166,25 @@ class MissingMemberTests(unittest.TestCase):
         self.assertIsNone(normalized["mid"])
 
 
+class DeleteCleanupTests(unittest.TestCase):
+    def test_user_cleanup_passes_the_sqlite_variable_limit(self):
+        # Deleting a popular video references one mid per commenter. A single IN (...) list used
+        # to hit SQLite's 32766 variable cap and abort the delete after the data was removed.
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "archive.db")
+            try:
+                storage.ensure_schema(conn)
+                mids = [str(index) for index in range(40000)]
+                conn.executemany("INSERT INTO users (mid) VALUES (?)", [(mid,) for mid in mids])
+                conn.commit()
+
+                storage.cleanup_unreferenced_users(conn, mids)
+
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0], 0)
+            finally:
+                conn.close()
+
+
 class CommentRefreshGuardTests(unittest.TestCase):
     def test_guard_treats_empty_and_tiny_results_as_partial(self):
         self.assertFalse(comment_result_is_too_small(0, 0))
@@ -230,7 +249,7 @@ class CommentRefreshHttpTests(unittest.TestCase):
             },
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
         self.thread.start()
 
     def tearDown(self):

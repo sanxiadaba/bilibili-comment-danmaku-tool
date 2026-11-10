@@ -349,7 +349,7 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
     nodes = list(iter_nodes(output_data))
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         if replace and guard_shrink and not force:
             before_count = active_comment_count(conn, metadata["bvid"])
             if comment_result_is_too_small(len(nodes), before_count):
@@ -599,7 +599,7 @@ def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
     items = danmaku_data.get("items") or []
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         video = conn.execute("SELECT owner_mid FROM videos WHERE bvid = ?", (bvid,)).fetchone()
         owner_hash = danmaku_user_hash(video["owner_mid"]) if video and video["owner_mid"] else None
         if replace:
@@ -680,7 +680,7 @@ def load_danmaku_data(db_path, bvid=None, limit=None, offset=0):
     offset = max(0, int(offset or 0))
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         conn.commit()
         if bvid:
             video = conn.execute("SELECT * FROM videos WHERE bvid = ?", (bvid,)).fetchone()
@@ -1083,7 +1083,7 @@ def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=Non
     size_before = db_path.stat().st_size if db_path.exists() else 0
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         existing_rows = conn.execute(
             f"""
             SELECT bvid, title, owner_mid, owner_name
@@ -1142,7 +1142,7 @@ def delete_owner_from_sqlite(db_path, owner_mid, vacuum=True, progress_callback=
 
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         rows = conn.execute(
             """
             SELECT bvid
@@ -1167,7 +1167,7 @@ def vacuum_database(db_path):
     checkpoint_database(db_path, truncate=True)
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         conn.commit()
         conn.execute("VACUUM")
     finally:
@@ -1236,7 +1236,7 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
     set_database_journal_mode(db_path, "DELETE")
     conn = connect(db_path)
     try:
-        ensure_schema(conn, journal_mode=None)
+        ensure_schema_if_needed(conn, journal_mode=None)
         deleted_user_mids = collect_comment_mids(conn, selected_bvids)
         while True:
             batch = fetch_comment_rpid_batch(conn, selected_bvids, DELETE_COMMENT_BATCH_SIZE)

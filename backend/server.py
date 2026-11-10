@@ -140,7 +140,9 @@ def combined_queue_snapshot():
 
 def bilibili_api_error_response(exc):
     try:
-        cookie_status = auth_cookie_store.status(check_remote=True)
+        # The error path only needs to say whether a login looked configured; hitting the nav
+        # endpoint here would add up to ten seconds while the refresh lock is still held.
+        cookie_status = auth_cookie_store.status(check_remote=False)
     except Exception:
         cookie_status = None
     return api_error_response(exc, cookie_status=cookie_status)
@@ -1120,7 +1122,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 raise ValueError("上传请求体为空")
             if length > MAX_MULTIPART_BODY_BYTES:
                 raise RequestTooLargeError(f"上传文件过大，上限为 {MAX_MULTIPART_BODY_BYTES} 字节")
-            raw = self.rfile.read(length)
+            raw = self.read_exact_body(length)
             files = parse_multipart_files(raw, self.headers.get("Content-Type", ""))
         except RequestTooLargeError as exc:
             self.send_json({"error": str(exc)}, status=413)

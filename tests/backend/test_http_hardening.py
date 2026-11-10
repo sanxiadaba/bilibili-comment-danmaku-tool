@@ -54,7 +54,7 @@ class LocalHttpTestCase(unittest.TestCase):
             },
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -209,6 +209,57 @@ class BindHostTests(unittest.TestCase):
     def test_public_bind_is_refused(self):
         with self.assertRaises(SystemExit):
             validate_bind_host("0.0.0.0")
+
+
+class StaticCacheTests(LocalHttpTestCase):
+    def test_index_is_never_cached_and_assets_get_an_etag(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+        try:
+            connection.request("GET", "/")
+            page = connection.getresponse()
+            page.read()
+            self.assertEqual(page.getheader("Cache-Control"), "no-cache")
+
+            connection.request("GET", "/app.js")
+            asset = connection.getresponse()
+            etag = asset.getheader("ETag")
+            cache_control = asset.getheader("Cache-Control")
+            asset.read()
+        finally:
+            connection.close()
+
+        self.assertTrue(etag)
+        self.assertIn("max-age=3600", cache_control)
+
+    def test_matching_etag_returns_304(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+        try:
+            connection.request("GET", "/app.js")
+            first = connection.getresponse()
+            etag = first.getheader("ETag")
+            first.read()
+
+            connection.request("GET", "/app.js", headers={"If-None-Match": etag})
+            second = connection.getresponse()
+            self.assertEqual(second.status, 304)
+            second.read()
+        finally:
+            connection.close()
+
+    def test_hashed_assets_are_immutable(self):
+        hashed = self.static / "index-abc12345.js"
+        hashed.write_text("console.log('hashed')", encoding="utf-8")
+
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+        try:
+            connection.request("GET", "/index-abc12345.js")
+            response = connection.getresponse()
+            cache_control = response.getheader("Cache-Control")
+            response.read()
+        finally:
+            connection.close()
+
+        self.assertEqual(cache_control, "public, max-age=31536000, immutable")
 
 
 class RedactionTests(unittest.TestCase):

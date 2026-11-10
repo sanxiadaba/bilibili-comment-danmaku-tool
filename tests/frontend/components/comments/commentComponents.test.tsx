@@ -1,3 +1,4 @@
+import { fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { CommentDetail } from "../../../../frontend/src/components/comments/CommentDetail";
@@ -33,7 +34,7 @@ describe("comment components", () => {
     expect(html).toContain("GIF");
   });
 
-  it("renders row badges, metadata and click wiring", () => {
+  it("renders row badges and metadata", () => {
     const onSelect = vi.fn();
     const comment = makeComment({
       is_deleted: true,
@@ -50,7 +51,21 @@ describe("comment components", () => {
     expect(html).toContain("12");
     expect(html).toContain("UP");
     expect(html).toContain("i.example/avatar.jpg");
-    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("selects the row on Enter but leaves the avatar link alone", () => {
+    const onSelect = vi.fn();
+    const comment = makeComment({
+      message: "row",
+      user: { mid: "42", uname: "Owner", avatar: "//i.example/avatar.jpg" },
+    });
+    render(<CommentRow comment={comment} onSelect={onSelect} />);
+
+    fireEvent.keyDown(screen.getByRole("button"), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(screen.getByRole("link"), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
   it("renders detail thread without exposing raw comment JSON", () => {

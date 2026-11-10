@@ -40,6 +40,7 @@ import {
   flattenThread,
   formatFullDateTime,
   formatNumber,
+  coarsenBuckets,
   getCommentAuthor,
   getCommentAvatar,
   getMaxLike,
@@ -204,8 +205,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     () => sortComments(filterComments(allComments, deferredQuery, levelFilter, location, minLikes), sortMode),
     [allComments, deferredQuery, levelFilter, location, minLikes, sortMode],
   );
-  const hourly = useMemo(() => hourlyBuckets(allComments), [allComments]);
-  const filteredHourly = useMemo(() => hourlyBuckets(filteredComments), [filteredComments]);
+  const hourly = useMemo(() => coarsenBuckets(hourlyBuckets(allComments)), [allComments]);
+  const filteredHourly = useMemo(() => coarsenBuckets(hourlyBuckets(filteredComments)), [filteredComments]);
   const authors = useMemo(() => topAuthors(allComments).slice(0, 6), [allComments]);
   const likedComments = useMemo(() => topLiked(allComments), [allComments]);
   const maxLike = useMemo(() => getMaxLike(allComments), [allComments]);

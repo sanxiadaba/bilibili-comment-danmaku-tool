@@ -1,6 +1,7 @@
 import gzip
 import json
 import mimetypes
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler
@@ -13,13 +14,23 @@ from errors import BadRequestError, RequestTooLargeError
 
 
 MAX_JSON_BODY_BYTES = 1024 * 1024
+HASHED_ASSET_PATTERN = re.compile(r"-[0-9A-Za-z_]{8,}\.(?:js|css|woff2?|png|svg|jpg|jpeg|webp)$")
+
+
+def static_cache_control(filename):
+    """Vite emits content-hashed asset names, so those files never change for a given URL."""
+    if filename == "index.html":
+        return "no-cache"
+    if HASHED_ASSET_PATTERN.search(filename):
+        return "public, max-age=31536000, immutable"
+    return "public, max-age=3600"
 
 
 class JsonStaticRequestHandler(BaseHTTPRequestHandler):
     db_path = None
     static_dir = None
     database_dir = None
-    # Hard cap on how long a single request may occupy a worker thread.
+    # Socket read timeout for one request; long scrapes keep the connection open on purpose.
     timeout = 60
 
     def start_request_log(self, method):
@@ -79,14 +90,25 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
         try:
             if not is_path_inside(file_path, static_root):
                 raise FileNotFoundError(str(file_path))
+            stat_result = file_path.stat()
             content = file_path.read_bytes()
         except (FileNotFoundError, OSError):
             self.send_error(404)
             return
 
+        etag = f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
+
         content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", self.date_time_string(stat_result.st_mtime))
+        self.send_header("Cache-Control", static_cache_control(file_path.name))
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
@@ -133,8 +155,16 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
             return {}
         if length > MAX_JSON_BODY_BYTES:
             raise RequestTooLargeError(f"请求体过大，JSON 上限为 {MAX_JSON_BODY_BYTES} 字节")
-        raw = self.rfile.read(length)
+        raw = self.read_exact_body(length)
         return parse_json_object_body(raw)
+
+    def read_exact_body(self, length):
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            # Never let the leftover bytes be parsed as the next request on a keep-alive socket.
+            self.close_connection = True
+            raise BadRequestError("请求体不完整")
+        return raw
 
     def resolve_db_path_from_query(self, parsed=None):
         parsed = parsed or urlparse(self.path)
