@@ -39,9 +39,11 @@
 
 ## 启动
 
-### 打包好的 exe（Windows，推荐）
+### 打包好的 exe（Windows）
 
-从 [Releases](https://github.com/sanxiadaba/bilibili-comment-danmaku-tool/releases) 下载 zip，解压双击 `bilibili-comment-danmaku-tool.exe`。它会启动本地服务、弹出状态窗口并打开浏览器。数据在 exe 旁边的 `data/`，日志在 `logs/`；换电脑时一起拷走即可。
+在任意一台装了 Node/Python 的机器上执行 `pnpm package:windows`，产物在 `release/bilibili-comment-danmaku-tool/`：解压/拷走后双击 `bilibili-comment-danmaku-tool.exe` 即可。它会启动本地服务、弹出状态窗口并打开浏览器。数据在 exe 旁边的 `data/`，日志在 `logs/`；换电脑时一起拷走即可。
+
+仓库不跑 GitHub Actions，没有云端构建，包只在本机打。
 
 ### 从源码
 
@@ -111,17 +113,33 @@ python backend/app_cli.py archive-space https://space.bilibili.com/1538787344 --
 
 **想备份 / 换电脑？** 拷整个 `data/`，或把库导出成 SQLite/JSON 再导入。
 
-## 开发
-
-代码结构、请求流程、数据表、任务队列、改哪里看哪里，见 [`docs/architecture.md`](docs/architecture.md)。测试与提交规则见 `AGENTS.md`。
-
-## 发布
-
-打 tag 触发构建和发布：
+## 测试
 
 ```powershell
-git tag v1.0.3
-git push origin v1.0.3
+pnpm test              # 编码检查 + 后端 unittest + 前端 Vitest
+pnpm test:backend
+pnpm test:frontend
 ```
 
-也可以在 GitHub Actions 里手动运行 `Release`。
+后端测试在 Windows 和 WSL 里各跑一遍，确保路径/换行相关的问题不会只在一端暴露：
+
+```bash
+# 在 WSL 里进到仓库目录后
+python3 -B -m unittest discover -s tests/backend -p 'test_*.py'
+```
+
+测试不依赖本机 Cookie、真实数据库或网络，也不会启动 GitHub Actions。
+
+## 开发
+
+代码结构、请求流程、数据表、任务队列、改哪里看哪里，见 [`docs/architecture.md`](docs/architecture.md)。提交规则见 `AGENTS.md`。
+
+## 打包
+
+```powershell
+pnpm package:windows
+```
+
+产物在 `release/bilibili-comment-danmaku-tool/`，根目录只有一个可见 exe，依赖在 `_internal/`，`data/`、`logs/` 跟着 exe 走。打包脚本会复用 `release/desktop_entry.build/`，第二次开始明显更快。
+
+项目**不使用 GitHub Actions**：不自动构建、不自动发版。测试和打包都在本机和 WSL 里跑。

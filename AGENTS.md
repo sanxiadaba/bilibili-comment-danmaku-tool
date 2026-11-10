@@ -35,10 +35,10 @@ Bilibili 评论/弹幕归档工具（Python 标准库后端 + React 前端）。
 - 界面是工具型界面：紧凑、可扫描、中文优先；不要加动画装饰。
 - 改到界面文案、布局或主流程时，同步更新 `README.md` 和 `docs/screenshots/` 里的截图，别让文档和界面说两套话。
 
-## 测试与 CI
+## 测试与打包
 
 - 测试不能依赖本机 Cookie、真实数据库、已有 release 目录或网络。
 - 后端行为改动用 unittest 覆盖（尤其数据保护、删除、分页、任务状态）；前端行为用 Vitest。
-- 改构建、打包或 workflow 时跑 `pnpm build`；只改文档至少检查 `git diff` 和编码。
-- CI 用 `ubuntu-latest`，只有 tag 或手动 dispatch 才打包 Windows 包；不要引入需要 Windows runner 的日常检查。
-- Release workflow 只在 tag / `workflow_dispatch` 触发；不要恢复"每次 merge 自动发版"。
+- 后端测试在 Windows 和 WSL 各跑一遍：`pnpm test:backend`，以及 WSL 里 `python3 -B -m unittest discover -s tests/backend -p 'test_*.py'`。
+- 改构建、打包时跑 `pnpm build` 和 `pnpm package:windows`；只改文档至少检查 `git diff` 和编码。
+- **不使用 GitHub Actions**：不要新增 `.github/workflows`、CI 配置或自动发版。测试和打包都在本机/WSL 完成。

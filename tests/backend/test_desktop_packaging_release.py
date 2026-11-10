@@ -133,29 +133,6 @@ class DesktopPackagingReleaseTests(unittest.TestCase):
         self.assertIn("Icon.ExtractAssociatedIcon(Application.ExecutablePath)", script)
         self.assertIn("Application.EnableVisualStyles();", script)
 
-    def test_release_workflow_runs_on_tags_or_manual_dispatch_only(self):
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-
-        self.assertIn('      - "v*"', workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("branches:", workflow)
-        self.assertNotIn("Allow only merge commits", workflow)
-        self.assertIn("timeout-minutes: 45", workflow)
-        self.assertIn("pnpm/action-setup@v4", workflow)
-        self.assertIn("cache: pnpm", workflow)
-        self.assertNotIn("upload-artifact", workflow)
-
-    def test_ci_runs_once_per_push_on_a_linux_runner(self):
-        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-
-        self.assertIn("branches-ignore:", workflow)
-        self.assertNotIn("pull_request:", workflow)
-        self.assertIn("runs-on: ubuntu-latest", workflow)
-        self.assertNotIn("windows-latest", workflow)
-        self.assertIn("timeout-minutes: 15", workflow)
-        self.assertIn("cache: pnpm", workflow)
-        self.assertNotIn("corepack prepare", workflow)
-
 
 if __name__ == "__main__":
     unittest.main()
