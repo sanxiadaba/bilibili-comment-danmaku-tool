@@ -60,7 +60,7 @@ export function VideoListPanel({
               video={video}
             />
           ))}
-        {!isLoading && hasMore && !query && !selectedOwnerName && (
+        {!isLoading && hasMore && (
           <button
             className="btn-quiet mx-auto inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-medium"
             type="button"

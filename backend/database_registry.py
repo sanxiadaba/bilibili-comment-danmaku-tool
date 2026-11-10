@@ -229,7 +229,37 @@ def iter_catalog_database_paths(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DA
             yield path.resolve(), f"db:{path.relative_to(database_dir).as_posix()}"
 
 
-def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR, limit=40, offset=0, include_owners=True):
+def video_owner_key(video):
+    """Mirror of storage.VIDEO_OWNER_KEY_SQL for videos that came from several databases."""
+    owner_mid = str(video.get("owner_mid") or "").strip()
+    if owner_mid:
+        return f"mid:{owner_mid}"
+    return f"name:{str(video.get('owner_name') or '').strip() or 'Unknown'}"
+
+
+def video_matches_filters(video, query="", owner_key=""):
+    needle = str(query or "").strip().lower()
+    if needle:
+        haystack = " ".join(
+            [str(video.get("title") or ""), str(video.get("bvid") or ""), str(video.get("owner_name") or "")]
+        ).lower()
+        if needle not in haystack:
+            return False
+    owner_key = str(owner_key or "").strip()
+    if owner_key and video_owner_key(video) != owner_key:
+        return False
+    return True
+
+
+def list_all_video_summaries_page(
+    main_db_path=DEFAULT_DB,
+    database_dir=DEFAULT_DATABASE_DIR,
+    limit=40,
+    offset=0,
+    include_owners=True,
+    query="",
+    owner_key="",
+):
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
     by_bvid = {}
@@ -252,6 +282,8 @@ def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_
                 by_bvid[item["bvid"]] = item
 
     videos = sorted(by_bvid.values(), key=video_summary_sort_key, reverse=True)
+    if query or owner_key:
+        videos = [video for video in videos if video_matches_filters(video, query, owner_key)]
     total = len(videos)
     selected = videos[offset : offset + limit]
     payload = {

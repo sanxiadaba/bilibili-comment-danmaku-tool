@@ -51,7 +51,10 @@ export function ownerName(video: VideoSummary) {
 export function ownerKey(video: VideoSummary) {
   const mid = (video.owner_mid || "").trim();
   if (mid) return `mid:${mid}`;
-  return `name:${ownerName(video).toLowerCase()}`;
+  // Must match the backend key exactly (storage.VIDEO_OWNER_KEY_SQL); a different prefix or
+  // casing makes the owner filter return zero rows for owners without a mid.
+  const name = (video.owner_name || "").trim() || "Unknown";
+  return `name:${name}`;
 }
 
 export function buildOwnerGroups(videos: VideoSummary[], ownerSummaries: OwnerSummary[] = []) {

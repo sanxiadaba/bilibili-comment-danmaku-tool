@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -486,6 +487,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             limit = first_query_int(query, "limit", 40)
             offset = first_query_int(query, "offset", 0)
             include_meta = query.get("include_meta", ["1"])[0] not in {"0", "false", "False"}
+            search = query.get("q", [""])[0] or ""
+            owner_key = query.get("owner", [""])[0] or ""
             if db_id == "main":
                 page = list_all_video_summaries_page(
                     self.db_path,
@@ -493,9 +496,18 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     limit=limit,
                     offset=offset,
                     include_owners=include_meta,
+                    query=search,
+                    owner_key=owner_key,
                 )
             else:
-                page = list_video_summaries_page(db_path, limit=limit, offset=offset, include_owners=include_meta)
+                page = list_video_summaries_page(
+                    db_path,
+                    limit=limit,
+                    offset=offset,
+                    include_owners=include_meta,
+                    query=search,
+                    owner_key=owner_key,
+                )
             log_event(
                 "api.videos.list",
                 "listed local videos",
@@ -1505,10 +1517,21 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
 
 
+def write_port_hint(path, host, port):
+    """Publish the actual port so the dev proxy can follow the auto-increment."""
+    try:
+        target = Path(path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"host": str(host), "port": int(port)}), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--port-file", default=str(ROOT / "data" / ".server-port"))
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--static", default=str(DEFAULT_STATIC))
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
@@ -1543,6 +1566,7 @@ def main():
     video_parse_service.start_pending_tasks()
     archive_delete_service.start_pending_tasks()
     server, actual_port = create_threading_server(args.host, args.port, handler)
+    write_port_hint(args.port_file, args.host, actual_port)
     url = f"http://{args.host}:{actual_port}/"
     log_event(
         "service.start",

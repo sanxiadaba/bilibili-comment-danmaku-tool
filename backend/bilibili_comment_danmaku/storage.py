@@ -748,17 +748,44 @@ def load_comment_data(db_path, bvid=None, limit=None, offset=0):
         conn.close()
 
 
-def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True):
+VIDEO_OWNER_KEY_SQL = (
+    "CASE WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid "
+    "ELSE 'name:' || COALESCE(NULLIF(owner_name, ''), 'Unknown') END"
+)
+
+
+def video_list_filters(query="", owner_key=""):
+    """Build the WHERE fragment + params shared by the video list count and page queries."""
+    clauses = []
+    params = []
+    needle = str(query or "").strip().lower()
+    if needle:
+        clauses.append(
+            "LOWER(title) LIKE ? OR LOWER(bvid) LIKE ? OR LOWER(COALESCE(owner_name, '')) LIKE ?"
+        )
+        like = f"%{needle}%"
+        params.extend([like, like, like])
+    owner_key = str(owner_key or "").strip()
+    if owner_key:
+        clauses.append(f"({VIDEO_OWNER_KEY_SQL}) = ?")
+        params.append(owner_key)
+    where_sql = f" WHERE ({') AND ('.join(clauses)})" if clauses else ""
+    return where_sql, params
+
+
+def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True, query="", owner_key=""):
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
+    where_sql, where_params = video_list_filters(query, owner_key)
     conn = connect_readonly(db_path)
     try:
-        total = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) FROM videos{where_sql}", tuple(where_params)).fetchone()[0]
         rows = conn.execute(
-            """
+            f"""
             WITH page_videos AS (
                 SELECT *
                 FROM videos
+                {where_sql}
                 ORDER BY fetched_at DESC
                 LIMIT ? OFFSET ?
             )
@@ -799,7 +826,7 @@ def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True):
             ) d ON d.bvid = v.bvid
             ORDER BY v.fetched_at DESC
             """,
-            (limit, offset),
+            (*where_params, limit, offset),
         ).fetchall()
         videos = [video_summary_from_row(row) for row in rows]
         payload = {
@@ -827,7 +854,7 @@ def list_owner_summaries(conn):
             SELECT
                 CASE
                     WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid
-                    ELSE 'unknown:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
+                    ELSE 'name:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
                 END AS owner_key,
                 MAX(COALESCE(NULLIF(owner_mid, ''), '')) AS owner_mid,
                 COALESCE(NULLIF(owner_name, ''), 'Unknown') AS owner_name,
@@ -839,7 +866,7 @@ def list_owner_summaries(conn):
             SELECT
                 CASE
                     WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
-                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                    ELSE 'name:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
                 SUM(c.comment_count) AS comment_count
             FROM videos v
@@ -854,7 +881,7 @@ def list_owner_summaries(conn):
             SELECT
                 CASE
                     WHEN v.owner_mid IS NOT NULL AND v.owner_mid <> '' THEN 'mid:' || v.owner_mid
-                    ELSE 'unknown:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
+                    ELSE 'name:' || COALESCE(NULLIF(v.owner_name, ''), 'Unknown')
                 END AS owner_key,
                 SUM(d.danmaku_count) AS danmaku_count
             FROM videos v
