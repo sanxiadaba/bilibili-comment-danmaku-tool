@@ -77,6 +77,8 @@ DEFAULT_COMMENT_PAGE_SIZE = 500
 DEFAULT_DANMAKU_PAGE_SIZE = 2000
 LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
+# A refresh that returns less than half of what is already stored is treated as a partial scrape.
+COMMENT_REFRESH_MIN_RATIO = 0.5
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
@@ -260,6 +262,28 @@ def task_retry_defaults(database_dir):
     archive replay at the legacy aggregate database instead of the one the user chose.
     """
     return {"database_dir": str(database_dir)}
+
+
+def should_skip_comment_refresh(scraped_count, before_count, min_ratio=COMMENT_REFRESH_MIN_RATIO):
+    """A refresh must not overwrite a healthy archive with a tiny or empty scrape.
+
+    Without this guard a blocked, rate-limited, or anonymous partial page marks every stored
+    comment as deleted (the danmaku path already had the equivalent protection).
+    """
+    try:
+        scraped = int(scraped_count or 0)
+        before = int(before_count or 0)
+    except (TypeError, ValueError):
+        return False
+    if before <= 0:
+        return False
+    if scraped <= 0:
+        return True
+    return scraped < before * float(min_ratio)
+
+
+def truthy_flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def is_local_origin(origin):
@@ -1348,6 +1372,33 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 logger=log,
             )
             scraped_count = output_data["metadata"]["comment_total_count"]
+            force_refresh = truthy_flag(query.get("force", [None])[0])
+            if should_skip_comment_refresh(scraped_count, before_count) and not force_refresh:
+                # Never let a blocked or partial scrape rewrite the archive into "everything deleted".
+                payload = current
+                payload["refresh"] = {
+                    "before_count": before_count,
+                    "scraped_count": scraped_count,
+                    "after_count": before_count,
+                    "active_count": payload["metadata"].get("active_comment_count"),
+                    "deleted_count": payload["metadata"].get("deleted_comment_count"),
+                    "added_count": 0,
+                    "skipped": True,
+                    "reason": "远端只返回了少量评论，已保留本地档案；确认要覆盖请带 force=1 重试",
+                    "logs": logs[-12:],
+                }
+                finish_progress("comments", current["metadata"]["bvid"], "评论刷新已跳过：远端返回数量异常")
+                log_event(
+                    "task.comments_refresh.skipped",
+                    "skipped comment refresh because the remote result was far smaller",
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=current["metadata"]["bvid"],
+                    before_count=before_count,
+                    scraped_count=scraped_count,
+                    level="warning",
+                )
+                self.send_json(payload)
+                return
             update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
             save_comments_to_sqlite(output_data, db_path, replace=True)
             payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
