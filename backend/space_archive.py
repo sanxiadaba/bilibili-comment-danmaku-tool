@@ -1,4 +1,5 @@
 import json
+import math
 import random
 import re
 import time
@@ -262,6 +263,22 @@ def database_dir_for_task(task):
     return parent if parent.name == "databases" else parent / "databases"
 
 
+COMPLETENESS_RATIO = 0.9
+
+
+def meets_expected(saved_count, expected_count, ratio=COMPLETENESS_RATIO):
+    """A scrape counts as complete only when it is close enough to the expected count."""
+    try:
+        saved = int(saved_count or 0)
+        expected = int(expected_count or 0)
+    except (TypeError, ValueError):
+        return False
+    if expected <= 0:
+        return True
+    required = math.ceil(expected * float(ratio))
+    return saved >= max(1, required)
+
+
 def is_complete(item, status):
     bvid = item.get("bvid")
     saved = status.get(bvid or "")
@@ -271,8 +288,13 @@ def is_complete(item, status):
     expected_comments = first_int(item.get("comment"), saved.get("stat_reply"), saved.get("api_comment_count"))
     expected_danmaku = first_int(item.get("video_review"), saved.get("stat_danmaku"))
 
-    comments_complete = expected_comments == 0 or saved["comments"] > 0 or saved.get("api_comment_count") == 0
-    danmaku_complete = expected_danmaku == 0 or saved["danmaku"] > 0
+    # A video archived during a partial scrape must stay incomplete, otherwise it is never retried.
+    comments_complete = (
+        expected_comments == 0
+        or meets_expected(saved["comments"], expected_comments)
+        or saved.get("api_comment_count") == 0
+    )
+    danmaku_complete = expected_danmaku == 0 or meets_expected(saved["danmaku"], expected_danmaku)
     return bool(comments_complete and danmaku_complete)
 
 
