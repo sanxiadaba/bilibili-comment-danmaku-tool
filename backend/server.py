@@ -252,6 +252,16 @@ def is_aggregate_database_scope(db_id):
     return str(db_id or "").strip() in {"", AGGREGATE_DATABASE_ID}
 
 
+def task_retry_defaults(database_dir):
+    """Defaults for a retried task.
+
+    Only the catalog directory may be defaulted. The target database and the archive options
+    must come from the stored task itself: defaulting ``db_path`` here would point a delete or
+    archive replay at the legacy aggregate database instead of the one the user chose.
+    """
+    return {"database_dir": str(database_dir)}
+
+
 def is_local_origin(origin):
     if not origin:
         return True
@@ -858,10 +868,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         body = self.read_json_body()
         action = str(body.get("action") or "").strip().lower()
         task_id = str(body.get("task_id") or "").strip() or None
-        retry_defaults = {
-            "db_path": str(self.resolve_db_path_from_body(body)),
-            "database_dir": str(self.database_dir),
-        }
+        retry_defaults = task_retry_defaults(self.database_dir)
         try:
             if task_id and task_id.startswith("parse-"):
                 payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
