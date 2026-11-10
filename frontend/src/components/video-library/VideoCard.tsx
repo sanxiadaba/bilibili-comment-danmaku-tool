@@ -1,6 +1,5 @@
 import { memo } from "react";
 import { ChevronRight, Eye, Sparkles } from "lucide-react";
-import { logClientEvent } from "../../api/client";
 import { formatFullDateTime, formatNumber, normalizeImageUrl } from "../../lib/utils";
 import { dbPath } from "../../lib/videoLibrary";
 import type { VideoSummary } from "../../types";
@@ -40,13 +39,6 @@ function VideoCardBase({ dbId, video }: VideoCardProps) {
         <a
           className="btn-quiet inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium"
           href={dbPath(`/video/${video.bvid}`, targetDbId)}
-          onClick={() =>
-            logClientEvent("client.user.video_card.open_comments", "opened comments from video card", {
-              db_id: targetDbId,
-              bvid: video.bvid,
-              title: video.title,
-            })
-          }
         >
           评论
           <ChevronRight size={15} aria-hidden="true" />
@@ -54,13 +46,6 @@ function VideoCardBase({ dbId, video }: VideoCardProps) {
         <a
           className="btn-primary inline-flex h-9 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium"
           href={dbPath(`/danmaku/${video.bvid}`, targetDbId)}
-          onClick={() =>
-            logClientEvent("client.user.video_card.open_danmaku", "opened danmaku from video card", {
-              db_id: targetDbId,
-              bvid: video.bvid,
-              title: video.title,
-            })
-          }
         >
           弹幕
           <Sparkles size={15} aria-hidden="true" />

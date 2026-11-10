@@ -2,21 +2,12 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "scripts/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version tag, for example v1.0.1"
+        description: "Release version tag, for example v1.0.3"
         required: true
         type: string
       target_ref:
@@ -33,113 +24,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-gate:
-    name: Check release trigger
-    runs-on: ubuntu-latest
-    outputs:
-      should_release: ${{ steps.gate.outputs.should_release }}
-      reason: ${{ steps.gate.outputs.reason }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.ref }}
-          fetch-depth: 2
-
-      - name: Allow only merge commits for automatic releases
-        id: gate
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.ref_type }}" == "tag" ]]; then
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "reason=manual-or-tag-release" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          parent_count="$(git show -s --format=%P HEAD | wc -w | tr -d ' ')"
-          if [[ "$parent_count" -ge 2 ]]; then
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "reason=merge-commit-with-code-changes" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "reason=not-a-merge-commit" >> "$GITHUB_OUTPUT"
-          fi
-
   windows-portable:
     name: Build Windows portable package
     runs-on: windows-latest
-    needs: release-gate
-    if: needs.release-gate.outputs.should_release == 'true'
-
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || github.ref }}
-          fetch-depth: 0
 
       - name: Resolve release tag
         shell: powershell
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $version = "${{ inputs.version }}".Trim()
-          } elseif ("${{ github.ref_type }}" -eq "tag") {
-            $version = "${{ github.ref_name }}".Trim()
           } else {
-            git fetch --tags origin
-            $stableTags = git tag --list "v*.*.*" | ForEach-Object {
-              if ($_ -match '^v(\d+)\.(\d+)\.(\d+)$') {
-                [PSCustomObject]@{
-                  Name = $_
-                  Major = [int]$Matches[1]
-                  Minor = [int]$Matches[2]
-                  Patch = [int]$Matches[3]
-                }
-              }
-            } | Sort-Object Major, Minor, Patch -Descending
-            $latest = $stableTags | Select-Object -First 1
-            if ($latest) {
-              $version = "v$($latest.Major).$($latest.Minor).$($latest.Patch + 1)"
-            } else {
-              $version = "v1.0.0"
-            }
-            while (@(git tag --list $version).Count -gt 0) {
-              if ($version -notmatch '^v(\d+)\.(\d+)\.(\d+)$') {
-                throw "Cannot increment generated release tag: $version"
-              }
-              $version = "v$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
-            }
+            $version = "${{ github.ref_name }}".Trim()
           }
           if ($version -notmatch '^v\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
             throw "Release version must look like v1.2.3 or v1.2.3-beta.1. Got: $version"
           }
-          $targetSha = git rev-parse HEAD
           "RELEASE_TAG=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "RELEASE_TARGET_SHA=$targetSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
-          package-manager-cache: false
+          cache: pnpm
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: false
-
-      - name: Setup pnpm
-        shell: powershell
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.5.2 --activate
-          pnpm --version
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -155,18 +76,11 @@ jobs:
           Compress-Archive -Path "release/bilibili-comment-danmaku-tool/*" -DestinationPath $zip -Force
           "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: bilibili-comment-danmaku-tool-windows-x64-${{ env.RELEASE_TAG }}
-          path: ${{ env.RELEASE_ZIP }}
-          if-no-files-found: error
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          target_commitish: ${{ env.RELEASE_TARGET_SHA }}
+          target_commitish: ${{ github.sha }}
           files: ${{ env.RELEASE_ZIP }}
           fail_on_unmatched_files: true
           generate_release_notes: true

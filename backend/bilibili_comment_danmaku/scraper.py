@@ -1,4 +1,3 @@
-import hashlib
 import http.cookiejar
 import copy
 import json
@@ -19,18 +18,10 @@ from . import paths
 from .storage import save_comments_to_sqlite
 from .url_utils import extract_bvid
 from .wbi import (
-    MIXIN_KEY_ENC_TAB,
-    WBI_BAD_CHARS,
-    WBI_CACHE_PATH_ENV,
-    WBI_MIXIN_KEY_CACHE,
-    WBI_MIXIN_KEY_STALE_TTL_SECONDS,
-    WBI_MIXIN_KEY_TTL_SECONDS,
-    default_wbi_cache_path,
     filename_stem,
     get_cached_wbi_mixin_key,
     get_mixin_key,
     load_persisted_wbi_mixin_key,
-    persist_wbi_mixin_key,
     remember_wbi_mixin_key,
     sign_wbi_params,
 )
@@ -879,7 +870,7 @@ def get_wbi_mixin_key(client, log, force_refresh=False):
             WBI_NAV_HARD_TIMEOUT_SECONDS,
             "nav API timed out while fetching WBI signature key",
         )
-    except Exception as exc:
+    except Exception:
         try:
             log("warning: direct nav API unavailable; trying system opener fallback without Cookie")
             nav = call_with_hard_timeout(

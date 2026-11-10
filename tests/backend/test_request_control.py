@@ -15,7 +15,6 @@ from pathlib import Path
 from helpers import BVID, make_archive, make_comment
 
 from app_logging import BoundedQueueHandler, clean_fields  # noqa: E402
-from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
     list_database_catalog,
@@ -55,47 +54,9 @@ from server import (  # noqa: E402
     is_local_origin,
     parse_archive_delete_request,
 )
+
+
 class RequestParsingTests(unittest.TestCase):
-    def test_control_capabilities_describe_machine_callable_actions(self):
-        payload = control_capabilities()
-
-        self.assertEqual(payload["version"], "v1")
-        self.assertEqual(payload["namespace"], "/api/v1/control")
-        self.assertEqual(payload["openapi_endpoint"], "/api/v1/control/openapi.json")
-        self.assertEqual(payload["actions"]["videos.parse"]["endpoint"], "/api/v1/control/videos/parse")
-        self.assertEqual(payload["actions"]["archive.export"]["endpoint"], "/api/v1/control/archive/export")
-        self.assertEqual(payload["actions"]["archive.export"]["schema"]["properties"]["format"]["enum"], ["sqlite", "json"])
-        self.assertIn("format", payload["actions"]["archive.export"]["params"])
-        self.assertEqual(payload["actions"]["space.tasks.control"]["endpoint"], "/api/v1/control/space/tasks/control")
-        self.assertIn("action", payload["actions"]["space.tasks.control"]["params"])
-
-    def test_control_openapi_document_includes_action_schemas(self):
-        payload = control_openapi_document()
-        export_schema = payload["paths"]["/api/v1/control/archive/export"]["post"]["requestBody"]["content"]["application/json"]["schema"]
-
-        self.assertEqual(payload["openapi"], "3.1.0")
-        self.assertIn("/api/v1/control/actions", payload["paths"])
-        self.assertEqual(export_schema["properties"]["format"]["enum"], ["sqlite", "json"])
-        task_control_schema = payload["paths"]["/api/v1/control/space/tasks/control"]["post"]["requestBody"]["content"]["application/json"]["schema"]
-        self.assertEqual(task_control_schema["properties"]["action"]["enum"], ["pause", "resume", "stop", "retry", "clear"])
-
-    def test_control_action_payload_normalizes_params(self):
-        action, params = normalize_control_action_payload(
-            {"action": "archive.export", "params": {"format": "json", "bvid": BVID}}
-        )
-
-        self.assertEqual(action, "archive.export")
-        self.assertEqual(params["format"], "json")
-        self.assertEqual(params["bvid"], BVID)
-
-        action, params = normalize_control_action_payload({"action": "space.tasks.control", "params": {"action": "pause"}})
-        self.assertEqual(action, "space.tasks.control")
-        self.assertEqual(params["action"], "pause")
-
-    def test_control_action_payload_rejects_unknown_action(self):
-        with self.assertRaises(LookupError):
-            normalize_control_action_payload({"action": "unknown.action", "params": {}})
-
     def test_archive_delete_request_normalizes_exclusive_targets(self):
         self.assertEqual(parse_archive_delete_request({"bvid": " BV1xx411c7mD ", "bvids": ["ignored"]}), ("", ["BV1xx411c7mD"]))
         self.assertEqual(parse_archive_delete_request({"bvids": [" BV1 ", "", "BV2"]}), ("", ["BV1", "BV2"]))

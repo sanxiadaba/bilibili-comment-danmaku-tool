@@ -15,7 +15,6 @@ import type {
   VideoListResponse,
 } from "../types";
 
-type LogFields = Record<string, string | number | boolean | null | undefined>;
 type RequestOptions = RequestInit & { signal?: AbortSignal; timeoutMs?: number };
 
 const MUTATING_REQUEST_HEADER = "X-Bilibili-Tool-Request";
@@ -30,72 +29,44 @@ export async function fetchDatabases(
 ) {
   const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
   if (options.includeDetails === false) query.set("include_details", "0");
-  return requestJson<DatabaseListResponse>("databases.list", `/api/databases?${query.toString()}`, {
+  return requestJson<DatabaseListResponse>(`/api/databases?${query.toString()}`, {
     cache: "no-store",
     signal: options.signal,
   });
 }
 
 export async function fetchCookieStatus() {
-  return requestJson<CookieStatus>("cookie.status", `/api/cookie/status?ts=${Date.now()}`, { cache: "no-store" });
+  return requestJson<CookieStatus>(`/api/cookie/status?ts=${Date.now()}`, { cache: "no-store" });
 }
 
 export async function saveCookie(cookie: string) {
-  return requestJson<CookieStatus>(
-    "cookie.save",
-    `/api/cookie/save?ts=${Date.now()}`,
-    postJsonInit({ cookie }),
-    { length: cookie.length },
-  );
+  return requestJson<CookieStatus>(`/api/cookie/save?ts=${Date.now()}`, postJsonInit({ cookie }));
 }
 
 export async function clearCookie() {
-  return requestJson<CookieStatus>(
-    "cookie.clear",
-    `/api/cookie/clear?ts=${Date.now()}`,
-    POST_REQUEST,
-  );
+  return requestJson<CookieStatus>(`/api/cookie/clear?ts=${Date.now()}`, POST_REQUEST);
 }
 
 export async function createAuthQrCode() {
-  return requestJson<AuthQrSession>(
-    "auth.qrcode",
-    `/api/auth/qrcode?ts=${Date.now()}`,
-    POST_REQUEST,
-  );
+  return requestJson<AuthQrSession>(`/api/auth/qrcode?ts=${Date.now()}`, POST_REQUEST);
 }
 
 export async function pollAuthQrCode(sessionId: string) {
-  return requestJson<AuthQrPollResponse>(
-    "auth.qrcode_poll",
-    `/api/auth/qrcode/poll?ts=${Date.now()}`,
-    postJsonInit({ session_id: sessionId }),
-    { session_id: sessionId.slice(0, 12) },
-  );
+  return requestJson<AuthQrPollResponse>(`/api/auth/qrcode/poll?ts=${Date.now()}`, postJsonInit({ session_id: sessionId }));
 }
 
 export async function importDatabase(path: string) {
-  return requestJson<DatabaseImportResponse>(
-    "databases.import",
-    `/api/databases/import?ts=${Date.now()}`,
-    postJsonInit({ path }),
-    { path: path.slice(0, 120) },
-  );
+  return requestJson<DatabaseImportResponse>(`/api/databases/import?ts=${Date.now()}`, postJsonInit({ path }));
 }
 
 export async function importDatabaseFiles(files: File[]) {
   const form = new FormData();
   files.forEach((file) => form.append("files", file, file.name));
-  return requestJson<DatabaseImportResponse>(
-    "databases.import_file",
-    `/api/databases/import-file?ts=${Date.now()}`,
-    {
+  return requestJson<DatabaseImportResponse>(`/api/databases/import-file?ts=${Date.now()}`, {
       cache: "no-store",
       method: "POST",
       body: form,
-    },
-    { file_count: files.length },
-  );
+    });
 }
 
 export async function fetchCommentData(bvid?: string, dbId = "main", options: { limit?: number; offset?: number; signal?: AbortSignal } = {}) {
@@ -104,7 +75,7 @@ export async function fetchCommentData(bvid?: string, dbId = "main", options: { 
   if (options.limit) query.set("limit", String(options.limit));
   if (options.offset) query.set("offset", String(options.offset));
   appendDbId(query, dbId);
-  return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store", signal: options.signal }, { bvid, db_id: dbId });
+  return requestJson<CommentData>(`/api/comments?${query.toString()}`, { cache: "no-store", signal: options.signal });
 }
 
 export async function fetchVideos(
@@ -125,7 +96,7 @@ export async function fetchVideos(
   if (options.query) query.set("q", options.query);
   if (options.ownerKey && options.ownerKey !== "all") query.set("owner", options.ownerKey);
   appendDbId(query, dbId);
-  return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store", signal: options.signal }, { db_id: dbId, limit: options.limit, offset: options.offset });
+  return requestJson<VideoListResponse>(`/api/videos?${query.toString()}`, { cache: "no-store", signal: options.signal });
 }
 
 export async function fetchDanmakuData(bvid?: string, dbId = "main", options: { limit?: number | null; offset?: number; signal?: AbortSignal } = {}) {
@@ -134,109 +105,53 @@ export async function fetchDanmakuData(bvid?: string, dbId = "main", options: { 
   if (options.limit !== undefined && options.limit !== null) query.set("limit", String(options.limit));
   if (options.offset) query.set("offset", String(options.offset));
   appendDbId(query, dbId);
-  return requestJson<DanmakuData>("danmaku.load", `/api/danmaku?${query.toString()}`, { cache: "no-store", signal: options.signal }, { bvid, db_id: dbId, limit: options.limit });
+  return requestJson<DanmakuData>(`/api/danmaku?${query.toString()}`, { cache: "no-store", signal: options.signal });
 }
 
 export async function refreshDanmakuData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
   appendDbId(query, dbId);
-  return requestJson<DanmakuData>(
-    "danmaku.refresh",
-    `/api/danmaku/refresh?${query.toString()}`,
-    { ...POST_REQUEST, timeoutMs: NO_TIMEOUT },
-    { bvid, db_id: dbId },
-  );
+  return requestJson<DanmakuData>(`/api/danmaku/refresh?${query.toString()}`, { ...POST_REQUEST, timeoutMs: NO_TIMEOUT });
 }
 
 export async function parseVideo(url: string, delay: number, dbId = "main") {
-  return requestJson<ParseVideoResponse>(
-    "videos.parse",
-    `/api/videos/parse?ts=${Date.now()}`,
-    postJsonInit({ url, delay, db_id: dbId }),
-    { delay, video_ref: summarizeVideoRef(url), db_id: dbId },
-  );
+  return requestJson<ParseVideoResponse>(`/api/videos/parse?ts=${Date.now()}`, postJsonInit({ url, delay, db_id: dbId }));
 }
 
 export async function archiveSpaceVideos(ownerRef: string, options: { delay: number; dbId?: string }) {
-  return requestJson<SpaceArchiveResponse>(
-    "space.archive",
-    `/api/space/archive?ts=${Date.now()}`,
-    postJsonInit({
+  return requestJson<SpaceArchiveResponse>(`/api/space/archive?ts=${Date.now()}`, postJsonInit({
       owner_ref: ownerRef,
       delay: options.delay,
       db_id: options.dbId || "main",
-    }),
-    { owner_ref: summarizeOwnerRef(ownerRef), delay: options.delay, db_id: options.dbId || "main" },
-  );
+    }));
 }
 
 export async function controlSpaceTasks(action: TaskControlAction, taskId?: string) {
-  return requestJson<{ ok: boolean; action: string; queue: ProgressState["queue"] }>(
-    "space.control",
-    `/api/space/tasks/control?ts=${Date.now()}`,
-    postJsonInit({ action, task_id: taskId }),
-    { action, task_id: taskId },
-  );
+  return requestJson<{ ok: boolean; action: string; queue: ProgressState["queue"] }>(`/api/space/tasks/control?ts=${Date.now()}`, postJsonInit({ action, task_id: taskId }));
 }
 
 export async function exportDatabaseArchive(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; label?: string; db_id?: string; format?: "sqlite" | "json" }) {
-  return requestJson<DatabaseExportResponse>(
-    "database.export",
-    `/api/database/export?ts=${Date.now()}`,
-    postJsonInit(payload),
-    {
-      bvid: payload.bvid,
-      db_id: payload.db_id,
-      format: payload.format,
-      owner_mid: payload.owner_mid,
-      video_count: payload.bvids?.length,
-    },
-  );
+  return requestJson<DatabaseExportResponse>(`/api/database/export?ts=${Date.now()}`, postJsonInit(payload));
 }
 
 export async function openLocalPath(path: string) {
-  return requestJson<{ ok: boolean; path: string; relative_path: string }>(
-    "system.open_path",
-    `/api/system/open-path?ts=${Date.now()}`,
-    postJsonInit({ path }),
-    { path },
-  );
+  return requestJson<{ ok: boolean; path: string; relative_path: string }>(`/api/system/open-path?ts=${Date.now()}`, postJsonInit({ path }));
 }
 
 export async function deleteArchiveData(payload: { bvid?: string; bvids?: string[]; owner_mid?: string; db_id?: string }) {
-  return requestJson<ArchiveDeleteResponse>(
-    "archive.delete",
-    `/api/archive/delete?ts=${Date.now()}`,
-    postJsonInit(payload),
-    {
-      bvid: payload.bvid,
-      db_id: payload.db_id,
-      owner_mid: payload.owner_mid,
-      video_count: payload.bvids?.length,
-    },
-  );
+  return requestJson<ArchiveDeleteResponse>(`/api/archive/delete?ts=${Date.now()}`, postJsonInit(payload));
 }
 
 export async function stopRunningTask(kind: "comments" | "danmaku" | "all" = "all") {
-  return requestJson<{ ok: boolean; kind: string; message: string }>(
-    "tasks.stop",
-    `/api/tasks/stop?ts=${Date.now()}`,
-    postJsonInit({ kind }),
-    { kind },
-  );
+  return requestJson<{ ok: boolean; kind: string; message: string }>(`/api/tasks/stop?ts=${Date.now()}`, postJsonInit({ kind }));
 }
 
 export async function refreshCommentData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
   appendDbId(query, dbId);
-  return requestJson<CommentData>(
-    "comments.refresh",
-    `/api/refresh?${query.toString()}`,
-    { ...POST_REQUEST, timeoutMs: NO_TIMEOUT },
-    { bvid, db_id: dbId },
-  );
+  return requestJson<CommentData>(`/api/refresh?${query.toString()}`, { ...POST_REQUEST, timeoutMs: NO_TIMEOUT });
 }
 
 export async function fetchProgress(signal?: AbortSignal) {
@@ -244,72 +159,14 @@ export async function fetchProgress(signal?: AbortSignal) {
   return parseJsonResponse<ProgressState>(response);
 }
 
-export function logClientEvent(event: string, message = "", fields: LogFields = {}) {
-  const payload = JSON.stringify({
-    event,
-    message,
-    page: window.location.pathname,
-    ts: new Date().toISOString(),
-    fields: {
-      ...fields,
-      href: window.location.href,
-    },
-  });
-
-  // The backend rejects every mutating request that arrives from a browser without the local
-  // guard header, and sendBeacon cannot set headers — so telemetry must go through fetch.
-  const send = () => {
-    void fetch("/api/logs/client", {
-      body: payload,
-      cache: "no-store",
-      headers: { "Content-Type": "application/json", [MUTATING_REQUEST_HEADER]: "1" },
-      keepalive: true,
-      method: "POST",
-    }).catch(() => {
-      // Client logging must never surface as a user-visible failure.
-    });
-  };
-
-  try {
-    if (document.visibilityState === "hidden" && navigator.sendBeacon) {
-      navigator.sendBeacon("/api/logs/client", new Blob([payload], { type: "application/json" }));
-      return;
-    }
-  } catch {
-    // Fall through to fetch.
-  }
-  send();
-}
-
-async function requestJson<T>(event: string, url: string, init?: RequestOptions, fields: LogFields = {}) {
-  const startedAt = performance.now();
-  const method = init?.method || "GET";
-  const path = summarizeApiPath(url);
-  logClientEvent(`client.api.${event}.start`, "API request started", { ...fields, method, path });
-
+async function requestJson<T>(url: string, init?: RequestOptions) {
   try {
     const response = await fetch(url, withMutatingRequestHeader(withSignalTimeout(init)));
-    const payload = await parseJsonResponse<T>(response);
-    logClientEvent(`client.api.${event}.success`, "API request succeeded", {
-      ...fields,
-      duration_ms: Math.round(performance.now() - startedAt),
-      method,
-      path,
-      status: response.status,
-    });
-    return payload;
+    return await parseJsonResponse<T>(response);
   } catch (reason: unknown) {
     if (reason instanceof DOMException && reason.name === "TimeoutError") {
-      const timeoutError = new Error(`请求超时（${Math.round(DEFAULT_TIMEOUT_MS / 1000)} 秒），后端可能正在处理长任务`);
-      logClientEvent(`client.api.${event}.error`, timeoutError.message, { ...fields, method, path });
-      throw timeoutError;
+      throw new Error(`请求超时（${Math.round(DEFAULT_TIMEOUT_MS / 1000)} 秒），后端可能正在处理长任务`);
     }
-    logClientEvent(`client.api.${event}.error`, reason instanceof Error ? reason.message : String(reason), {
-      ...fields,
-      duration_ms: Math.round(performance.now() - startedAt),
-      method,
-      path,
-    });
     throw reason;
   }
 }
@@ -362,20 +219,9 @@ async function parseJsonResponse<T>(response: Response) {
   return response.json() as Promise<T>;
 }
 
-function summarizeApiPath(url: string) {
-  return url.split("?")[0];
-}
-
 function appendDbId(query: URLSearchParams, dbId?: string) {
   if (dbId && dbId !== "main") {
     query.set("db_id", dbId);
   }
 }
 
-function summarizeVideoRef(value: string) {
-  return value.match(/BV[0-9A-Za-z]{10}/)?.[0] || value.slice(0, 120);
-}
-
-function summarizeOwnerRef(value: string) {
-  return value.match(/space\.bilibili\.com\/(\d+)/)?.[1] || value.match(/^\d+$/)?.[0] || value.slice(0, 120);
-}

@@ -17,7 +17,6 @@ from server import (
     DEFAULT_COOKIE_FILE,
     DEFAULT_DB,
     DEFAULT_LOG_DIR,
-    DEFAULT_SPACE_CACHE_DIR,
     DEFAULT_STATIC,
     CommentDanmakuServer,
     configure_task_services,

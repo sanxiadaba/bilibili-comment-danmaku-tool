@@ -222,53 +222,6 @@ def space_request_backoff():
     )
 
 
-def db_status(db_path, mid):
-    conn = connect(db_path)
-    try:
-        ensure_schema(conn)
-        conn.commit()
-        rows = conn.execute(
-            """
-            SELECT
-                v.bvid,
-                v.fetched_at,
-                v.video_cid,
-                v.api_comment_count,
-                v.stat_reply,
-                v.stat_danmaku,
-                COALESCE(c.comments, 0) AS comments,
-                COALESCE(d.danmaku, 0) AS danmaku
-            FROM videos v
-            LEFT JOIN (
-                SELECT bvid, COUNT(*) AS comments
-                FROM comments
-                GROUP BY bvid
-            ) c ON c.bvid = v.bvid
-            LEFT JOIN (
-                SELECT bvid, COUNT(*) AS danmaku
-                FROM danmaku
-                GROUP BY bvid
-            ) d ON d.bvid = v.bvid
-            WHERE v.owner_mid = ?
-            """,
-            (str(mid),),
-        ).fetchall()
-        return {
-            row["bvid"]: {
-                "fetched_at": row["fetched_at"],
-                "video_cid": row["video_cid"],
-                "api_comment_count": row["api_comment_count"],
-                "stat_reply": row["stat_reply"],
-                "stat_danmaku": row["stat_danmaku"],
-                "comments": row["comments"] or 0,
-                "danmaku": row["danmaku"] or 0,
-            }
-            for row in rows
-        }
-    finally:
-        conn.close()
-
-
 def db_status_for_bvid(db_path, bvid):
     db_path = Path(db_path)
     if not db_path.exists():

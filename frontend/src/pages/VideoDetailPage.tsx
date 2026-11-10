@@ -19,7 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { fetchCommentData, logClientEvent, refreshCommentData, stopRunningTask } from "../api/client";
+import { fetchCommentData,refreshCommentData, stopRunningTask } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
 import { CommentDetail } from "../components/comments/CommentDetail";
@@ -103,10 +103,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }, []);
 
   const refreshComments = useCallback(async () => {
-    logClientEvent("client.user.comments.refresh_start", "user started comment refresh", {
-      db_id: dbId,
-      bvid: data?.metadata.bvid || bvid,
-    });
     setIsRefreshing(true);
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
@@ -134,19 +130,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             : `已刷新，暂无新增评论，档案共 ${after} 条，仍可见 ${active} 条，未返回 ${deleted} 条`,
         );
       }
-      logClientEvent("client.user.comments.refresh_success", "comment refresh completed", {
-        db_id: dbId,
-        bvid: payload.metadata.bvid,
-        after_count: after,
-        active_count: active,
-        deleted_count: deleted,
-        added_count: added,
-      });
     } catch (reason: unknown) {
-      logClientEvent("client.user.comments.refresh_error", reason instanceof Error ? reason.message : String(reason), {
-        db_id: dbId,
-        bvid: data?.metadata.bvid || bvid,
-      });
       setError(reason instanceof Error ? reason.message : String(reason));
       setRefreshMessage("");
     } finally {
@@ -229,18 +213,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       ? idToThread.get(selectedComment.normalized.rpid)
       : idToThread.get(selectedComment?.normalized.root || "");
 
-  const topLocation = locations[0];
   const peakHour = [...hourly].sort((a, b) => b.count - a.count)[0];
   const totalLikes = allComments.reduce((sum, comment) => sum + (comment.normalized.like || 0), 0);
   const activeThreadItems = selectedThread ? flattenThread(selectedThread) : [];
   function resetFilters() {
-    logClientEvent("client.user.comments.reset_filters", "user reset comment filters", {
-      bvid: data?.metadata.bvid,
-      previous_sort: sortMode,
-      previous_level: levelFilter,
-      previous_location: location,
-      previous_min_likes: minLikes,
-    });
     setQuery("");
     setSortMode("like_desc");
     setLevelFilter("all");
@@ -249,12 +225,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }
 
   function exportFiltered() {
-    logClientEvent("client.user.comments.export", "user exported filtered comments", {
-      bvid: data?.metadata.bvid,
-      filtered_count: filteredComments.length,
-      total_count: allComments.length,
-      sort: sortMode,
-    });
     const header = [
       "level",
       "rpid",
@@ -373,12 +343,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             <a
               className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath("/", dbId)}
-              onClick={() =>
-                logClientEvent("client.user.comments.nav_library", "user opened video library from comments", {
-                  db_id: dbId,
-                  bvid: data.metadata.bvid,
-                })
-              }
             >
               <Database size={16} aria-hidden="true" />
               视频库
@@ -386,12 +350,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             <a
               className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath(`/danmaku/${data.metadata.bvid}`, dbId)}
-              onClick={() =>
-                logClientEvent("client.user.comments.nav_danmaku", "user opened danmaku page from comments", {
-                  db_id: dbId,
-                  bvid: data.metadata.bvid,
-                })
-              }
             >
               <Sparkles size={16} aria-hidden="true" />
               弹幕页
@@ -419,11 +377,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               href={data.metadata.source_url}
               rel="noreferrer"
               target="_blank"
-              onClick={() =>
-                logClientEvent("client.user.comments.open_source_video", "user opened source video from comments", {
-                  bvid: data.metadata.bvid,
-                })
-              }
             >
               <ExternalLink size={16} aria-hidden="true" />
               打开视频
@@ -568,12 +521,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                 active={selectedComment?.normalized.rpid === comment.normalized.rpid}
                 comment={comment}
                 onSelect={() => {
-                  logClientEvent("client.user.comments.select_item", "user selected comment item", {
-                    bvid: data.metadata.bvid,
-                    rpid: comment.normalized.rpid,
-                    like: comment.normalized.like || 0,
-                    level: comment.normalized.level,
-                  });
                   setSelectedId(comment.normalized.rpid);
                 }}
               />
@@ -626,13 +573,6 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                   key={comment.normalized.rpid}
                   type="button"
                   onClick={() => setSelectedId(comment.normalized.rpid)}
-                  onClickCapture={() =>
-                    logClientEvent("client.user.comments.select_top_liked", "user selected top liked comment", {
-                      bvid: data.metadata.bvid,
-                      rpid: comment.normalized.rpid,
-                      like: comment.normalized.like || 0,
-                    })
-                  }
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">

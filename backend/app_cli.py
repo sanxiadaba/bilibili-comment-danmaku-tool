@@ -15,7 +15,7 @@ from bilibili_comment_danmaku import (
     scrape_danmaku,
 )
 from bilibili_comment_danmaku import scraper
-from database_registry import DEFAULT_DATABASE_DIR, video_database_path_from_archive
+from database_registry import video_database_path_from_archive
 from space_archive import (
     SpaceArchiveService,
     api_error_response,

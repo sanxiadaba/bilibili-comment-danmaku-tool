@@ -1193,16 +1193,6 @@ def wal_file_size(db_path):
     return path.stat().st_size if path.exists() else 0
 
 
-def checkpoint_database_if_large(db_path, threshold_bytes=DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES):
-    if wal_file_size(db_path) < threshold_bytes:
-        return {
-            "checkpointed": False,
-            "wal_before": wal_file_size(db_path),
-            "wal_after": wal_file_size(db_path),
-        }
-    return checkpoint_database(db_path, truncate=True)
-
-
 def checkpoint_database(db_path, truncate=False):
     db_path = Path(db_path)
     wal_before = wal_file_size(db_path)
@@ -1351,19 +1341,6 @@ def fetch_scalar_batch(conn, sql_template, bvids, limit):
 def chunked(items, size):
     for index in range(0, len(items), size):
         yield list(items[index : index + size])
-
-
-def delete_video_rows(conn, bvids):
-    params = list(bvids)
-    marks = placeholders(len(params))
-    deleted_user_rows = conn.execute(f"SELECT DISTINCT mid FROM comments WHERE bvid IN ({marks}) AND mid IS NOT NULL AND mid != ''", params).fetchall()
-    deleted_user_mids = [row["mid"] for row in deleted_user_rows]
-    conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
-    conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))", params)
-    conn.execute(f"DELETE FROM comments WHERE bvid IN ({marks})", params)
-    conn.execute(f"DELETE FROM danmaku WHERE bvid IN ({marks})", params)
-    conn.execute(f"DELETE FROM videos WHERE bvid IN ({marks})", params)
-    cleanup_unreferenced_users(conn, deleted_user_mids)
 
 
 def cleanup_unreferenced_users(conn, mids=None):

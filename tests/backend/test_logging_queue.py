@@ -14,7 +14,6 @@ from pathlib import Path
 from helpers import BVID, make_archive, make_comment
 
 from app_logging import BoundedQueueHandler, configure_logging, shutdown_logging, clean_fields  # noqa: E402
-from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload  # noqa: E402
 from database_registry import (  # noqa: E402
     import_database_file,
     list_database_catalog,
@@ -593,7 +592,6 @@ class TaskQueueTests(unittest.TestCase):
         import space_archive
 
         original_fetch_space_videos = space_archive.fetch_space_videos
-        original_db_status = space_archive.db_status
         original_scrape_comments = space_archive.scrape_comments
         original_save_comments = space_archive.save_comments_to_sqlite
         original_cookie_status = space_archive.inspect_cookie_status
@@ -632,14 +630,12 @@ class TaskQueueTests(unittest.TestCase):
 
         try:
             space_archive.fetch_space_videos = lambda *args, **kwargs: [{"bvid": "BV1xx411c7mD"}]
-            space_archive.db_status = lambda *args, **kwargs: {}
             space_archive.scrape_comments = fake_scrape_comments
             space_archive.save_comments_to_sqlite = lambda *args, **kwargs: None
             space_archive.inspect_cookie_status = lambda *args, **kwargs: {"nav_checked": False}
             service.run_archive_task(task)
         finally:
             space_archive.fetch_space_videos = original_fetch_space_videos
-            space_archive.db_status = original_db_status
             space_archive.scrape_comments = original_scrape_comments
             space_archive.save_comments_to_sqlite = original_save_comments
             space_archive.inspect_cookie_status = original_cookie_status

@@ -112,19 +112,6 @@ export function buildOwnerGroups(videos: VideoSummary[], ownerSummaries: OwnerSu
   });
 }
 
-export function filterVideos(videos: VideoSummary[], ownerFilter: string, query: string) {
-  const needle = query.trim().toLowerCase();
-  const ownerScopedVideos = ownerFilter === "all" ? videos : videos.filter((video) => ownerKey(video) === ownerFilter);
-  if (!needle) return ownerScopedVideos;
-  return ownerScopedVideos.filter((video) => {
-    return (
-      video.title.toLowerCase().includes(needle) ||
-      video.bvid.toLowerCase().includes(needle) ||
-      (video.owner_name || "").toLowerCase().includes(needle)
-    );
-  });
-}
-
 export function summarizeVideos(videos: VideoSummary[]): VideoTotals {
   return videos.reduce(
     (acc, video) => {

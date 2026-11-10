@@ -8,7 +8,6 @@ from bilibili_comment_danmaku.archive import import_archive_json_to_sqlite, read
 from bilibili_comment_danmaku.storage import (
     connect,
     connect_readonly,
-    ensure_schema,
     ensure_schema_if_needed,
     list_video_summaries_page,
 )

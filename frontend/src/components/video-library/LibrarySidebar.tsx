@@ -9,6 +9,7 @@ type LibrarySidebarProps = {
   activeDatabase?: DatabaseInfo;
   cookieStatus?: CookieStatus | null;
   duplicateVideo: VideoSummary | null;
+  exporting: boolean;
   hasSpaceQueueWork: boolean;
   hotplugDir: string;
   isParsing: boolean;
@@ -40,6 +41,7 @@ export function LibrarySidebar({
   activeDatabase,
   cookieStatus,
   duplicateVideo,
+  exporting,
   hasSpaceQueueWork,
   hotplugDir,
   isParsing,
@@ -153,6 +155,7 @@ export function LibrarySidebar({
         </div>
       )}
       <OwnerFilterList
+        exporting={exporting}
         ownerFilter={ownerFilter}
         ownerGroups={ownerGroups}
         totals={totals}
@@ -237,6 +240,7 @@ function DuplicateVideoNotice({ disabled, isParsing, video, onOpen, onReparse }:
 }
 
 type OwnerFilterListProps = {
+  exporting: boolean;
   ownerFilter: string;
   ownerGroups: OwnerGroup[];
   totals: {
@@ -249,6 +253,7 @@ type OwnerFilterListProps = {
 };
 
 function OwnerFilterList({
+  exporting,
   ownerFilter,
   ownerGroups,
   totals,
@@ -297,6 +302,7 @@ function OwnerFilterList({
                 active={ownerFilter === owner.key}
                 commentCount={owner.commentCount}
                 danmakuCount={owner.danmakuCount}
+                exporting={exporting}
                 key={owner.key}
                 name={owner.name}
                 storageBytes={owner.storageBytes}

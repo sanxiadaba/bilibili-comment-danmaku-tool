@@ -408,7 +408,3 @@ def parse_int(value, default):
 
 def clamp_float(value, minimum, maximum):
     return max(minimum, min(maximum, value))
-
-
-def clamp_int(value, minimum, maximum):
-    return max(minimum, min(maximum, value))

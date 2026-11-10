@@ -333,12 +333,12 @@ class AppCliTests(unittest.TestCase):
     def test_frontend_uses_packaged_favicon(self):
         html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
         favicon = ROOT / "frontend" / "public" / "favicon.png"
-        source_icon = ROOT / "assets" / "app-icon.png"
 
         self.assertIn('<link rel="icon" type="image/png" href="/favicon.png" />', html)
         self.assertIn("<title>Bilibili 评论弹幕工具</title>", html)
         self.assertTrue(favicon.exists())
-        self.assertEqual(favicon.read_bytes(), source_icon.read_bytes())
+        # The favicon is loaded on every first visit; the packaging icon may be much larger.
+        self.assertLess(favicon.stat().st_size, 64 * 1024)
 
 
 if __name__ == "__main__":

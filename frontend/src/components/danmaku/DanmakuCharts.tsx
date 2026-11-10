@@ -1,6 +1,5 @@
 import type { DanmakuItem } from "../../types";
 import { formatNumber } from "../../lib/utils";
-import { ColorSwatch } from "./ColorSwatch";
 import {
   colorNumberToHex,
   formatProgress,
@@ -152,4 +151,3 @@ export function RepeatedDanmakuList({ items, onSelect }: RepeatedDanmakuListProp
   );
 }
 
-export { ColorSwatch };

@@ -1,6 +1,5 @@
 import { ThumbsUp } from "lucide-react";
-import type { CommentNode } from "../../types";
-import { cleanIpLocation, formatDateTime, normalizeImageUrl } from "../../lib/utils";
+import { normalizeImageUrl } from "../../lib/utils";
 import { Avatar } from "../ui/Avatar";
 import { getBilibiliUserUrl } from "./commentUtils";
 
@@ -122,4 +121,3 @@ export function AuthorList({ authors }: AuthorListProps) {
   );
 }
 
-export type LikedComment = CommentNode;

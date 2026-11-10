@@ -10,11 +10,9 @@ import {
   fetchVideos,
   importDatabase,
   importDatabaseFiles,
-  logClientEvent,
   openLocalPath,
   parseVideo,
 } from "../api/client";
-import { ExportChoiceDialog } from "../components/video-library/ExportChoiceDialog";
 import { AuthPanel } from "../components/video-library/AuthPanel";
 import { BatchManagementPanel } from "../components/video-library/BatchManagementPanel";
 import { DeleteConfirmDialog } from "../components/video-library/DeleteConfirmDialog";
@@ -27,7 +25,7 @@ import { NoticeDialog } from "../components/video-library/NoticeDialog";
 import { StatusStrips } from "../components/video-library/StatusStrips";
 import { TaskManagementPanel } from "../components/video-library/TaskManagementPanel";
 import { taskActionLabel } from "../components/video-library/taskUtils";
-import type { LibraryView, ManagementView, NoticeState } from "../components/video-library/types";
+import type { LibraryView, NoticeState } from "../components/video-library/types";
 import { VideoListPanel } from "../components/video-library/VideoListPanel";
 import { useProgressPolling } from "../hooks/useProgressPolling";
 import { mergeProgressIntoQueue, taskHideKeys } from "../lib/progressQueue";
@@ -39,16 +37,13 @@ import {
   deletePayloadForTarget,
   deleteTargetVideoCount,
   extractBvid,
-  filterVideos,
   formatBytes,
   initialDatabaseId,
   mergeVideosByBvid,
   singleDatabaseIdForVideos,
-  summarizeOwnerRef,
   summarizeVideos,
-  videoExportLabel,
 } from "../lib/videoLibrary";
-import type { CookieStatus, DatabaseInfo, DeleteTarget, ExportFormat, ExportTarget, OwnerGroup, OwnerSummary, ProgressQueue, ProgressTask, TaskControlAction, VideoSummary } from "../types";
+import type { CookieStatus, DatabaseInfo, DeleteTarget, ExportFormat, OwnerGroup, OwnerSummary, ProgressQueue, ProgressTask, TaskControlAction, VideoSummary } from "../types";
 
 const VIDEO_PAGE_SIZE = 40;
 
@@ -70,7 +65,6 @@ export function VideoLibraryPage() {
   const [isLoadingDatabases, setIsLoadingDatabases] = useState(true);
   const [importPath, setImportPath] = useState("");
   const [isImporting, setIsImporting] = useState(false);
-  const [managementView, setManagementView] = useState<ManagementView>("queue");
   const [libraryView, setLibraryView] = useState<LibraryView>("videos");
   const [isControllingTask, setIsControllingTask] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
@@ -81,7 +75,6 @@ export function VideoLibraryPage() {
   const [isSubmittingSpace, setIsSubmittingSpace] = useState(false);
   const [exportingKey, setExportingKey] = useState("");
   const [deletingKey, setDeletingKey] = useState("");
-  const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
@@ -212,7 +205,14 @@ export function VideoLibraryPage() {
           has_browser_id: false,
           bili_ticket_expires_at: "",
           bili_ticket_expired: false,
-        } as CookieStatus);
+          nav_checked: false,
+          nav_code: null,
+          nav_message: "",
+          is_login: false,
+          mid_present: false,
+          uname_present: false,
+          wbi_present: false,
+        });
       });
   }, []);
 
@@ -251,7 +251,6 @@ export function VideoLibraryPage() {
 
   useEffect(() => {
     if (!hasSpaceQueueWork) return;
-    setManagementView("queue");
     const timer = window.setInterval(() => {
       void loadVideos({ includeMeta: false, quiet: true });
     }, 15000);
@@ -275,8 +274,6 @@ export function VideoLibraryPage() {
   const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
   const selectedOwnerName = selectedOwner?.name;
 
-  const filteredVideos = videos;
-
   const totals = useMemo(() => summarizeVideos(videos), [videos]);
 
   async function loadMoreVideos() {
@@ -287,7 +284,6 @@ export function VideoLibraryPage() {
     event.preventDefault();
     const target = url.trim();
     if (!target) {
-      logClientEvent("client.user.parse.invalid_input", "parse submitted without video reference");
       setError("请输入 Bilibili 视频链接或 BV 号");
       return;
     }
@@ -295,10 +291,6 @@ export function VideoLibraryPage() {
     const bvid = extractBvid(target);
     const existingVideo = bvid ? videos.find((video) => video.bvid.toLowerCase() === bvid.toLowerCase()) : undefined;
     if (existingVideo) {
-      logClientEvent("client.user.parse.duplicate_detected", "existing video detected before parse", {
-        bvid: existingVideo.bvid,
-        title: existingVideo.title,
-      });
       setDuplicateVideo(existingVideo);
       setPendingParseTarget(target);
       setError("");
@@ -329,7 +321,6 @@ export function VideoLibraryPage() {
   async function openExportDirectory(path: string) {
     try {
       await openLocalPath(path);
-      logClientEvent("client.user.export.open_folder", "opened export folder", { path });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setNotice({ kind: "error", title: "打开文件夹失败", message: text });
@@ -342,7 +333,6 @@ export function VideoLibraryPage() {
       return;
     }
     setExportingKey(`owner:${owner.key}`);
-    setExportTarget(null);
     setError("");
     setMessage(`正在导出 ${owner.name} 的 UP 主${format === "json" ? " JSON 文件" : "独立数据库"}`);
     try {
@@ -358,55 +348,10 @@ export function VideoLibraryPage() {
       );
       setNotice(exportSuccessNotice(payload, format === "json" ? "UP 主 JSON 导出完成" : "UP 主数据库导出完成"));
       await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
-      logClientEvent("client.user.database_export.owner_success", "owner database exported", {
-        db_id: activeDbId,
-        owner: owner.name,
-        owner_mid: owner.ownerMid,
-        video_count: payload.video_count,
-        size_bytes: payload.size_bytes,
-      });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
       setNotice({ kind: "error", title: "UP 主数据库导出失败", message: text });
-      logClientEvent("client.user.database_export.owner_error", text, {
-        owner: owner.name,
-        owner_mid: owner.ownerMid,
-        video_count: owner.videoCount,
-      });
-    } finally {
-      setExportingKey("");
-    }
-  }
-
-  async function exportVideoDatabase(video: VideoSummary, format: ExportFormat) {
-    const targetDbId = video.db_id || activeDbId;
-    setExportingKey(`video:${video.bvid}`);
-    setExportTarget(null);
-    setError("");
-    setMessage(`正在导出 ${video.bvid} 的${format === "json" ? " JSON 文件" : "独立数据库"}`);
-    try {
-      const payload = await exportDatabaseArchive({
-        bvid: video.bvid,
-        db_id: targetDbId,
-        format,
-        label: videoExportLabel(video),
-      });
-      setMessage(`导出完成：${payload.relative_path}，${formatBytes(payload.size_bytes)}`);
-      setNotice(exportSuccessNotice(payload, format === "json" ? "视频 JSON 导出完成" : "视频数据库导出完成"));
-      await loadDatabases({ quiet: true, selectId: payload.database?.id || activeDbId });
-      logClientEvent("client.user.database_export.video_success", "video database exported", {
-        db_id: targetDbId,
-        bvid: video.bvid,
-        size_bytes: payload.size_bytes,
-      });
-    } catch (reason: unknown) {
-      const text = reason instanceof Error ? reason.message : String(reason);
-      setError(text);
-      setNotice({ kind: "error", title: "视频数据库导出失败", message: text });
-      logClientEvent("client.user.database_export.video_error", text, {
-        bvid: video.bvid,
-      });
     } finally {
       setExportingKey("");
     }
@@ -531,8 +476,7 @@ export function VideoLibraryPage() {
       setDeleteTarget(null);
       setOwnerFilter("all");
       setLibraryView("tasks");
-      setManagementView("queue");
-      if (payloadTarget.owner_mid) {
+        if (payloadTarget.owner_mid) {
         setVideos((current) => current.filter((video) => video.owner_mid !== payloadTarget.owner_mid));
         setOwnerSummaries((current) => current.filter((owner) => owner.owner_mid !== payloadTarget.owner_mid));
       } else {
@@ -554,34 +498,16 @@ export function VideoLibraryPage() {
         void loadVideos({ quiet: true });
         void loadDatabases({ quiet: true, selectId: refreshDbId });
       }, 8000);
-      logClientEvent("client.user.archive_delete.success", "archive delete task queued", {
-        db_id: targetDbId,
-        target: target.kind,
-        task_id: payload.task_id,
-        queue_position: payload.queue_position,
-        queued_videos: deleteTargetVideoCount(target),
-      });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
       setNotice({ kind: "error", title: "删除失败", message: text });
-      logClientEvent("client.user.archive_delete.error", text, {
-        db_id: activeDbId,
-        target: target.kind,
-      });
     } finally {
       setDeletingKey("");
     }
   }
 
   async function runParse(target: string) {
-    const targetBvid = extractBvid(target);
-    logClientEvent("client.user.parse.start", "user started video parse", {
-      bvid: targetBvid,
-      db_id: activeDbId,
-      delay: parseDelay,
-      source: duplicateVideo ? "duplicate_confirm" : "form",
-    });
     setLibraryView("tasks");
     setIsParsing(true);
     setDuplicateVideo(null);
@@ -596,21 +522,8 @@ export function VideoLibraryPage() {
         next.delete(`id:parse:${payload.bvid}`);
         return next;
       });
-      logClientEvent("client.user.parse.success", "video parse task queued", {
-        db_id: activeDbId,
-        bvid: payload.bvid,
-        task_id: payload.task_id,
-        queue_position: payload.queue_position,
-        scraped_count: payload.scraped_count || 0,
-        after_count: payload.after_count || 0,
-        danmaku_count: payload.danmaku_count || 0,
-      });
       setMessage(payload.message || `视频抓取任务已加入队列：${payload.bvid}`);
     } catch (reason: unknown) {
-      logClientEvent("client.user.parse.error", reason instanceof Error ? reason.message : String(reason), {
-        db_id: activeDbId,
-        bvid: targetBvid,
-      });
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
     } finally {
@@ -622,16 +535,10 @@ export function VideoLibraryPage() {
     event.preventDefault();
     const target = ownerRef.trim();
     if (!target) {
-      logClientEvent("client.user.space_archive.invalid_input", "space archive submitted without owner reference");
       setError("请输入 UP 主主页链接或 mid");
       return;
     }
 
-    logClientEvent("client.user.space_archive.start", "user started space archive", {
-      db_id: activeDbId,
-      owner_ref: summarizeOwnerRef(target),
-      delay: parseDelay,
-    });
     setIsArchivingSpace(true);
     setIsSubmittingSpace(true);
     setError("");
@@ -644,16 +551,7 @@ export function VideoLibraryPage() {
       setOwnerRef(payload.mid);
       setLibraryView("tasks");
       setMessage(`已加入抓取队列：${payload.mid}，排队第 ${payload.queue_position} 个`);
-      logClientEvent("client.user.space_archive.accepted", "space archive task accepted", {
-        db_id: activeDbId,
-        mid: payload.mid,
-        task_id: payload.task_id,
-        queue_position: payload.queue_position,
-      });
     } catch (reason: unknown) {
-      logClientEvent("client.user.space_archive.error", reason instanceof Error ? reason.message : String(reason), {
-        owner_ref: summarizeOwnerRef(target),
-      });
       setIsArchivingSpace(false);
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
@@ -672,14 +570,9 @@ export function VideoLibraryPage() {
       }
       const actionLabel = taskActionLabel(action);
       setMessage(taskId ? `任务已请求${actionLabel}` : `全部任务已请求${actionLabel}`);
-      logClientEvent("client.user.space_task.control", "space task control requested", {
-        action,
-        task_id: taskId,
-      });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
-      logClientEvent("client.user.space_task.control_error", text, { action, task_id: taskId });
     } finally {
       setIsControllingTask(false);
     }
@@ -703,19 +596,11 @@ export function VideoLibraryPage() {
 
   function openVideo(video: VideoSummary) {
     const targetDbId = video.db_id || activeDbId;
-    logClientEvent("client.user.video.open_existing", "opened existing local archive", {
-      db_id: targetDbId,
-      bvid: video.bvid,
-      title: video.title,
-    });
     window.history.pushState({}, "", dbPath(`/video/${video.bvid}`, targetDbId));
     window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
   async function refreshDatabaseCatalog() {
-    logClientEvent("client.user.databases.refresh", "user refreshed database catalog", {
-      db_id: activeDbId,
-    });
     setError("");
     await loadDatabases({ includeDetails: true, selectId: activeDbId });
     await loadVideos({ quiet: true });
@@ -746,23 +631,17 @@ export function VideoLibraryPage() {
         title: "数据库导入完成",
         message: `${payload.database.relative_path} 已导入并切换，包含 ${payload.database.video_count} 个视频`,
       });
-      logClientEvent("client.user.databases.import_success", "database imported", {
-        db_id: payload.database.id,
-        file_name: payload.database.file_name,
-        video_count: payload.database.video_count,
-      });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
       setMessage("");
       setNotice({ kind: "error", title: "数据库导入失败", message: text });
-      logClientEvent("client.user.databases.import_error", text);
     } finally {
       setIsImporting(false);
     }
   }
 
-  async function importSelectedFiles(fileList: FileList | null, source: "file" | "folder") {
+  async function importSelectedFiles(fileList: FileList | null) {
     const selectedFiles = Array.from(fileList || []).filter((file) => /\.(db|sqlite|sqlite3|json)$/i.test(file.name));
     if (!selectedFiles.length) {
       setNotice({ kind: "error", title: "未选择导入文件", message: "请选择 .db / .sqlite / .sqlite3 或 .json 文件" });
@@ -787,17 +666,11 @@ export function VideoLibraryPage() {
           .filter(Boolean)
           .join("。"),
       });
-      logClientEvent("client.user.databases.import_file_success", "database files imported", {
-        db_id: database.id,
-        file_count: selectedFiles.length,
-        source,
-      });
     } catch (reason: unknown) {
       const text = reason instanceof Error ? reason.message : String(reason);
       setError(text);
       setMessage("");
       setNotice({ kind: "error", title: "数据库文件导入失败", message: text });
-      logClientEvent("client.user.databases.import_file_error", text, { file_count: selectedFiles.length, source });
     } finally {
       setIsImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -811,7 +684,6 @@ export function VideoLibraryPage() {
     const path = dbId === "main" ? "/" : `/?db_id=${encodeURIComponent(dbId)}`;
     window.history.replaceState({}, "", path);
     if (reload) {
-      logClientEvent("client.user.databases.select", "user selected database", { db_id: dbId });
       setMessage("");
       setError("");
     }
@@ -827,16 +699,9 @@ export function VideoLibraryPage() {
         showSettings={showSettings}
         videoCount={videoTotal || videos.length}
         onRefresh={() => {
-          logClientEvent("client.user.videos.refresh_click", "user refreshed video list", {
-            db_id: activeDbId,
-            video_count: videos.length,
-          });
           void refreshDatabaseCatalog();
         }}
         onToggleSettings={() => {
-          logClientEvent("client.user.settings.toggle", "user toggled parse settings", {
-            show_settings: !showSettings,
-          });
           setShowSettings((value) => !value);
         }}
       />
@@ -868,6 +733,7 @@ export function VideoLibraryPage() {
             activeDatabase={activeDatabase}
             cookieStatus={cookieStatus}
             duplicateVideo={duplicateVideo}
+            exporting={Boolean(exportingKey)}
             hasSpaceQueueWork={hasSpaceQueueWork}
             hotplugDir={hotplugDir}
             isParsing={isParsing}
@@ -884,17 +750,10 @@ export function VideoLibraryPage() {
             onDuplicateOpen={openVideo}
             onDuplicateReparse={() => {
               if (!duplicateVideo) return;
-              logClientEvent("client.user.parse.duplicate_confirm", "user confirmed reparsing existing video", {
-                bvid: duplicateVideo.bvid,
-              });
               void runParse(pendingParseTarget);
             }}
             onOwnerExport={(owner, format) => void exportOwnerDatabase(owner, format)}
-            onOwnerFilterChange={(key, owner) => {
-              logClientEvent("client.user.videos.owner_filter", "user selected owner filter", {
-                owner: owner?.name || "all",
-                video_count: owner?.videoCount,
-              });
+            onOwnerFilterChange={(key) => {
               setOwnerFilter(key);
             }}
             onOwnerRefChange={setOwnerRef}
@@ -916,7 +775,7 @@ export function VideoLibraryPage() {
             totalVideoCount={videos.length}
             backendTotalVideoCount={videoTotal}
             hasMore={hasMoreVideos}
-            videos={filteredVideos}
+            videos={videos}
             onLoadMore={() => void loadMoreVideos()}
             onQueryChange={setQuery}
           />
@@ -947,22 +806,17 @@ export function VideoLibraryPage() {
         <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
           <ManagementPanel
             activeDbId={activeDbId}
-            cookieStatus={cookieStatus}
             databases={databases}
             hotplugDir={hotplugDir}
             importPath={importPath}
             isImporting={isImporting}
             isLoading={isLoadingDatabases}
-            queue={spaceQueue}
-            view={managementView === "queue" ? "database" : managementView}
-            onCookieStatusChange={setCookieStatus}
             onImportPathChange={setImportPath}
             onPickFiles={() => fileInputRef.current?.click()}
             onPickFolder={() => folderInputRef.current?.click()}
             onRefresh={() => void refreshDatabaseCatalog()}
             onSelect={setActiveDatabase}
             onSubmitImport={submitDatabaseImport}
-            onViewChange={setManagementView}
           />
           <input
             ref={fileInputRef}
@@ -970,7 +824,7 @@ export function VideoLibraryPage() {
             type="file"
             accept=".db,.sqlite,.sqlite3,.json"
             multiple
-            onChange={(event) => void importSelectedFiles(event.target.files, "file")}
+            onChange={(event) => void importSelectedFiles(event.target.files)}
           />
           <input
             ref={folderInputRef}
@@ -980,7 +834,7 @@ export function VideoLibraryPage() {
             multiple
             // @ts-expect-error Chromium supports folder selection via webkitdirectory.
             webkitdirectory="true"
-            onChange={(event) => void importSelectedFiles(event.target.files, "folder")}
+            onChange={(event) => void importSelectedFiles(event.target.files)}
           />
         </section>
       )}
@@ -989,19 +843,6 @@ export function VideoLibraryPage() {
         <section className="mx-auto max-w-[1540px] px-4 pb-4 lg:px-6">
           <AuthPanel cookieStatus={cookieStatus} onStatusChange={setCookieStatus} />
         </section>
-      )}
-      {exportTarget && (
-        <ExportChoiceDialog
-          target={exportTarget}
-          onClose={() => setExportTarget(null)}
-          onChoose={(format) => {
-            if (exportTarget.kind === "owner") {
-              void exportOwnerDatabase(exportTarget.owner, format);
-            } else {
-              void exportVideoDatabase(exportTarget.video, format);
-            }
-          }}
-        />
       )}
       {deleteTarget && (
         <DeleteConfirmDialog

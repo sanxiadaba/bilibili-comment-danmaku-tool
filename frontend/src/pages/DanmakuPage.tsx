@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   BarChart3,
   Clock3,
   Database,
@@ -13,10 +12,9 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
-  ThumbsUp,
 } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { fetchDanmakuData, logClientEvent, refreshDanmakuData } from "../api/client";
+import { fetchDanmakuData,refreshDanmakuData } from "../api/client";
 import { DanmakuColorList, DanmakuModeChart, DanmakuTimelineChart, RepeatedDanmakuList } from "../components/danmaku/DanmakuCharts";
 import { DanmakuDetail } from "../components/danmaku/DanmakuDetail";
 import { DanmakuListRow } from "../components/danmaku/DanmakuList";
@@ -27,7 +25,6 @@ import {
   buildDanmakuModeStats,
   buildRepeatedDanmakuContent,
   colorNumberToHex,
-  danmakuModeLabels,
   danmakuSortLabels,
   formatProgress,
   getDanmakuModeGroup,
@@ -156,23 +153,12 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   }, [sortedItems]);
 
   async function refreshCurrentDanmaku() {
-    logClientEvent("client.user.danmaku.refresh_start", "user started danmaku refresh", {
-      db_id: dbId,
-      bvid: danmaku?.metadata.bvid || bvid,
-    });
     setIsRefreshing(true);
     setError("");
     setMessage("正在重新抓取弹幕");
     try {
       const payload = await refreshDanmakuData(danmaku?.metadata.bvid || bvid, dbId);
       applyDanmakuPayload(payload);
-      logClientEvent("client.user.danmaku.refresh_success", "danmaku refresh completed", {
-        db_id: dbId,
-        bvid: payload.metadata.bvid,
-        after_count: payload.metadata.total_count,
-        scraped_count: payload.refresh?.scraped_count,
-        warning: Boolean(payload.refresh?.warning),
-      });
       setMessage(
         payload.refresh?.warning ||
           `已刷新弹幕：本次抓到 ${payload.refresh?.scraped_count ?? payload.metadata.total_count} 条，档案共 ${
@@ -180,10 +166,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
           } 条`,
       );
     } catch (reason: unknown) {
-      logClientEvent("client.user.danmaku.refresh_error", reason instanceof Error ? reason.message : String(reason), {
-        db_id: dbId,
-        bvid: danmaku?.metadata.bvid || bvid,
-      });
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
     } finally {
@@ -193,13 +175,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
 
   function exportDanmaku() {
     if (!danmaku) return;
-    logClientEvent("client.user.danmaku.export", "user exported filtered danmaku", {
-      bvid: danmaku.metadata.bvid,
-      filtered_count: sortedItems.length,
-      total_count: totalCount,
-      sort: sortMode,
-      mode_filter: modeFilter,
-    });
     const header = ["progress", "time", "dmid", "mode", "font_size", "color", "like_count", "is_up_owner", "ctime", "content"];
     const rows = sortedItems.map((item) => [
       item.progress,
@@ -224,12 +199,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   }
 
   function resetDanmakuFilters() {
-    logClientEvent("client.user.danmaku.reset_filters", "user reset danmaku filters", {
-      bvid: danmaku?.metadata.bvid || bvid,
-      previous_sort: sortMode,
-      previous_mode: modeFilter,
-      previous_progress_range: progressRange,
-    });
     setQuery("");
     setSortMode("like_desc");
     setModeFilter("all");
@@ -272,12 +241,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             <a
               className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath("/", dbId)}
-              onClick={() =>
-                logClientEvent("client.user.danmaku.nav_library", "user opened video library from danmaku", {
-                  db_id: dbId,
-                  bvid: danmaku?.metadata.bvid || bvid,
-                })
-              }
             >
               <Database size={16} aria-hidden="true" />
               视频库
@@ -285,12 +248,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             <a
               className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={dbPath(`/video/${danmaku?.metadata.bvid || bvid || ""}`, dbId)}
-              onClick={() =>
-                logClientEvent("client.user.danmaku.nav_comments", "user opened comments from danmaku", {
-                  db_id: dbId,
-                  bvid: danmaku?.metadata.bvid || bvid,
-                })
-              }
             >
               <MessageCircle size={16} aria-hidden="true" />
               评论页
@@ -309,11 +266,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               href={`https://www.bilibili.com/video/${danmaku?.metadata.bvid || bvid || ""}`}
               rel="noreferrer"
               target="_blank"
-              onClick={() =>
-                logClientEvent("client.user.danmaku.open_source_video", "user opened source video from danmaku", {
-                  bvid: danmaku?.metadata.bvid || bvid,
-                })
-              }
             >
               <ExternalLink size={16} aria-hidden="true" />
               打开视频
@@ -445,12 +397,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
                 active={selectedItem?.dmid === item.dmid}
                 item={item}
                 onSelect={() => {
-                  logClientEvent("client.user.danmaku.select_item", "user selected danmaku item", {
-                    bvid: danmaku?.metadata.bvid || bvid,
-                    dmid: item.dmid,
-                    like_count: item.like_count || 0,
-                    progress: item.progress,
-                  });
                   setSelectedId(item.dmid);
                 }}
               />
@@ -491,18 +437,13 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             <RepeatedDanmakuList
               items={repeatedContent}
               onSelect={(item) => {
-                logClientEvent("client.user.danmaku.select_repeated", "user selected repeated danmaku", {
-                  bvid: danmaku?.metadata.bvid || bvid,
-                  dmid: item.sample.dmid,
-                  repeat_count: item.count,
-                });
                 setSelectedId(item.sample.dmid);
               }}
             />
           </Panel>
 
           <Panel icon={Sparkles} title="弹幕明细" action="全量可滚动">
-            <DanmakuPanel danmaku={danmaku} items={sortedItems} compact />
+            <DanmakuPanel danmaku={danmaku} items={sortedItems} />
           </Panel>
         </section>
 

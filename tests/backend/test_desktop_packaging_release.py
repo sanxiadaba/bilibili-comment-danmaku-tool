@@ -119,7 +119,9 @@ class DesktopPackagingReleaseTests(unittest.TestCase):
         self.assertIn('Move-Item -Force -LiteralPath $generatedDir -Destination $internalDir', script)
         self.assertIn('New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "data")', script)
         self.assertIn('New-Item -ItemType Directory -Force -Path (Join-Path $outputDir "logs")', script)
-        self.assertIn('foreach ($leftover in @("desktop_entry.build", "desktop_entry.dist", "desktop_entry.onefile-build", "data"))', script)
+        # The Nuitka build directory is kept so a rebuild can reuse compiled C objects.
+        self.assertIn('foreach ($leftover in @("desktop_entry.dist", "desktop_entry.onefile-build", "data"))', script)
+        self.assertNotIn('"desktop_entry.build", "desktop_entry.dist"', script)
         self.assertNotIn("--onefile", script)
 
     def test_build_script_icon_is_applied_to_inner_runtime_launcher_and_status_form(self):
@@ -131,32 +133,28 @@ class DesktopPackagingReleaseTests(unittest.TestCase):
         self.assertIn("Icon.ExtractAssociatedIcon(Application.ExecutablePath)", script)
         self.assertIn("Application.EnableVisualStyles();", script)
 
-    def test_release_workflow_only_auto_releases_merge_commits_with_code_paths(self):
+    def test_release_workflow_runs_on_tags_or_manual_dispatch_only(self):
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-        self.assertIn("branches:", workflow)
-        self.assertIn("- main", workflow)
-        for path in ('"backend/**"', '"frontend/**"', '"scripts/**"', '"package.json"', '"pnpm-lock.yaml"'):
-            self.assertIn(path, workflow)
-        self.assertNotIn('"README.md"', workflow)
-        self.assertIn("Allow only merge commits for automatic releases", workflow)
-        self.assertIn('parent_count="$(git show -s --format=%P HEAD | wc -w | tr -d', workflow)
-        self.assertIn('if [[ "$parent_count" -ge 2 ]]; then', workflow)
-        self.assertIn("reason=not-a-merge-commit", workflow)
-        for action in (
-            "actions/checkout@v6",
-            "actions/setup-node@v6",
-            "actions/setup-python@v6",
-            "astral-sh/setup-uv@v8.2.0",
-            "actions/upload-artifact@v7",
-            "softprops/action-gh-release@v3",
-        ):
-            self.assertIn(action, workflow)
-        self.assertIn("package-manager-cache: false", workflow)
-        self.assertIn("enable-cache: false", workflow)
-        self.assertNotIn("@v2", workflow)
-        self.assertNotIn("@v4", workflow)
-        self.assertNotIn("@v5", workflow)
+        self.assertIn('      - "v*"', workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("branches:", workflow)
+        self.assertNotIn("Allow only merge commits", workflow)
+        self.assertIn("timeout-minutes: 45", workflow)
+        self.assertIn("pnpm/action-setup@v4", workflow)
+        self.assertIn("cache: pnpm", workflow)
+        self.assertNotIn("upload-artifact", workflow)
+
+    def test_ci_runs_once_per_push_on_a_linux_runner(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("branches-ignore:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertIn("runs-on: ubuntu-latest", workflow)
+        self.assertNotIn("windows-latest", workflow)
+        self.assertIn("timeout-minutes: 15", workflow)
+        self.assertIn("cache: pnpm", workflow)
+        self.assertNotIn("corepack prepare", workflow)
 
 
 if __name__ == "__main__":
