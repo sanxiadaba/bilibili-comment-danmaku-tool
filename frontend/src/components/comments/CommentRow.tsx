@@ -22,14 +22,22 @@ export function CommentRow({ comment, active, onSelect }: CommentRowProps) {
   const normalized = comment.normalized;
   const profileUrl = getBilibiliUserUrl(normalized.mid);
   return (
-    <button
+    <div
+      aria-current={active ? "true" : undefined}
       className={cn(
         "block w-full border-b border-line/80 px-4 py-3 text-left transition hover:bg-white/70",
         active && "bg-pink-50/90 shadow-[inset_3px_0_0_#fb7299]",
         normalized.is_deleted && "bg-red-50/45 hover:bg-red-50",
       )}
-      type="button"
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
     >
       <div className="flex items-center gap-3">
         <Avatar
@@ -68,6 +76,6 @@ export function CommentRow({ comment, active, onSelect }: CommentRowProps) {
         comment={comment}
       />
       <CommentImages comment={comment} compact />
-    </button>
+    </div>
   );
 }
