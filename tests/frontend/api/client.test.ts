@@ -31,6 +31,15 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}) {
   });
 }
 
+/** Every API call also emits a telemetry POST; assertions should look at the real request. */
+function apiCalls(fetchMock: { mock: { calls: unknown[][] } }) {
+  return fetchMock.mock.calls.filter(([url]) => !String(url).startsWith("/api/logs/client"));
+}
+
+function firstApiCall(fetchMock: { mock: { calls: unknown[][] } }) {
+  return apiCalls(fetchMock)[0] as [string, RequestInit];
+}
+
 describe("API client", () => {
   const originalFetch = globalThis.fetch;
 
@@ -47,6 +56,26 @@ describe("API client", () => {
     vi.restoreAllMocks();
   });
 
+  it("sends library search and owner filters to the backend", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [], total: 0 }));
+    globalThis.fetch = fetchMock;
+
+    await fetchVideos("main", { query: "测试", ownerKey: "mid:42", limit: 40, offset: 0 });
+
+    const url = firstApiCall(fetchMock)[0];
+    expect(url).toContain("q=%E6%B5%8B%E8%AF%95");
+    expect(url).toContain("owner=mid%3A42");
+  });
+
+  it("omits the owner filter for the all-owners pseudo key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [], total: 0 }));
+    globalThis.fetch = fetchMock;
+
+    await fetchVideos("main", { ownerKey: "all" });
+
+    expect(firstApiCall(fetchMock)[0]).not.toContain("owner=");
+  });
+
   it("adds db ids to list requests and parses JSON", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ videos: [] }));
     globalThis.fetch = fetchMock;
@@ -55,9 +84,9 @@ describe("API client", () => {
 
     expect(payload.videos).toEqual([]);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/videos?"), expect.objectContaining({ cache: "no-store" }));
-    expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive+1");
-    expect(fetchMock.mock.calls[0][0]).toContain("limit=40");
-    expect(fetchMock.mock.calls[0][0]).toContain("offset=80");
+    expect(firstApiCall(fetchMock)[0]).toContain("db_id=archive+1");
+    expect(firstApiCall(fetchMock)[0]).toContain("limit=40");
+    expect(firstApiCall(fetchMock)[0]).toContain("offset=80");
   });
 
   it("passes abort signals through read requests", async () => {
@@ -73,9 +102,9 @@ describe("API client", () => {
     await fetchCommentData("BV1xx411c7mD", "archive", { signal: controller.signal });
     await fetchDanmakuData("BV1xx411c7mD", "archive", { signal: controller.signal });
 
-    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
-    expect(fetchMock.mock.calls[1][1].signal).toBe(controller.signal);
-    expect(fetchMock.mock.calls[2][1].signal).toBe(controller.signal);
+    expect(firstApiCall(fetchMock)[1].signal).toBe(controller.signal);
+    expect(apiCalls(fetchMock)[1][1].signal).toBe(controller.signal);
+    expect(apiCalls(fetchMock)[2][1].signal).toBe(controller.signal);
   });
 
   it("can skip heavy video metadata on append requests", async () => {
@@ -84,7 +113,7 @@ describe("API client", () => {
 
     await fetchVideos("main", { includeMeta: false, limit: 40, offset: 40 });
 
-    expect(fetchMock.mock.calls[0][0]).toContain("include_meta=0");
+    expect(firstApiCall(fetchMock)[0]).toContain("include_meta=0");
   });
 
   it("can skip heavy database catalog details", async () => {
@@ -93,8 +122,8 @@ describe("API client", () => {
 
     await fetchDatabases("main", { includeDetails: false });
 
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/databases?");
-    expect(fetchMock.mock.calls[0][0]).toContain("include_details=0");
+    expect(firstApiCall(fetchMock)[0]).toContain("/api/databases?");
+    expect(firstApiCall(fetchMock)[0]).toContain("include_details=0");
   });
 
   it("sends parse, space archive, import and export payloads", async () => {
@@ -109,26 +138,26 @@ describe("API client", () => {
     await openLocalPath("D:/data/databases");
     await deleteArchiveData({ bvid: "BV1xx411c7mD", db_id: "main" });
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
+    expect(JSON.parse(firstApiCall(fetchMock)[1].body as string)).toMatchObject({
       url: "BV1xx411c7mD",
       delay: 0.5,
       db_id: "main",
     });
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({
+    expect(JSON.parse(apiCalls(fetchMock)[1][1].body as string)).toMatchObject({
       owner_ref: "https://space.bilibili.com/123456",
       delay: 1,
       db_id: "main",
     });
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ action: "pause", task_id: "space-1" });
-    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({ path: "D:/archive.json" });
-    expect(JSON.parse(fetchMock.mock.calls[4][1].body as string)).toMatchObject({
+    expect(JSON.parse(apiCalls(fetchMock)[2][1].body as string)).toEqual({ action: "pause", task_id: "space-1" });
+    expect(JSON.parse(apiCalls(fetchMock)[3][1].body as string)).toEqual({ path: "D:/archive.json" });
+    expect(JSON.parse(apiCalls(fetchMock)[4][1].body as string)).toMatchObject({
       format: "json",
       bvid: "BV1xx411c7mD",
     });
-    expect(fetchMock.mock.calls[5][0]).toContain("/api/system/open-path?");
-    expect(JSON.parse(fetchMock.mock.calls[5][1].body as string)).toEqual({ path: "D:/data/databases" });
-    expect(fetchMock.mock.calls[6][0]).toContain("/api/archive/delete?");
-    expect(JSON.parse(fetchMock.mock.calls[6][1].body as string)).toMatchObject({
+    expect(apiCalls(fetchMock)[5][0]).toContain("/api/system/open-path?");
+    expect(JSON.parse(apiCalls(fetchMock)[5][1].body as string)).toEqual({ path: "D:/data/databases" });
+    expect(apiCalls(fetchMock)[6][0]).toContain("/api/archive/delete?");
+    expect(JSON.parse(apiCalls(fetchMock)[6][1].body as string)).toMatchObject({
       bvid: "BV1xx411c7mD",
       db_id: "main",
     });
@@ -143,18 +172,18 @@ describe("API client", () => {
     await fetchDanmakuData("BV1xx411c7mD", "archive");
     await refreshDanmakuData("BV1xx411c7mD", "archive");
 
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/comments?");
-    expect(fetchMock.mock.calls[0][0]).toContain("bvid=BV1xx411c7mD");
-    expect(fetchMock.mock.calls[0][0]).toContain("db_id=archive");
-    expect(fetchMock.mock.calls[0][0]).toContain("limit=500");
-    expect(fetchMock.mock.calls[0][0]).toContain("offset=100");
-    expect(fetchMock.mock.calls[1][0]).toContain("/api/refresh?");
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
-    expect((fetchMock.mock.calls[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
-    expect(fetchMock.mock.calls[2][0]).toContain("/api/danmaku?");
-    expect(fetchMock.mock.calls[2][0]).not.toContain("limit=");
-    expect(fetchMock.mock.calls[3][0]).toContain("/api/danmaku/refresh?");
-    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "POST" });
+    expect(firstApiCall(fetchMock)[0]).toContain("/api/comments?");
+    expect(firstApiCall(fetchMock)[0]).toContain("bvid=BV1xx411c7mD");
+    expect(firstApiCall(fetchMock)[0]).toContain("db_id=archive");
+    expect(firstApiCall(fetchMock)[0]).toContain("limit=500");
+    expect(firstApiCall(fetchMock)[0]).toContain("offset=100");
+    expect(apiCalls(fetchMock)[1][0]).toContain("/api/refresh?");
+    expect(apiCalls(fetchMock)[1][1]).toMatchObject({ method: "POST" });
+    expect((apiCalls(fetchMock)[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
+    expect(apiCalls(fetchMock)[2][0]).toContain("/api/danmaku?");
+    expect(apiCalls(fetchMock)[2][0]).not.toContain("limit=");
+    expect(apiCalls(fetchMock)[3][0]).toContain("/api/danmaku/refresh?");
+    expect(apiCalls(fetchMock)[3][1]).toMatchObject({ method: "POST" });
   });
 
   it("supports optional danmaku limits for control callers", async () => {
@@ -163,8 +192,8 @@ describe("API client", () => {
 
     await fetchDanmakuData("BV1xx411c7mD", "archive", { limit: 2000 });
 
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/danmaku?");
-    expect(fetchMock.mock.calls[0][0]).toContain("limit=2000");
+    expect(firstApiCall(fetchMock)[0]).toContain("/api/danmaku?");
+    expect(firstApiCall(fetchMock)[0]).toContain("limit=2000");
   });
 
   it("adds the local browser guard header to mutating requests", async () => {
@@ -174,8 +203,8 @@ describe("API client", () => {
     await parseVideo("BV1xx411c7mD", 0.5, "main");
     await importDatabaseFiles([new File(["payload"], "archive.json")]);
 
-    expect((fetchMock.mock.calls[0][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
-    expect((fetchMock.mock.calls[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
+    expect((firstApiCall(fetchMock)[1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
+    expect((apiCalls(fetchMock)[1][1].headers as Headers).get("X-Bilibili-Tool-Request")).toBe("1");
   });
 
   it("preserves caller headers while adding the local browser guard header", async () => {
@@ -185,8 +214,8 @@ describe("API client", () => {
     await saveCookie("SESSDATA=session; bili_jct=csrf");
     await pollAuthQrCode("session-1234567890");
 
-    const saveHeaders = fetchMock.mock.calls[0][1].headers as Headers;
-    const pollHeaders = fetchMock.mock.calls[1][1].headers as Headers;
+    const saveHeaders = firstApiCall(fetchMock)[1].headers as Headers;
+    const pollHeaders = apiCalls(fetchMock)[1][1].headers as Headers;
     expect(saveHeaders.get("Content-Type")).toBe("application/json");
     expect(saveHeaders.get("X-Bilibili-Tool-Request")).toBe("1");
     expect(pollHeaders.get("Content-Type")).toBe("application/json");
@@ -199,7 +228,7 @@ describe("API client", () => {
 
     await fetchVideos("main");
 
-    expect(fetchMock.mock.calls[0][1].headers).toBeUndefined();
+    expect(firstApiCall(fetchMock)[1].headers).toBeUndefined();
   });
 
   it("uploads selected database files as multipart form data", async () => {
@@ -209,8 +238,8 @@ describe("API client", () => {
 
     await importDatabaseFiles([file]);
 
-    const requestInit = fetchMock.mock.calls[0][1];
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/databases/import-file?");
+    const requestInit = firstApiCall(fetchMock)[1];
+    expect(firstApiCall(fetchMock)[0]).toContain("/api/databases/import-file?");
     expect(requestInit.method).toBe("POST");
     expect(requestInit.body).toBeInstanceOf(FormData);
     const uploadedFile = Array.from((requestInit.body as FormData).getAll("files"))[0] as File;
@@ -228,14 +257,14 @@ describe("API client", () => {
     await createAuthQrCode();
     await pollAuthQrCode("session-1234567890");
 
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/cookie/save?");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ cookie: "SESSDATA=session; bili_jct=csrf" });
-    expect(fetchMock.mock.calls[1][0]).toContain("/api/cookie/clear?");
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
-    expect(fetchMock.mock.calls[2][0]).toContain("/api/auth/qrcode?");
-    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST" });
-    expect(fetchMock.mock.calls[3][0]).toContain("/api/auth/qrcode/poll?");
-    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({ session_id: "session-1234567890" });
+    expect(firstApiCall(fetchMock)[0]).toContain("/api/cookie/save?");
+    expect(JSON.parse(firstApiCall(fetchMock)[1].body as string)).toEqual({ cookie: "SESSDATA=session; bili_jct=csrf" });
+    expect(apiCalls(fetchMock)[1][0]).toContain("/api/cookie/clear?");
+    expect(apiCalls(fetchMock)[1][1]).toMatchObject({ method: "POST" });
+    expect(apiCalls(fetchMock)[2][0]).toContain("/api/auth/qrcode?");
+    expect(apiCalls(fetchMock)[2][1]).toMatchObject({ method: "POST" });
+    expect(apiCalls(fetchMock)[3][0]).toContain("/api/auth/qrcode/poll?");
+    expect(JSON.parse(apiCalls(fetchMock)[3][1].body as string)).toEqual({ session_id: "session-1234567890" });
   });
 
   it("reports JSON API errors and HTML fallback responses clearly", async () => {
@@ -251,18 +280,21 @@ describe("API client", () => {
     await expect(fetchProgress()).rejects.toThrow(/API/);
   });
 
-  it("uses sendBeacon for client logs and ignores failures", () => {
-    logClientEvent("client.test", "hello", { bvid: "BV1xx411c7mD" });
-    expect(navigator.sendBeacon).toHaveBeenCalledWith("/api/logs/client", expect.any(Blob));
+  it("sends client logs with the local guard header", () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
 
-    vi.stubGlobal("navigator", {
-      sendBeacon: vi.fn(() => {
-        throw new Error("blocked");
-      }),
-    });
-    globalThis.fetch = vi.fn(() => {
-      throw new Error("network down");
-    }) as typeof fetch;
+    logClientEvent("client.test", "hello", { bvid: "BV1xx411c7mD" });
+
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === "/api/logs/client") as [string, RequestInit];
+    expect(call).toBeTruthy();
+    const headers = new Headers(call[1].headers);
+    expect(headers.get("X-Bilibili-Tool-Request")).toBe("1");
+    expect(call[1].method).toBe("POST");
+  });
+
+  it("ignores client log failures", () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down"))) as typeof fetch;
 
     expect(() => logClientEvent("client.test", "ignored")).not.toThrow();
   });

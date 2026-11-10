@@ -21,10 +21,16 @@ type RequestOptions = RequestInit & { signal?: AbortSignal };
 const MUTATING_REQUEST_HEADER = "X-Bilibili-Tool-Request";
 const POST_REQUEST: RequestOptions = { cache: "no-store", method: "POST" };
 
-export async function fetchDatabases(activeId = "main", options: { includeDetails?: boolean } = {}) {
+export async function fetchDatabases(
+  activeId = "main",
+  options: { includeDetails?: boolean; signal?: AbortSignal } = {},
+) {
   const query = new URLSearchParams({ ts: String(Date.now()), db_id: activeId });
   if (options.includeDetails === false) query.set("include_details", "0");
-  return requestJson<DatabaseListResponse>("databases.list", `/api/databases?${query.toString()}`, { cache: "no-store" });
+  return requestJson<DatabaseListResponse>("databases.list", `/api/databases?${query.toString()}`, {
+    cache: "no-store",
+    signal: options.signal,
+  });
 }
 
 export async function fetchCookieStatus() {
@@ -98,11 +104,23 @@ export async function fetchCommentData(bvid?: string, dbId = "main", options: { 
   return requestJson<CommentData>("comments.load", `/api/comments?${query.toString()}`, { cache: "no-store", signal: options.signal }, { bvid, db_id: dbId });
 }
 
-export async function fetchVideos(dbId = "main", options: { includeMeta?: boolean; limit?: number; offset?: number; signal?: AbortSignal } = {}) {
+export async function fetchVideos(
+  dbId = "main",
+  options: {
+    includeMeta?: boolean;
+    limit?: number;
+    offset?: number;
+    query?: string;
+    ownerKey?: string;
+    signal?: AbortSignal;
+  } = {},
+) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (options.limit) query.set("limit", String(options.limit));
   if (options.offset) query.set("offset", String(options.offset));
   if (options.includeMeta === false) query.set("include_meta", "0");
+  if (options.query) query.set("q", options.query);
+  if (options.ownerKey && options.ownerKey !== "all") query.set("owner", options.ownerKey);
   appendDbId(query, dbId);
   return requestJson<VideoListResponse>("videos.list", `/api/videos?${query.toString()}`, { cache: "no-store", signal: options.signal }, { db_id: dbId, limit: options.limit, offset: options.offset });
 }
@@ -209,8 +227,8 @@ export async function refreshCommentData(bvid?: string, dbId = "main") {
   );
 }
 
-export async function fetchProgress() {
-  const response = await fetch(`/api/progress?ts=${Date.now()}`, { cache: "no-store" });
+export async function fetchProgress(signal?: AbortSignal) {
+  const response = await fetch(`/api/progress?ts=${Date.now()}`, { cache: "no-store", signal });
   return parseJsonResponse<ProgressState>(response);
 }
 
@@ -226,27 +244,29 @@ export function logClientEvent(event: string, message = "", fields: LogFields = 
     },
   });
 
-  try {
-    if (navigator.sendBeacon) {
-      const blob = new Blob([payload], { type: "application/json" });
-      navigator.sendBeacon("/api/logs/client", blob);
-      return;
-    }
-  } catch {
-    // Logging should never block the user's workflow.
-  }
-
-  try {
+  // The backend rejects every mutating request that arrives from a browser without the local
+  // guard header, and sendBeacon cannot set headers — so telemetry must go through fetch.
+  const send = () => {
     void fetch("/api/logs/client", {
       body: payload,
       cache: "no-store",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", [MUTATING_REQUEST_HEADER]: "1" },
       keepalive: true,
       method: "POST",
+    }).catch(() => {
+      // Client logging must never surface as a user-visible failure.
     });
+  };
+
+  try {
+    if (document.visibilityState === "hidden" && navigator.sendBeacon) {
+      navigator.sendBeacon("/api/logs/client", new Blob([payload], { type: "application/json" }));
+      return;
+    }
   } catch {
-    // Ignore client-side logging failures.
+    // Fall through to fetch.
   }
+  send();
 }
 
 async function requestJson<T>(event: string, url: string, init?: RequestOptions, fields: LogFields = {}) {
