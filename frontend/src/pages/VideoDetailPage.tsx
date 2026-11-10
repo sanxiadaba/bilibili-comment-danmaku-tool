@@ -69,6 +69,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [selectedId, setSelectedId] = useState("");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const requestSeqRef = useRef(0);
   const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
 
@@ -103,6 +105,9 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }, []);
 
   const refreshComments = useCallback(async () => {
+    requestSeqRef.current += 1;
+    loadAbortRef.current?.abort();
+    loadMoreAbortRef.current?.abort();
     setIsRefreshing(true);
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
@@ -138,28 +143,37 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     }
   }, [applyPayload, bvid, data?.metadata.bvid, dbId]);
 
-  useEffect(() => {
+  const loadComments = useCallback(async () => {
+    loadAbortRef.current?.abort();
     const controller = new AbortController();
-    fetchCommentData(bvid, dbId, { limit: COMMENT_PAGE_SIZE, signal: controller.signal })
-      .then((payload) => {
-        applyPayload(payload);
-        setError("");
-        setRefreshMessage("");
-      })
-      .catch((reason: unknown) => {
-        if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setError(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => {
-      controller.abort();
-    };
+    loadAbortRef.current = controller;
+    const seq = ++requestSeqRef.current;
+    setError("");
+    try {
+      const payload = await fetchCommentData(bvid, dbId, { limit: COMMENT_PAGE_SIZE, signal: controller.signal });
+      if (seq !== requestSeqRef.current) return;
+      applyPayload(payload);
+      setRefreshMessage("");
+    } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (seq !== requestSeqRef.current) return;
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   }, [applyPayload, bvid, dbId]);
+
+  useEffect(() => {
+    void loadComments();
+    return () => {
+      loadAbortRef.current?.abort();
+    };
+  }, [loadComments]);
 
   const loadMoreComments = useCallback(async () => {
     if (!data?.metadata.has_more || isLoadingMore) return;
     loadMoreAbortRef.current?.abort();
     const controller = new AbortController();
     loadMoreAbortRef.current = controller;
+    const seq = requestSeqRef.current;
     setIsLoadingMore(true);
     setError("");
     try {
@@ -169,9 +183,11 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
         offset: data.comments.length,
         signal: controller.signal,
       });
+      if (seq !== requestSeqRef.current) return;
       applyPayload(payload, "append");
     } catch (reason: unknown) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (seq !== requestSeqRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       if (loadMoreAbortRef.current === controller) {
@@ -278,10 +294,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
           <button
             className="btn-primary mt-5 inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-medium"
             type="button"
-            onClick={refreshComments}
+            onClick={() => void loadComments()}
           >
-            <RefreshCcw className={cn(isRefreshing && "animate-spin")} size={16} aria-hidden="true" />
-            {isRefreshing ? "重新抓取中" : "重试"}
+            <RefreshCcw size={16} aria-hidden="true" />
+            重试
           </button>
         </div>
       </main>

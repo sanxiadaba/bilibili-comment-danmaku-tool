@@ -155,7 +155,7 @@ export async function refreshCommentData(bvid?: string, dbId = "main") {
 }
 
 export async function fetchProgress(signal?: AbortSignal) {
-  const response = await fetch(`/api/progress?ts=${Date.now()}`, { cache: "no-store", signal });
+  const response = await fetch(`/api/progress?ts=${Date.now()}`, withSignalTimeout({ cache: "no-store", signal }));
   return parseJsonResponse<ProgressState>(response);
 }
 

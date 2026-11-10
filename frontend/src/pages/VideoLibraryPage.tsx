@@ -32,7 +32,7 @@ import { mergeProgressIntoQueue, taskHideKeys } from "../lib/progressQueue";
 import {
   batchExportLabel,
   buildOwnerGroups,
-  databaseIdForDeleteTarget,
+  deleteRequestsForTarget,
   dbPath,
   deletePayloadForTarget,
   deleteTargetVideoCount,
@@ -82,6 +82,7 @@ export function VideoLibraryPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const videosRequestRef = useRef(0);
+  const hasLoadedVideosRef = useRef(false);
   const videosAbortRef = useRef<AbortController | null>(null);
   const databasesRequestRef = useRef(0);
   const databasesAbortRef = useRef<AbortController | null>(null);
@@ -92,8 +93,11 @@ export function VideoLibraryPage() {
   useEffect(() => {
     activeDbIdRef.current = activeDbId;
   }, [activeDbId]);
-  const parseProgress = useProgressPolling(isParsing, "parse");
-  const spaceProgress = useProgressPolling(true);
+  // One poller for the whole page: the backend tracks a single active task, so a second hook
+  // would double the request rate for the same data.
+  const polledProgress = useProgressPolling(true);
+  const spaceProgress = polledProgress;
+  const parseProgress = polledProgress?.kind === "parse" ? polledProgress : null;
   const [parseDelay, setParseDelay] = useState(() => {
     const saved = window.localStorage.getItem("bilibili-comment-delay");
     return saved ? Number(saved) || 0.35 : 0.35;
@@ -220,18 +224,17 @@ export function VideoLibraryPage() {
     setOwnerFilter("all");
     setDuplicateVideo(null);
     setPendingParseTarget("");
-    void loadVideos();
-  }, [activeDbId, loadVideos]);
+    hasLoadedVideosRef.current = false;
+  }, [activeDbId]);
 
   useEffect(() => {
     filtersRef.current = { query, ownerKey: ownerFilter };
-  }, [ownerFilter, query]);
-
-  useEffect(() => {
-    // Search and owner filters are applied server-side over the whole library, not just the
-    // rows already loaded; the debounce keeps typing from firing a request per keystroke.
+    // Search and owner filters are applied server-side over the whole library, not just the rows
+    // already loaded. The debounce keeps typing (and the owner reset on a db switch) from firing
+    // several requests for one state change.
     const handle = window.setTimeout(() => {
-      void loadVideos({ quiet: true });
+      void loadVideos({ quiet: hasLoadedVideosRef.current });
+      hasLoadedVideosRef.current = true;
     }, 250);
     return () => window.clearTimeout(handle);
   }, [loadVideos, ownerFilter, query]);
@@ -458,39 +461,44 @@ export function VideoLibraryPage() {
     if (!deleteTarget) return;
     const target = deleteTarget;
     const payloadTarget = deletePayloadForTarget(target);
-    const targetDbId = databaseIdForDeleteTarget(target, activeDbId);
-    if (!targetDbId) {
+    const requests = deleteRequestsForTarget(target, activeDbId);
+    if (!requests.length) {
       setNotice({
         kind: "warning",
-        title: "Cannot batch delete across databases",
-        message: "Selected videos are stored in different database files. Delete one video at a time, or select videos from one database.",
+        title: "请先选择数据库",
+        message:
+          target.kind === "video" || target.kind === "videos"
+            ? "所选视频不在同一个数据库文件里，无法一次删除；请逐个删除，或先切换到具体数据库。"
+            : "「全部视频」是聚合视图，没有对应的数据库文件；请先在左侧选择具体数据库，或到批量管理里按视频删除。",
       });
       return;
     }
-    const removedBvids = new Set(payloadTarget.bvids || []);
+    const removedBvids = new Set(payloadTarget.bvids || (payloadTarget.bvid ? [payloadTarget.bvid] : []));
     setDeletingKey(`delete:${target.kind}`);
     setError("");
     setMessage("");
     try {
-      const payload = await deleteArchiveData({ db_id: targetDbId, ...payloadTarget });
+      for (const request of requests) {
+        await deleteArchiveData(request);
+      }
       setDeleteTarget(null);
       setOwnerFilter("all");
       setLibraryView("tasks");
-        if (payloadTarget.owner_mid) {
+      if (payloadTarget.owner_mid) {
         setVideos((current) => current.filter((video) => video.owner_mid !== payloadTarget.owner_mid));
         setOwnerSummaries((current) => current.filter((owner) => owner.owner_mid !== payloadTarget.owner_mid));
       } else {
         setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
       }
       setVideoTotal((current) => Math.max(0, current - deleteTargetVideoCount(target)));
-      setMessage(payload.message || `删除任务已加入队列：${payload.task_id || "等待执行"}`);
+      setMessage(requests.length > 1 ? `已提交 ${requests.length} 个数据库的删除任务` : "删除任务已加入队列");
       setNotice({
         kind: "success",
         title: "删除任务已提交",
         message: "本地档案会在后台删除，任务列表会显示进度；完成后数据库空间也会在后台整理。",
       });
       if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
-      const refreshDbId = targetDbId;
+      const refreshDbId = activeDbId;
       refreshTimerRef.current = window.setTimeout(() => {
         // Bail out if the user switched database while the delete ran.
         if (activeDbIdRef.current !== refreshDbId) return;

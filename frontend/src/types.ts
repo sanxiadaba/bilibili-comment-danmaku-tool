@@ -184,6 +184,8 @@ export type DanmakuData = {
     scraped_count: number;
     logs?: string[];
     warning?: string;
+    stopped?: boolean;
+    reason?: string;
   };
 };
 

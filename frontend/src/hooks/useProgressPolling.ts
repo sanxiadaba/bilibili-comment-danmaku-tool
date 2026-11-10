@@ -11,6 +11,10 @@ function hasRunningWork(progress: ProgressState | null) {
   return Array.isArray(progress.queue?.queued) && progress.queue.queued.length > 0;
 }
 
+function tabHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
 export function useProgressPolling(enabled: boolean, kind?: string) {
   const [progress, setProgress] = useState<ProgressState | null>(null);
 
@@ -20,7 +24,16 @@ export function useProgressPolling(enabled: boolean, kind?: string) {
     let timer: number | undefined;
     let controller: AbortController | undefined;
 
+    const schedule = (delay: number) => {
+      if (!stopped) timer = window.setTimeout(tick, delay);
+    };
+
     const tick = async () => {
+      // A background tab does not need a progress bar; resume as soon as it is visible again.
+      if (tabHidden()) {
+        schedule(IDLE_POLL_MS);
+        return;
+      }
       try {
         controller = new AbortController();
         const payload = await fetchProgress(controller.signal);
@@ -30,11 +43,10 @@ export function useProgressPolling(enabled: boolean, kind?: string) {
         if (!kind || payload.kind === kind) {
           setProgress(payload);
         }
-        const delay = hasRunningWork(payload) ? ACTIVE_POLL_MS : IDLE_POLL_MS;
-        if (!stopped) timer = window.setTimeout(tick, delay);
+        schedule(hasRunningWork(payload) ? ACTIVE_POLL_MS : IDLE_POLL_MS);
       } catch {
         // Progress is best-effort; the main request still owns the final result.
-        if (!stopped) timer = window.setTimeout(tick, IDLE_POLL_MS);
+        schedule(IDLE_POLL_MS);
       }
     };
 

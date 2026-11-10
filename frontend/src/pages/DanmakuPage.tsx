@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { fetchDanmakuData,refreshDanmakuData } from "../api/client";
 import { DanmakuColorList, DanmakuModeChart, DanmakuTimelineChart, RepeatedDanmakuList } from "../components/danmaku/DanmakuCharts";
 import { DanmakuDetail } from "../components/danmaku/DanmakuDetail";
@@ -43,6 +43,9 @@ import { dbPath } from "../lib/videoLibrary";
 import type { DanmakuData } from "../types";
 
 const DANMAKU_PAGE_SIZE = 2000;
+// Nobody filters 50k danmaku by hand; the cap only stops a pathological archive from
+// exhausting browser memory.
+const MAX_DANMAKU_ITEMS = 50_000;
 
 export function DanmakuPage({ bvid }: { bvid?: string }) {
   const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
@@ -56,7 +59,8 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const requestSeqRef = useRef(0);
   const deferredQuery = useDeferredValue(query);
   const danmakuProgress = useProgressPolling(isRefreshing, "danmaku");
 
@@ -79,39 +83,45 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   }, []);
 
   const loadDanmaku = useCallback(async () => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const seq = ++requestSeqRef.current;
     setIsLoading(true);
     setError("");
     try {
-      const payload = await fetchDanmakuData(bvid, dbId, { limit: DANMAKU_PAGE_SIZE });
-      applyDanmakuPayload(payload);
+      let payload = await fetchDanmakuData(bvid, dbId, { limit: DANMAKU_PAGE_SIZE, signal: controller.signal });
+      let items = payload.items;
+      // The API pages in fixed slices; the page itself needs every row so the charts and filters
+      // cover the whole video instead of silently stopping at the first 2000.
+      while (payload.metadata.has_more && payload.items.length && items.length < MAX_DANMAKU_ITEMS) {
+        payload = await fetchDanmakuData(payload.metadata.bvid, dbId, {
+          limit: DANMAKU_PAGE_SIZE,
+          offset: items.length,
+          signal: controller.signal,
+        });
+        items = items.concat(payload.items);
+      }
+      if (seq !== requestSeqRef.current) return;
+      applyDanmakuPayload({ ...payload, items });
       setMessage("");
     } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (seq !== requestSeqRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setIsLoading(false);
+      if (seq === requestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [applyDanmakuPayload, bvid, dbId]);
 
   useEffect(() => {
     void loadDanmaku();
+    return () => {
+      loadAbortRef.current?.abort();
+    };
   }, [loadDanmaku]);
-
-  const loadMoreDanmaku = useCallback(async () => {
-    if (!danmaku?.metadata.has_more || isLoadingMore) return;
-    setIsLoadingMore(true);
-    setError("");
-    try {
-      const payload = await fetchDanmakuData(danmaku.metadata.bvid, dbId, {
-        limit: DANMAKU_PAGE_SIZE,
-        offset: danmaku.items.length,
-      });
-      applyDanmakuPayload(payload, "append");
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setIsLoadingMore(false);
-    }
-  }, [applyDanmakuPayload, danmaku, dbId, isLoadingMore]);
 
   const allItems = danmaku?.items || [];
   const maxProgress = Math.max(0, danmaku?.metadata.max_progress || 0);
@@ -153,6 +163,8 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
   }, [sortedItems]);
 
   async function refreshCurrentDanmaku() {
+    requestSeqRef.current += 1;
+    loadAbortRef.current?.abort();
     setIsRefreshing(true);
     setError("");
     setMessage("正在重新抓取弹幕");
@@ -165,6 +177,9 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             payload.metadata.total_count
           } 条`,
       );
+      if (!payload.refresh?.stopped) {
+        await loadDanmaku();
+      }
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
@@ -402,21 +417,6 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               />
             )}
           />
-          {danmaku?.metadata.has_more && (
-            <div className="border-t border-line p-3">
-              <button
-                className="btn-secondary flex h-10 w-full items-center justify-center gap-2 rounded-md px-3 text-sm font-medium"
-                type="button"
-                disabled={isLoadingMore}
-                onClick={() => void loadMoreDanmaku()}
-              >
-                <RefreshCcw className={cn(isLoadingMore && "animate-spin")} size={16} aria-hidden="true" />
-                {isLoadingMore
-                  ? "加载中"
-                  : `加载更多 ${formatNumber(allItems.length)} / ${formatNumber(danmaku.metadata.total_count)}`}
-              </button>
-            </div>
-          )}
         </aside>
 
         <section className="grid min-w-0 gap-4">

@@ -5,6 +5,7 @@ import {
   databaseIdForDeleteTarget,
   dbPath,
   deletePayloadForTarget,
+  deleteRequestsForTarget,
   deleteTargetVideoCount,
   extractBvid,
   formatBytes,
@@ -128,5 +129,18 @@ describe("video library helpers", () => {
     formatBytes(2048);
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+
+  it("plans one delete request per database and refuses owner deletes in the aggregate view", () => {
+    const first = makeVideo({ bvid: "BV1Alpha001", db_id: "db:a" });
+    const second = makeVideo({ bvid: "BV1Beta0001", db_id: "db:b" });
+    const owner = buildOwnerGroups([makeVideo({ owner_mid: "42", owner_name: "Alice" })])[0];
+
+    expect(deleteRequestsForTarget({ kind: "videos", videos: [first, second] }, "main")).toEqual([
+      { db_id: "db:a", bvids: ["BV1Alpha001"] },
+      { db_id: "db:b", bvids: ["BV1Beta0001"] },
+    ]);
+    expect(deleteRequestsForTarget({ kind: "owner", owner }, "main")).toEqual([]);
+    expect(deleteRequestsForTarget({ kind: "owner", owner }, "db:a")).toEqual([{ db_id: "db:a", owner_mid: "42" }]);
   });
 });
