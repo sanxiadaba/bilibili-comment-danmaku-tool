@@ -21,6 +21,30 @@ progress_state = {
     "error": "",
 }
 queue_snapshot_provider = None
+stop_lock = threading.Lock()
+stop_flags = {}
+
+
+def request_stop(kind):
+    """Ask the in-flight synchronous task of this kind to stop at its next safe point."""
+    kind = str(kind or "").strip() or "all"
+    with stop_lock:
+        stop_flags[kind] = True
+    log_event("task.stop.requested", "stop requested for a running task", kind=kind)
+
+
+def is_stop_requested(kind):
+    kind = str(kind or "").strip() or "all"
+    with stop_lock:
+        return bool(stop_flags.get(kind) or stop_flags.get("all"))
+
+
+def clear_stop(kind=None):
+    with stop_lock:
+        if kind is None:
+            stop_flags.clear()
+        else:
+            stop_flags.pop(str(kind or "").strip(), None)
 
 
 def set_queue_snapshot_provider(provider):
