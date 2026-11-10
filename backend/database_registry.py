@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bilibili_comment_danmaku.archive import import_archive_json_to_sqlite, read_archive_meta
-from bilibili_comment_danmaku.storage import connect, connect_readonly, ensure_schema, list_video_summaries_page
+from bilibili_comment_danmaku.storage import (
+    connect,
+    connect_readonly,
+    ensure_schema,
+    ensure_schema_if_needed,
+    list_video_summaries_page,
+)
 from errors import BadRequestError
 
 
@@ -15,7 +21,6 @@ DEFAULT_DATABASE_DIR = ROOT / "data" / "databases"
 DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
-AGGREGATE_VIDEO_LIST_LIMIT = 100000
 
 
 def resolve_database_path(db_id, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
@@ -237,9 +242,11 @@ def list_all_video_summaries_page(main_db_path=DEFAULT_DB, database_dir=DEFAULT_
         if not Path(db_path).exists():
             continue
         try:
+            # limit=None reads every video in the database; the per-request page size is applied
+            # after merging, otherwise large databases silently lose everything past row 200.
             page = list_video_summaries_page(
                 db_path,
-                limit=AGGREGATE_VIDEO_LIST_LIMIT,
+                limit=None,
                 offset=0,
                 include_owners=False,
             )
@@ -384,7 +391,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
         conn = connect(path) if include_details else connect_readonly(path)
         try:
             if include_details:
-                ensure_schema(conn)
+                ensure_schema_if_needed(conn)
                 conn.commit()
             archive_meta = read_archive_meta(conn)
             storage = database_storage_info(conn, path)

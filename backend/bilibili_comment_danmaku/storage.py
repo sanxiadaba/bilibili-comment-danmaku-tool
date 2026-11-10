@@ -144,6 +144,9 @@ CREATE INDEX IF NOT EXISTS idx_danmaku_bvid_ctime ON danmaku (bvid, ctime, dmid)
 
 SQLITE_CACHE_SIZE_KB = 64 * 1024
 SQLITE_MMAP_SIZE_BYTES = 256 * 1024 * 1024
+# Bump whenever SCHEMA_SQL or the column migrations change, so existing files get migrated once.
+SCHEMA_VERSION = 1
+MAX_VIDEO_LIST_LIMIT = 200
 
 
 def connect(db_path, readonly=False):
@@ -192,6 +195,27 @@ def ensure_schema(conn, journal_mode="WAL"):
     ensure_danmaku_column(conn, "like_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_danmaku_column(conn, "is_up_owner", "INTEGER NOT NULL DEFAULT 0")
     backfill_comment_lifecycle(conn)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def schema_is_current(conn):
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0]) == SCHEMA_VERSION
+    except (sqlite3.DatabaseError, TypeError, ValueError):
+        return False
+
+
+def ensure_schema_if_needed(conn, journal_mode="WAL"):
+    """Migrate only when the file is older than SCHEMA_VERSION.
+
+    Read paths used to run the full migration (journal-mode switch, column probes, lifecycle
+    backfill) on every request, which took a write lock and cost several ms per page. The
+    stamp makes that a single cheap pragma read once the file is current.
+    """
+    if schema_is_current(conn):
+        return False
+    ensure_schema(conn, journal_mode=journal_mode)
+    return True
 
 
 def ensure_comment_column(conn, name, definition):
@@ -681,7 +705,7 @@ def load_comment_data(db_path, bvid=None, limit=None, offset=0):
     offset = max(0, int(offset or 0))
     conn = connect(db_path)
     try:
-        ensure_schema(conn)
+        ensure_schema_if_needed(conn)
         conn.commit()
         if bvid:
             video = conn.execute("SELECT * FROM videos WHERE bvid = ?", (bvid,)).fetchone()
@@ -698,8 +722,9 @@ def load_comment_data(db_path, bvid=None, limit=None, offset=0):
             rows = select_comment_rows(conn, video["bvid"], limit=limit, offset=offset)
             metadata = metadata_from_comment_stats(video, comment_stats_for_video(conn, video["bvid"]))
 
-        pictures_by_rpid = load_pictures_by_rpid(conn, video["bvid"])
-        emotes_by_rpid = load_emotes_by_rpid(conn, video["bvid"])
+        page_rpids = None if limit is None else [str(row["rpid"]) for row in rows]
+        pictures_by_rpid = load_pictures_by_rpid(conn, video["bvid"], rpids=page_rpids)
+        emotes_by_rpid = load_emotes_by_rpid(conn, video["bvid"], rpids=page_rpids)
         nodes = []
         by_rpid = {}
         for row in rows:
@@ -749,7 +774,17 @@ def load_comment_data(db_path, bvid=None, limit=None, offset=0):
 
 
 def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True):
-    limit = max(1, min(int(limit or 40), 200))
+    """List one page of video summaries.
+
+    ``limit=None`` means "no cap", which the aggregate catalog uses to see every video in a
+    database. Callers that expose this directly to the UI keep the MAX_VIDEO_LIST_LIMIT clamp.
+    """
+    if limit is None:
+        page_limit = None
+        sql_limit = -1
+    else:
+        page_limit = max(1, min(int(limit or 40), MAX_VIDEO_LIST_LIMIT))
+        sql_limit = page_limit
     offset = max(0, int(offset or 0))
     conn = connect_readonly(db_path)
     try:
@@ -799,13 +834,13 @@ def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True):
             ) d ON d.bvid = v.bvid
             ORDER BY v.fetched_at DESC
             """,
-            (limit, offset),
+            (sql_limit, offset),
         ).fetchall()
         videos = [video_summary_from_row(row) for row in rows]
         payload = {
             "videos": videos,
             "total": total,
-            "limit": limit,
+            "limit": page_limit if page_limit is not None else total,
             "offset": offset,
             "has_more": offset + len(videos) < total,
         }
@@ -1299,16 +1334,29 @@ def video_summary_from_row(row):
     }
 
 
-def load_pictures_by_rpid(conn, bvid):
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM comment_pictures
-        WHERE rpid IN (SELECT rpid FROM comments WHERE bvid = ?)
-        ORDER BY id ASC
-        """,
-        (bvid,),
-    ).fetchall()
+def load_pictures_by_rpid(conn, bvid, rpids=None):
+    if rpids is None:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM comment_pictures
+            WHERE rpid IN (SELECT rpid FROM comments WHERE bvid = ?)
+            ORDER BY id ASC
+            """,
+            (bvid,),
+        ).fetchall()
+    else:
+        if not rpids:
+            return defaultdict(list)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM comment_pictures
+            WHERE rpid IN ({placeholders(len(rpids))})
+            ORDER BY id ASC
+            """,
+            list(rpids),
+        ).fetchall()
     pictures = defaultdict(list)
     for row in rows:
         pictures[str(row["rpid"])].append(
@@ -1324,16 +1372,29 @@ def load_pictures_by_rpid(conn, bvid):
     return pictures
 
 
-def load_emotes_by_rpid(conn, bvid):
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM comment_emotes
-        WHERE rpid IN (SELECT rpid FROM comments WHERE bvid = ?)
-        ORDER BY id ASC
-        """,
-        (bvid,),
-    ).fetchall()
+def load_emotes_by_rpid(conn, bvid, rpids=None):
+    if rpids is None:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM comment_emotes
+            WHERE rpid IN (SELECT rpid FROM comments WHERE bvid = ?)
+            ORDER BY id ASC
+            """,
+            (bvid,),
+        ).fetchall()
+    else:
+        if not rpids:
+            return defaultdict(dict)
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM comment_emotes
+            WHERE rpid IN ({placeholders(len(rpids))})
+            ORDER BY id ASC
+            """,
+            list(rpids),
+        ).fetchall()
     emotes = defaultdict(dict)
     for row in rows:
         text = row["text"]
