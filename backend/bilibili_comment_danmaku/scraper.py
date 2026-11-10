@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import paths
 from .storage import save_comments_to_sqlite
 from .url_utils import extract_bvid
 from .wbi import (
@@ -126,7 +127,7 @@ def default_backoff_state_path():
     configured = os.environ.get(BACKOFF_STATE_PATH_ENV)
     if configured:
         return Path(configured)
-    return Path(__file__).resolve().parents[2] / "data" / "bilibili_backoff_state.json"
+    return paths.state_file("bilibili_backoff_state.json")
 
 
 class RequestBackoff:

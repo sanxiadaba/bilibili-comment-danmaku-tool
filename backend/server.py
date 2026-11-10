@@ -26,6 +26,8 @@ from bilibili_comment_danmaku import (
     vacuum_database,
 )
 from bilibili_comment_danmaku import scraper
+from bilibili_comment_danmaku.paths import publish_data_dir
+from legacy_migration import migrate_legacy_database
 from database_registry import (
     DATABASE_EXTENSIONS,
     DEFAULT_DATABASE_DIR,
@@ -1655,6 +1657,8 @@ def main():
     )
     handler.db_path = prepare_database_path(handler.db_path)
     handler.database_dir.mkdir(parents=True, exist_ok=True)
+    publish_data_dir(handler.db_path.parent)
+    migrate_legacy_database(handler.db_path, handler.database_dir)
     configure_task_services(DEFAULT_COOKIE_FILE, DEFAULT_SPACE_CACHE_DIR, persist=True)
     space_archive_service.start_pending_tasks()
     video_parse_service.start_pending_tasks()

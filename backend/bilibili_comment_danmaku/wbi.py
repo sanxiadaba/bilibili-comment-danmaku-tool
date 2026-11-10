@@ -6,6 +6,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+from . import paths
+
 
 MIXIN_KEY_ENC_TAB = [
     46,
@@ -88,7 +90,7 @@ def default_wbi_cache_path():
     configured = os.environ.get(WBI_CACHE_PATH_ENV)
     if configured:
         return Path(configured)
-    return Path(__file__).resolve().parents[2] / "data" / "wbi_mixin_key.json"
+    return paths.state_file("wbi_mixin_key.json")
 
 
 def filename_stem(url):
