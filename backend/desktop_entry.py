@@ -1,3 +1,5 @@
+"""桌面入口：启动本地服务并打开浏览器；打包后的 exe 走这里。"""
+
 import argparse
 import sys
 import threading

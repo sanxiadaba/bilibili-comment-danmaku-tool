@@ -81,7 +81,23 @@ describe("video library components", () => {
           onQueryChange={() => undefined}
         />,
       ),
-    ).toContain("暂无");
+    ).toContain("还没有归档任何视频");
+
+    expect(
+      renderToStaticMarkup(
+        <VideoListPanel
+          activeDbId="main"
+          backendTotalVideoCount={5}
+          hasMore={false}
+          isLoading={false}
+          query="zzz"
+          totalVideoCount={5}
+          videos={[]}
+          onLoadMore={() => undefined}
+          onQueryChange={() => undefined}
+        />,
+      ),
+    ).toContain("没有匹配的视频");
 
     const html = renderToStaticMarkup(
       <VideoListPanel

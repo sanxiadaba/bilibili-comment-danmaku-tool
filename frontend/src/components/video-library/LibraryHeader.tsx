@@ -40,6 +40,9 @@ export function LibraryHeader({
           <h1 className="mt-3 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
             Bilibili 评论弹幕管理
           </h1>
+          <p className="mt-2 max-w-[720px] text-sm text-muted">
+            把视频的评论、楼中楼和弹幕存到本地：粘贴链接解析，或按 UP 主批量归档，然后在本地搜索、筛选、导出。
+          </p>
         </div>
         <div className="flex items-center gap-2 self-center">
           <button

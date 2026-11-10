@@ -1,3 +1,5 @@
+"""从首选端口开始找一个空闲端口，起 ThreadingHTTPServer。"""
+
 import errno
 from http.server import ThreadingHTTPServer
 

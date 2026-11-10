@@ -1,3 +1,5 @@
+"""HTTP 服务和全部 /api 路由。"""
+
 import argparse
 import json
 import os

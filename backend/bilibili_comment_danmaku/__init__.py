@@ -1,3 +1,5 @@
+"""对外导出的抓取与存储函数。"""
+
 from .danmaku import scrape_danmaku
 from .scraper import DEFAULT_BVID, inspect_cookie_status, scrape_comments, scrape_comments_to_sqlite
 from .archive import (

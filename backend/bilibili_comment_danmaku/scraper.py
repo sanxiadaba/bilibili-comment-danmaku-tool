@@ -1,3 +1,5 @@
+"""评论/楼中楼抓取，含 WBI 签名与限流退避。"""
+
 import http.cookiejar
 import copy
 import json

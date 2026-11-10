@@ -1,3 +1,5 @@
+"""Cookie 与扫码登录：保存、状态检查、二维码会话。"""
+
 import json
 import secrets
 import time

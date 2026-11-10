@@ -1,3 +1,5 @@
+"""HTTP 基类：静态文件、JSON 响应、请求体解析、请求日志。"""
+
 import gzip
 import json
 import mimetypes

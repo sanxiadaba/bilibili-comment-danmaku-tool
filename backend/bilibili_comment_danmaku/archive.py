@@ -1,3 +1,5 @@
+"""归档导入导出：SQLite / JSON。"""
+
 import json
 from pathlib import Path
 
