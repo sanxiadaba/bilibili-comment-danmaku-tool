@@ -1,4 +1,5 @@
 import { Database, Download, X } from "lucide-react";
+import { useDialogBehavior } from "../../hooks/useDialogBehavior";
 import { formatNumber } from "../../lib/utils";
 import type { ExportFormat, ExportTarget } from "../../types";
 
@@ -9,6 +10,7 @@ type ExportChoiceDialogProps = {
 };
 
 export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDialogProps) {
+  const dialogRef = useDialogBehavior(onClose);
   const isOwner = target.kind === "owner";
   const title = isOwner ? "导出 UP 主档案" : "导出视频档案";
   const name = isOwner ? target.owner.name : target.video.title;
@@ -17,11 +19,11 @@ export function ExportChoiceDialog({ target, onChoose, onClose }: ExportChoiceDi
     : `${target.video.bvid} · 评论 ${formatNumber(target.video.comment_total_count)} · 弹幕 ${formatNumber(target.video.danmaku_count)}`;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true" aria-labelledby="export-dialog-title" ref={dialogRef} tabIndex={-1}>
       <div className="surface-card w-full max-w-lg overflow-hidden rounded-md shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-line/80 bg-white/42 p-4">
           <div className="min-w-0">
-            <div className="text-base font-semibold text-ink">{title}</div>
+            <div className="text-base font-semibold text-ink" id="export-dialog-title">{title}</div>
             <div className="mt-1 line-clamp-2 text-sm text-muted">{name}</div>
             <div className="mt-1 text-xs text-muted">{summary}</div>
           </div>

@@ -1,5 +1,6 @@
 import { AlertTriangle, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useDialogBehavior } from "../../hooks/useDialogBehavior";
 import { formatNumber } from "../../lib/utils";
 import type { DeleteTarget } from "../../types";
 
@@ -13,14 +14,15 @@ type DeleteConfirmDialogProps = {
 export function DeleteConfirmDialog({ disabled = false, target, onClose, onConfirm }: DeleteConfirmDialogProps) {
   const [confirmText, setConfirmText] = useState("");
   const summary = useMemo(() => deleteSummary(target), [target]);
+  const dialogRef = useDialogBehavior(onClose);
   const matched = confirmText.trim() === summary.confirmText;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-ink/35 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-ink/35 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title" ref={dialogRef} tabIndex={-1}>
       <div className="surface-card w-full max-w-lg overflow-hidden rounded-md shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-red-100 bg-red-50/80 p-4">
           <div className="min-w-0">
-            <h2 className="inline-flex items-center gap-2 text-base font-semibold text-red-800">
+            <h2 className="inline-flex items-center gap-2 text-base font-semibold text-red-800" id="delete-dialog-title">
               <AlertTriangle size={18} aria-hidden="true" />
               {summary.title}
             </h2>

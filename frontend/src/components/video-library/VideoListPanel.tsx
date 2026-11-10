@@ -41,6 +41,7 @@ export function VideoListPanel({
           <label className="input-shell flex h-10 min-w-0 items-center gap-2 rounded-md px-3 text-sm text-muted">
             <Search size={16} aria-hidden="true" />
             <input
+              aria-label="搜索标题、UP 主或 BV 号"
               className="min-w-0 bg-transparent text-ink outline-none"
               placeholder="搜索标题、UP 或 BV"
               value={query}
