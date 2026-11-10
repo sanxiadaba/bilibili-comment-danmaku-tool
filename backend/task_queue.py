@@ -174,7 +174,13 @@ class InMemoryTaskQueue:
             for key, value in task.items()
             if key not in RUNTIME_TASK_FIELDS and value not in (None, "")
         }
-        fields.update({key: value for key, value in defaults.items() if value not in (None, "")})
+        # Defaults may only fill keys the stored task never had. Retrying must replay the task
+        # exactly as it was queued: overwriting db_path or options silently retargets the work
+        # at a different database or widens it far beyond what the user asked for.
+        for key, value in (defaults or {}).items():
+            if value in (None, ""):
+                continue
+            fields.setdefault(key, value)
         fields["retry_of"] = task.get("id", "")
         fields["pause_requested"] = False
         fields["stop_requested"] = False
