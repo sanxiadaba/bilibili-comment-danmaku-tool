@@ -700,9 +700,24 @@ def normalize_database_filename(name, allowed_extensions=DATABASE_EXTENSIONS):
     return f"{stem[:100]}{suffix}"
 
 
+WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
 def normalize_path_component(name):
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(name or "")).strip("._-")
-    return (stem or "archive")[:100]
+    stem = (stem or "archive")[:100]
+    # Windows refuses CON/NUL/COM1… as file or directory names, so an owner named "aux"
+    # would otherwise break archiving with a confusing OSError.
+    if stem.split(".")[0].lower() in WINDOWS_RESERVED_NAMES:
+        stem = f"_{stem}"
+    return stem
 
 
 def parse_multipart_files(raw, content_type):

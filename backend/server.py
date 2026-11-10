@@ -24,6 +24,7 @@ from bilibili_comment_danmaku import (
     scrape_danmaku,
     vacuum_database,
 )
+from bilibili_comment_danmaku import scraper
 from database_registry import (
     DATABASE_EXTENSIONS,
     DEFAULT_DATABASE_DIR,
@@ -1436,6 +1437,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             danmaku_result = scrape_danmaku(
                 current["metadata"]["bvid"],
                 current["video_raw"],
+                headers=scraper.make_headers(current["metadata"]["bvid"], auth_cookie_store.load()),
                 logger=log,
             )
             scraped_count = len(danmaku_result.get("items") or [])

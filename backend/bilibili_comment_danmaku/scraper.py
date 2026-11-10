@@ -54,6 +54,8 @@ RATE_LIMIT_RETRY_JITTER_SECONDS = (15, 90)
 GLOBAL_MIN_REQUEST_INTERVAL_SECONDS = 0.85
 REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
 CHILD_REQUEST_SPACING_FACTOR = 0.65
+MAX_CHILD_PAGES = 500
+MAX_CHILD_PAGES_WITHOUT_GROWTH = 3
 SLOW_REQUEST_WARN_SECONDS = 12
 VERY_SLOW_REQUEST_SECONDS = 60
 VERY_SLOW_REQUEST_COOLDOWN_SECONDS = (30, 90)
@@ -1040,6 +1042,8 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
     seen_rpids = set()
     page = 1
     api_count = None
+    previous_unique = 0
+    no_growth_pages = 0
 
     while True:
         params = {
@@ -1095,7 +1099,23 @@ def fetch_child_replies(oid, root_rpid, expected_count, client, delay, log):
             break
         if isinstance(expected_count, int) and expected_count > 0 and len(replies) >= expected_count:
             break
+        # Guard against an endpoint that keeps returning the same page (pn ignored or a
+        # truncated payload): without this the loop never ends while holding the global lock.
+        if len(replies) <= previous_unique:
+            no_growth_pages += 1
+            if no_growth_pages >= MAX_CHILD_PAGES_WITHOUT_GROWTH:
+                log(
+                    f"child root={root_rpid} stopped after {no_growth_pages} pages without new replies "
+                    f"(unique={len(replies)} expected={expected_count})"
+                )
+                break
+        else:
+            no_growth_pages = 0
+        previous_unique = len(replies)
         page += 1
+        if page > MAX_CHILD_PAGES:
+            log(f"child root={root_rpid} stopped at the page cap {MAX_CHILD_PAGES}")
+            break
         sleep_between_child_pages(delay, page - 1)
 
     return replies, api_count
