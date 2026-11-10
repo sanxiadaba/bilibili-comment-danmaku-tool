@@ -26,6 +26,7 @@ from bilibili_comment_danmaku import (
     vacuum_database,
 )
 from bilibili_comment_danmaku import scraper
+from bilibili_comment_danmaku.scraper import ScrapeCancelled
 from database_registry import (
     DATABASE_EXTENSIONS,
     DEFAULT_DATABASE_DIR,
@@ -50,11 +51,14 @@ from errors import BadRequestError, RequestTooLargeError
 from http_utils import JsonStaticRequestHandler, first_query_int, parse_content_length, parse_optional_int, safe_print
 from local_server import DEFAULT_PORT, create_threading_server
 from progress_state import (
+    clear_stop,
     fail_progress,
     finish_progress,
     get_progress_snapshot,
+    is_stop_requested,
     make_progress_logger,
     parse_float,
+    request_stop,
     set_queue_snapshot_provider,
     start_progress,
     update_progress,
@@ -419,6 +423,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             if parsed.path == "/api/logs/client":
                 self.handle_client_log_api()
                 return
+            if parsed.path == "/api/tasks/stop":
+                self.handle_task_stop_api()
+                return
             if parsed.path == "/api/cookie/save":
                 self.handle_cookie_save_api()
                 return
@@ -710,6 +717,21 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             fields=fields,
         )
         self.send_json({"ok": True})
+
+    def handle_task_stop_api(self):
+        body = self.read_json_body()
+        kind = str(body.get("kind") or "").strip().lower()
+        if kind not in {"comments", "danmaku", "all"}:
+            self.send_json({"error": "kind 只能是 comments、danmaku 或 all"}, status=400)
+            return
+        request_stop(kind)
+        log_event(
+            "api.task.stop",
+            "stop requested for a running sync task",
+            request_id=getattr(self, "request_id", ""),
+            kind=kind,
+        )
+        self.send_json({"ok": True, "kind": kind, "message": "已请求停止，当前请求会在下一个分页处退出"})
 
     def handle_control_get_api(self, parsed):
         path = parsed.path.rstrip("/")
@@ -1403,12 +1425,40 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             logs = []
             log = make_progress_logger("comments", current["metadata"]["bvid"], logs)
 
-            output_data = scrape_comments(
-                video_ref,
-                cookie_file=str(DEFAULT_COOKIE_FILE),
-                delay=delay,
-                logger=log,
-            )
+            clear_stop("comments")
+            try:
+                output_data = scrape_comments(
+                    video_ref,
+                    cookie_file=str(DEFAULT_COOKIE_FILE),
+                    delay=delay,
+                    logger=log,
+                    stop_checker=lambda: is_stop_requested("comments"),
+                )
+            except ScrapeCancelled:
+                payload = current
+                payload["refresh"] = {
+                    "before_count": before_count,
+                    "scraped_count": 0,
+                    "after_count": before_count,
+                    "active_count": payload["metadata"].get("active_comment_count"),
+                    "deleted_count": payload["metadata"].get("deleted_comment_count"),
+                    "added_count": 0,
+                    "stopped": True,
+                    "reason": "已按请求停止抓取，本地档案未改动",
+                    "logs": logs[-12:],
+                }
+                finish_progress("comments", current["metadata"]["bvid"], "评论刷新已停止")
+                log_event(
+                    "task.comments_refresh.stopped",
+                    "comment refresh stopped on request",
+                    request_id=getattr(self, "request_id", ""),
+                    bvid=current["metadata"]["bvid"],
+                    before_count=before_count,
+                )
+                self.send_json(payload)
+                return
+            finally:
+                clear_stop("comments")
             scraped_count = output_data["metadata"]["comment_total_count"]
             force_refresh = truthy_flag(query.get("force", [None])[0])
             if should_skip_comment_refresh(scraped_count, before_count) and not force_refresh:
@@ -1439,7 +1489,14 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 return
             update_progress("comments", current["metadata"]["bvid"], "评论抓取完成，正在保存档案")
             save_comments_to_sqlite(output_data, db_path, replace=True)
-            payload = load_comment_data(db_path, bvid=output_data["metadata"]["bvid"])
+            # Return one page plus the refresh summary: serialising the whole archive here used to
+            # build tens of MB of JSON on every refresh.
+            payload = load_comment_data(
+                db_path,
+                bvid=output_data["metadata"]["bvid"],
+                limit=DEFAULT_COMMENT_PAGE_SIZE,
+                offset=0,
+            )
             payload["refresh"] = {
                 "before_count": before_count,
                 "scraped_count": scraped_count,
@@ -1545,7 +1602,13 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             else:
                 update_progress("danmaku", current["metadata"]["bvid"], "弹幕抓取完成，正在保存档案")
                 save_danmaku_to_sqlite(danmaku_result, db_path, replace=True)
-            payload = load_danmaku_data(db_path, bvid=current["metadata"]["bvid"], limit=None)
+            # Return one page instead of every danmaku of the video.
+            payload = load_danmaku_data(
+                db_path,
+                bvid=current["metadata"]["bvid"],
+                limit=DEFAULT_DANMAKU_PAGE_SIZE,
+                offset=0,
+            )
             payload["refresh"] = {
                 "before_count": before_count,
                 "after_count": payload["metadata"]["total_count"],

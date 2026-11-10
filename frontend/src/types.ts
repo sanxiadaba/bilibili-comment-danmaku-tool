@@ -133,6 +133,9 @@ export type CommentData = {
     added_count: number;
     danmaku_count?: number;
     warning?: string;
+    reason?: string;
+    skipped?: boolean;
+    stopped?: boolean;
     logs?: string[];
   };
 };

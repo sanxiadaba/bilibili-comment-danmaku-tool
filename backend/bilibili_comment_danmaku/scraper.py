@@ -79,6 +79,10 @@ IPV4_FIRST_DNS_INSTALLED = False
 IPV4_FIRST_DNS_LOCK = threading.Lock()
 
 
+class ScrapeCancelled(RuntimeError):
+    """Raised when the caller asked an in-flight scrape to stop."""
+
+
 class BilibiliRequestError(RuntimeError):
     def __init__(
         self,
@@ -955,7 +959,7 @@ def fetch_video_info(bvid, client, log=None):
     return client.request_json(url, logger=log)["data"]
 
 
-def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None):
+def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_checker=None):
     endpoint = "https://api.bilibili.com/x/v2/reply/wbi/main"
     replies = []
     seen_rpids = set()
@@ -965,6 +969,8 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None):
     api_comment_count = None
 
     while True:
+        if stop_checker is not None and stop_checker():
+            raise ScrapeCancelled("stop")
         page_index += 1
         def make_params():
             return {
@@ -1271,6 +1277,7 @@ def scrape_comments(
     logger=None,
     max_main_pages=None,
     fetch_children=True,
+    stop_checker=None,
 ):
     log = logger or (lambda message: print(message, flush=True))
     bvid = extract_bvid(video_ref)
@@ -1304,6 +1311,7 @@ def scrape_comments(
         delay,
         log,
         max_pages=max_main_pages,
+        stop_checker=stop_checker,
     )
     comments, comment_items, child_fetch_summary = build_threaded_output(
         main_raw,

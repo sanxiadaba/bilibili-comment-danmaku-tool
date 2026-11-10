@@ -215,6 +215,15 @@ export async function deleteArchiveData(payload: { bvid?: string; bvids?: string
   );
 }
 
+export async function stopRunningTask(kind: "comments" | "danmaku" | "all" = "all") {
+  return requestJson<{ ok: boolean; kind: string; message: string }>(
+    "tasks.stop",
+    `/api/tasks/stop?ts=${Date.now()}`,
+    postJsonInit({ kind }),
+    { kind },
+  );
+}
+
 export async function refreshCommentData(bvid?: string, dbId = "main") {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
