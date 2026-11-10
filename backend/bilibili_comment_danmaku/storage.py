@@ -434,9 +434,9 @@ def save_comments_to_sqlite(output_data, db_path, replace=True):
             list(user_rows.values()),
         )
         if scraped_rpids:
-            placeholders = ",".join("?" for _ in scraped_rpids)
-            conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN ({placeholders})", scraped_rpids)
-            conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN ({placeholders})", scraped_rpids)
+            # A single IN (...) list is capped by SQLite's variable limit (32766 by default), so
+            # popular videos could never be saved. Stage the ids in a temp table instead.
+            _delete_comment_media_for_rpids(conn, scraped_rpids)
         conn.executemany(
             """
             INSERT INTO comments (
@@ -1245,6 +1245,19 @@ def count_archive_rows(conn, bvids):
 
 def placeholders(count):
     return ",".join("?" for _ in range(count))
+
+
+COMMENT_MEDIA_DELETE_BATCH_SIZE = 5000
+
+
+def _delete_comment_media_for_rpids(conn, rpids):
+    """Drop pictures/emotes for the given rpids without hitting SQLite's variable limit."""
+    unique_rpids = list(dict.fromkeys(str(rpid) for rpid in rpids if str(rpid)))
+    for start in range(0, len(unique_rpids), COMMENT_MEDIA_DELETE_BATCH_SIZE):
+        batch = unique_rpids[start : start + COMMENT_MEDIA_DELETE_BATCH_SIZE]
+        marks = placeholders(len(batch))
+        conn.execute(f"DELETE FROM comment_pictures WHERE rpid IN ({marks})", batch)
+        conn.execute(f"DELETE FROM comment_emotes WHERE rpid IN ({marks})", batch)
 
 
 def video_delete_summary(row):

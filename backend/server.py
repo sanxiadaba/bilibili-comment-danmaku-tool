@@ -10,6 +10,7 @@ from app_logging import configure_logging, logging_status, log_event, log_except
 from archive_delete_tasks import ArchiveDeleteTaskService
 from auth_store import BilibiliQrLoginService, CookieStore
 from bilibili_comment_danmaku import (
+    export_archive_from_databases,
     export_archive_to_json,
     export_archive_to_sqlite,
     extract_bvid,
@@ -36,9 +37,11 @@ from database_registry import (
     import_uploaded_database_file,
     list_all_video_summaries_page,
     list_database_catalog,
+    owner_video_database_sources,
     parse_multipart_files,
     public_database_info,
     relative_to_root,
+    video_database_sources,
 )
 from control_api import control_capabilities, control_openapi_document, normalize_control_action_payload
 from errors import BadRequestError, RequestTooLargeError
@@ -239,6 +242,24 @@ def open_local_directory(path):
         subprocess.Popen(["open", str(path)])
         return
     subprocess.Popen(["xdg-open", str(path)])
+
+
+AGGREGATE_DATABASE_ID = "main"
+
+
+def is_aggregate_database_scope(db_id):
+    """The page's "main" id is an aggregate view over per-video databases, not a file on disk."""
+    return str(db_id or "").strip() in {"", AGGREGATE_DATABASE_ID}
+
+
+def task_retry_defaults(database_dir):
+    """Defaults for a retried task.
+
+    Only the catalog directory may be defaulted. The target database and the archive options
+    must come from the stored task itself: defaulting ``db_path`` here would point a delete or
+    archive replay at the legacy aggregate database instead of the one the user chose.
+    """
+    return {"database_dir": str(database_dir)}
 
 
 def is_local_origin(origin):
@@ -847,10 +868,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         body = self.read_json_body()
         action = str(body.get("action") or "").strip().lower()
         task_id = str(body.get("task_id") or "").strip() or None
-        retry_defaults = {
-            "db_path": str(self.resolve_db_path_from_body(body)),
-            "database_dir": str(self.database_dir),
-        }
+        retry_defaults = task_retry_defaults(self.database_dir)
         try:
             if task_id and task_id.startswith("parse-"):
                 payload = video_parse_service.control_tasks(action, task_id=task_id, retry_defaults=retry_defaults)
@@ -887,7 +905,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_database_export_api(self):
         body = self.read_json_body()
-        db_path = self.resolve_db_path_from_body(body)
         bvids = body.get("bvids")
         bvid = (body.get("bvid") or "").strip()
         owner_mid = (body.get("owner_mid") or "").strip()
@@ -908,11 +925,40 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if owner_mid and not bvid:
             selected_bvids = []
 
-        archive_kind = "up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection"
+        aggregate = is_aggregate_database_scope(body.get("db_id"))
+        sources = []
+        db_path = None
         export_video_count = len(selected_bvids)
-        if owner_mid and not selected_bvids:
-            with refresh_lock:
-                export_video_count = count_owner_export_videos(db_path, owner_mid)
+        if aggregate:
+            # The aggregate view has no physical database of its own; resolve each video to the
+            # per-video database that actually stores it instead of falling back to the legacy file.
+            if owner_mid and not bvid:
+                sources = owner_video_database_sources(owner_mid, self.database_dir, fallback_db_path=self.db_path)
+            else:
+                sources, missing_bvids = video_database_sources(
+                    selected_bvids,
+                    self.database_dir,
+                    fallback_db_path=self.db_path,
+                )
+                if missing_bvids:
+                    self.send_json(
+                        {"error": f"这些视频还没有本地档案：{', '.join(missing_bvids)}"},
+                        status=404,
+                    )
+                    return
+            if not sources:
+                self.send_json({"error": "没有可导出的本地视频档案，请先归档视频"}, status=404)
+                return
+            found_bvids = {item for _path, group in sources for item in group}
+            selected_bvids = [item for item in selected_bvids if item in found_bvids]
+            export_video_count = sum(len(group) for _path, group in sources)
+        else:
+            db_path = self.resolve_db_path_from_body(body)
+            if owner_mid and not selected_bvids:
+                with refresh_lock:
+                    export_video_count = count_owner_export_videos(db_path, owner_mid)
+
+        archive_kind = "up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection"
         export_label = build_export_label(
             archive_kind,
             label=label,
@@ -923,15 +969,25 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         target_path = export_database_path(export_label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
         try:
             with refresh_lock:
-                exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
-                result = exporter(
-                    db_path,
-                    target_path,
-                    bvids=selected_bvids or None,
-                    owner_mid=owner_mid or None,
-                    archive_kind=archive_kind,
-                    label=label,
-                )
+                if aggregate:
+                    result = export_archive_from_databases(
+                        sources,
+                        target_path,
+                        archive_kind=archive_kind,
+                        label=label,
+                        owner_mid=owner_mid or None,
+                        export_format=export_format,
+                    )
+                else:
+                    exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
+                    result = exporter(
+                        db_path,
+                        target_path,
+                        bvids=selected_bvids or None,
+                        owner_mid=owner_mid or None,
+                        archive_kind=archive_kind,
+                        label=label,
+                    )
                 exported_path = ensure_export_result_file(result)
         except LookupError as exc:
             log_event(
@@ -963,7 +1019,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             "exported archive database",
             request_id=getattr(self, "request_id", ""),
             path=str(exported_path),
-            source_db=str(db_path),
+            source_db=str(db_path or ""),
+            source_database_count=len(sources),
+            aggregate_scope=aggregate,
             export_format=export_format,
             video_count=len(result["bvids"]),
             size_bytes=result["size_bytes"],
@@ -1032,6 +1090,15 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
     def handle_archive_delete_api(self):
         try:
             body = self.read_json_body()
+            if is_aggregate_database_scope(body.get("db_id")):
+                self.send_json(
+                    {
+                        "error": "聚合视图没有对应的数据库文件，无法直接删除；请先在左侧选择一个具体数据库，"
+                        "或从视频卡片上删除单个视频"
+                    },
+                    status=400,
+                )
+                return
             db_path = self.resolve_db_path_from_body(body)
             owner_mid, bvids = parse_archive_delete_request(body)
             task = archive_delete_service.enqueue(
