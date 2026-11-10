@@ -1,8 +1,11 @@
 import { AlertTriangle, CheckCircle2, FolderOpen, X, XCircle } from "lucide-react";
+import { useDialogBehavior } from "../../hooks/useDialogBehavior";
 import { cn } from "../../lib/utils";
 import type { NoticeState } from "./types";
 
 export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose: () => void }) {
+  const titleId = `notice-title-${notice.kind}`;
+  const dialogRef = useDialogBehavior(onClose);
   const Icon = notice.kind === "success" ? CheckCircle2 : notice.kind === "warning" ? AlertTriangle : XCircle;
   const tone =
     notice.kind === "success"
@@ -12,12 +15,12 @@ export function NoticeDialog({ notice, onClose }: { notice: NoticeState; onClose
         : "text-red-700 bg-red-50 border-red-100";
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 px-4" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={dialogRef} tabIndex={-1}>
       <div className="surface-card w-full max-w-md rounded-md shadow-xl">
         <div className={cn("flex items-start gap-3 border-b p-4", tone)}>
           <Icon className="mt-0.5 shrink-0" size={20} aria-hidden="true" />
           <div className="min-w-0 flex-1">
-            <div className="text-base font-semibold text-ink">{notice.title}</div>
+            <div className="text-base font-semibold text-ink" id={titleId}>{notice.title}</div>
             <div className="mt-1 break-words text-sm leading-6">{notice.message}</div>
           </div>
           <button

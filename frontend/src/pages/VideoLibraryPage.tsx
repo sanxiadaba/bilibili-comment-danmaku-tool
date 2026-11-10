@@ -198,7 +198,22 @@ export function VideoLibraryPage() {
   useEffect(() => {
     fetchCookieStatus()
       .then(setCookieStatus)
-      .catch(() => setCookieStatus(null));
+      .catch((reason: unknown) => {
+        // Do not leave the sidebar stuck on '检测中' when the probe itself fails.
+        setCookieStatus({
+          exists: false,
+          path: "data/cookie.txt",
+          length: 0,
+          status: "error",
+          message: reason instanceof Error ? reason.message : String(reason),
+          has_sessdata: false,
+          has_bili_jct: false,
+          has_dede_user_id: false,
+          has_browser_id: false,
+          bili_ticket_expires_at: "",
+          bili_ticket_expired: false,
+        } as CookieStatus);
+      });
   }, []);
 
   useEffect(() => {

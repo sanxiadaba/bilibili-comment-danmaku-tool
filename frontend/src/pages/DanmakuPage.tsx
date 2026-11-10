@@ -323,13 +323,13 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
       </section>
 
       {error && (
-        <section className="border-b border-red-100 bg-red-50">
+        <section aria-live="polite" className="border-b border-red-100 bg-red-50" role="alert">
           <div className="mx-auto max-w-[1800px] px-4 py-2 text-sm text-red-700 lg:px-6 2xl:px-8">{error}</div>
         </section>
       )}
 
       {message && !error && (
-        <section className="border-b border-cyan-100 bg-cyan-50">
+        <section aria-live="polite" className="border-b border-cyan-100 bg-cyan-50" role="status">
           <div className="mx-auto max-w-[1800px] px-4 py-2 text-sm text-cyan-700 lg:px-6 2xl:px-8">{message}</div>
         </section>
       )}
@@ -350,6 +350,7 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={17} />
               <input
+                aria-label="搜索弹幕、dmid 或颜色"
                 className="input-shell h-10 w-full rounded-md pl-10 pr-3 text-sm outline-none"
                 placeholder="搜索弹幕、dmid 或颜色"
                 value={query}
