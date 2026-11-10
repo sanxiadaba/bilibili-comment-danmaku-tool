@@ -19,6 +19,7 @@ from server import (
     DEFAULT_STATIC,
     CommentDanmakuServer,
     configure_task_services,
+    validate_bind_host,
 )
 
 
@@ -73,6 +74,7 @@ def main():
     root = app_root()
     parser = argparse.ArgumentParser(description="Run Bilibili comment/danmaku tool as a local desktop app.")
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--allow-remote", action="store_true", help="允许绑定非本机地址（无鉴权，慎用）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--db", default=str(root / "data" / DEFAULT_DB.name))
@@ -81,6 +83,7 @@ def main():
     parser.add_argument("--database-dir", default=str(root / "data" / "databases"))
     parser.add_argument("--space-cache-dir", default=str(root / "data" / "space_cache"))
     args = parser.parse_args()
+    validate_bind_host(args.host, allow_remote=args.allow_remote)
 
     log_dir = Path(args.log_dir).resolve()
     configure_logging(log_dir, console=False)

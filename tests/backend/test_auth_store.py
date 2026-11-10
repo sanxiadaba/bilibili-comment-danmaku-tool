@@ -45,9 +45,9 @@ class AuthStoreTests(unittest.TestCase):
 
             self.assertFalse(store.cookie_path.exists())
             self.assertEqual(payload["status"], "missing")
+            # Logging out must not leave a plaintext copy of the cookie behind.
             backups = list(store.backup_dir.glob("cookie-*.txt"))
-            self.assertEqual(len(backups), 1)
-            self.assertEqual(backups[0].read_text(encoding="utf-8"), "SESSDATA=secret\n")
+            self.assertEqual(backups, [])
 
     def test_cookie_store_backs_up_existing_cookie_before_overwrite(self):
         with tempfile.TemporaryDirectory() as tmpdir:

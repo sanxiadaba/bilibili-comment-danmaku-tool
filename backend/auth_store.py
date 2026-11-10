@@ -66,7 +66,8 @@ class CookieStore:
         return self.status(check_remote=True)
 
     def clear(self):
-        self.backup_existing()
+        # Explicit logout must actually remove the credential; keeping a plaintext backup of the
+        # cookie it was asked to delete defeats the point of the action.
         try:
             self.cookie_path.unlink()
         except FileNotFoundError:
@@ -74,6 +75,7 @@ class CookieStore:
         return self.status(check_remote=False)
 
     def backup_existing(self):
+        """Back up a cookie before it is replaced (never used when clearing)."""
         if not self.cookie_path.exists():
             return None
         try:
@@ -81,9 +83,34 @@ class CookieStore:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             backup_path = self.backup_dir / f"cookie-{timestamp}-{secrets.token_hex(3)}.txt"
             backup_path.write_text(self.cookie_path.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+            prune_cookie_backups(self.backup_dir)
             return backup_path
         except OSError:
             return None
+
+
+COOKIE_BACKUP_LIMIT = 5
+
+
+def safe_login_url(value):
+    """Keep the QR login URL but drop query/fragment, which may carry one-time credentials."""
+    parsed = urllib.parse.urlsplit(str(value or ""))
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def prune_cookie_backups(backup_dir, keep=COOKIE_BACKUP_LIMIT):
+    """Bound the number of plaintext cookie backups kept on disk."""
+    try:
+        backups = sorted(backup_dir.glob("cookie-*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for stale in backups[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 class BilibiliQrLoginService:
@@ -133,7 +160,8 @@ class BilibiliQrLoginService:
             "status": qr_status_name(code),
             "code": code,
             "message": message,
-            "login_url": str(data.get("url") or ""),
+            # Bilibili can embed one-time login tokens in this URL; the UI never uses it.
+            "login_url": safe_login_url(data.get("url")),
             "expires_at": session.expires_at,
             "ttl_seconds": max(int(session.expires_at - time.time()), 0),
         }

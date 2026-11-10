@@ -1,12 +1,14 @@
 import gzip
 import json
 import mimetypes
+import sys
 import time
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from app_logging import log_event, log_exception, new_request_id
-from database_registry import resolve_database_path
+from database_registry import is_path_inside, resolve_database_path
 from errors import BadRequestError, RequestTooLargeError
 
 
@@ -17,6 +19,8 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
     db_path = None
     static_dir = None
     database_dir = None
+    # Hard cap on how long a single request may occupy a worker thread.
+    timeout = 60
 
     def start_request_log(self, method):
         self.request_id = new_request_id()
@@ -55,17 +59,28 @@ class JsonStaticRequestHandler(BaseHTTPRequestHandler):
         )
 
     def handle_static(self, path):
-        relative = path.lstrip("/")
         static_root = self.static_dir.resolve()
-        file_path = (self.static_dir / relative).resolve()
-        if path == "/" or not str(file_path).startswith(str(static_root)):
-            file_path = static_root / "index.html"
-        if not file_path.exists() or file_path.is_dir():
-            file_path = static_root / "index.html"
+        if path in {"", "/"}:
+            self.serve_static_file(static_root / "index.html", static_root)
+            return
+        relative = path.lstrip("/")
+        candidate = (static_root / relative).resolve()
+        if is_path_inside(candidate, static_root) and candidate.is_file():
+            self.serve_static_file(candidate, static_root)
+            return
+        # Only navigation routes fall back to the SPA shell; a missing asset must 404 so the
+        # browser does not silently load HTML where it expects JS/JSON.
+        if "." not in Path(relative).name:
+            self.serve_static_file(static_root / "index.html", static_root)
+            return
+        self.send_json({"error": "文件不存在"}, status=404)
 
+    def serve_static_file(self, file_path, static_root):
         try:
+            if not is_path_inside(file_path, static_root):
+                raise FileNotFoundError(str(file_path))
             content = file_path.read_bytes()
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             self.send_error(404)
             return
 
@@ -162,9 +177,11 @@ def parse_content_length(value):
 
 
 def safe_print(message):
+    if sys.stdout is None:
+        return
     try:
         print(message, flush=True)
-    except OSError:
+    except (OSError, ValueError, AttributeError):
         pass
 
 
