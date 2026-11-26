@@ -430,7 +430,9 @@ class StorageTests(unittest.TestCase):
             task = service.enqueue(db_path, bvids=[BVID], request_id="req-1")
             self.assertTrue(task["id"].startswith("delete-"))
             self.assertEqual(task["queue_position"], 1)
-            self.assertTrue(service.queue.wait_until_idle(timeout=2))
+            # Deleting is a real background thread doing SQLite work; on a busy Windows box two
+            # seconds is not enough (CI-independent flake), so wait longer instead of racing.
+            self.assertTrue(service.queue.wait_until_idle(timeout=20))
 
             snapshot = service.snapshot()
             self.assertIsNone(snapshot["active"])
