@@ -29,6 +29,7 @@ from bilibili_comment_danmaku import (
     vacuum_database,
 )
 from bilibili_comment_danmaku import scraper
+from bilibili_comment_danmaku.storage import load_video_metadata
 from bilibili_comment_danmaku.paths import publish_data_dir
 from bilibili_comment_danmaku.scraper import ScrapeCancelled
 from legacy_migration import migrate_legacy_database
@@ -1294,7 +1295,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             # Clear the previous stop flag before doing any work: a Stop that arrives while the
             # archive is being loaded must not be wiped by a clear_stop further down.
             clear_stop("comments")
-            current = load_comment_data(db_path, bvid=requested_bvid)
+            current = load_video_metadata(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
             log_event(
@@ -1463,7 +1464,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             requested_bvid = query.get("bvid", [None])[0]
             db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
             clear_stop("danmaku")
-            current = load_comment_data(db_path, bvid=requested_bvid)
+            current = load_video_metadata(db_path, bvid=requested_bvid)
             log_event(
                 "task.danmaku_refresh.start",
                 "danmaku refresh started",

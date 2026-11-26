@@ -51,7 +51,9 @@ archive_meta  导出库的清单信息
 
 `main` 不是文件，是「遍历 `data/databases/**` 后合并出来」的视图；所以聚合视图能看、能导出，但不能直接删（没有唯一文件可删），删除会要求先选具体库。
 
-schema 用 `PRAGMA user_version` 标记版本：`ensure_schema_if_needed` 只在文件版本落后时迁移一次，读请求不做迁移。
+导出副本写在 `data/exports/`：那是给用户的拷贝，不是档案，catalog 和「按 BVID 找库」都会排除它。
+
+schema 用 `PRAGMA user_version` 标记版本：`ensure_schema_if_needed` 只在文件版本落后时迁移一次，读请求不做迁移。浏览器连接用 5s 的 `busy_timeout`（后台写操作用 60s）；如果进程在删除中途被杀、库停在 `journal_mode=DELETE`，下一次可写连接会自动切回 WAL。
 
 ## 四、抓取层
 
@@ -62,15 +64,17 @@ schema 用 `PRAGMA user_version` 标记版本：`ensure_schema_if_needed` 只在
 
 ## 五、长任务
 
-UP 主归档、单视频解析、删除都进 `TaskQueue`：状态存在任务对象里并落盘，服务重启后能恢复排队；`control_tasks` 统一处理 pause / resume / stop / retry / clear。
+UP 主归档、单视频解析、删除都进 `TaskQueue`：状态存在任务对象里并落盘，服务重启后能恢复排队；`control_tasks` 统一处理 pause / resume / stop / retry / clear。三类任务都往 `progress_state` 写进度；删除任务尤其要写，否则 `/api/progress` 的 `active` 判断会让前端用错轮询频率。关服时 `server.main()` 会 `shutdown()` 三个队列并 join worker。
+
+进程只允许一个实例：启动时抢命名互斥（Windows）或 pid 锁文件，第二个实例直接退出并提示。
 
 评论刷新和弹幕刷新**不进队列**，是同步请求，靠 `progress_state` 的停止标志在下一个分页退出。原因：它们只操作单个视频，逻辑简单，入队反而要维护两套状态机。
 
 ## 六、前端
 
 - `App.tsx` 只看路径：`/` 视频库、`/video/<BV>` 评论页、`/danmaku/<BV>` 弹幕页。
-- 页面里所有请求都带 `AbortController` 或单调请求序号，慢响应不能覆盖新状态。
-- 大列表用 `VirtualList`（窗口切片 + 每一行固定估算高度），不要一次渲染全量。
+- 列表一律走 `VirtualList`（视频卡片、评论、弹幕），不要 `map` 全量渲染。
+- 页面里所有请求都带 `AbortController` 或单调请求序号，慢响应不能覆盖新状态；刷新类请求额外支持 `signal`。
 - 进度轮询只有一个 `useProgressPolling` 实例，后台标签页自动降频。
 
 ## 七、改哪里

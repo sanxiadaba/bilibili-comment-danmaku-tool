@@ -854,6 +854,29 @@ def danmaku_user_hash(mid):
 
 
 # --- 读取 ---
+def load_video_metadata(db_path, bvid=None):
+    """Video row plus comment counts, without materialising the comment tree.
+
+    Refresh handlers only need bvid/source_url/before_count; loading every comment for that used
+    to build the whole tree (hundreds of ms and tens of MB on a large archive).
+    """
+    conn = connect(db_path)
+    try:
+        ensure_schema_if_needed(conn)
+        conn.commit()
+        if bvid:
+            video = conn.execute("SELECT * FROM videos WHERE bvid = ?", (bvid,)).fetchone()
+        else:
+            video = conn.execute("SELECT * FROM videos ORDER BY fetched_at DESC LIMIT 1").fetchone()
+        if not video:
+            raise LookupError("video not found")
+        stats = comment_stats_for_video(conn, video["bvid"])
+        metadata = metadata_from_comment_stats(video, stats)
+        return {"metadata": metadata, "video_raw": video_raw_from_video(video)}
+    finally:
+        conn.close()
+
+
 def load_comment_data(db_path, bvid=None, limit=None, offset=0):
     if offset is None:
         offset = 0

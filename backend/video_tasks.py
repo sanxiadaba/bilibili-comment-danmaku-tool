@@ -12,6 +12,7 @@ from bilibili_comment_danmaku import (
     scrape_danmaku,
 )
 from bilibili_comment_danmaku.scraper import inspect_cookie_status, load_cookie_file, make_headers
+from bilibili_comment_danmaku.storage import load_video_metadata
 from database_registry import video_database_path_from_archive
 from progress_state import fail_progress, finish_progress, make_progress_logger, parse_float, start_progress, update_progress
 from space_archive import api_error_response
@@ -180,7 +181,7 @@ class VideoParseTaskService:
             task["db_path"] = str(db_path)
             self.queue.update(task, db_path=str(db_path))
             try:
-                before = load_comment_data(db_path, bvid=bvid)["metadata"]["comment_total_count"]
+                before = load_video_metadata(db_path, bvid=bvid)["metadata"]["comment_total_count"]
             except LookupError:
                 before = 0
 

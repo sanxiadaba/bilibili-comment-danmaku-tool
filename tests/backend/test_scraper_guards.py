@@ -113,6 +113,24 @@ class SpaceListFetchTests(unittest.TestCase):
             self.assertFalse(cache_path.exists())
 
 
+class MainReplyLoopTests(unittest.TestCase):
+    def test_empty_pages_stop_the_loop_even_with_a_live_cursor(self):
+        calls = []
+
+        def fake_signed(*_args, **_kwargs):
+            calls.append(1)
+            # The cursor keeps moving but every page is empty: the loop must not run forever.
+            return {"data": {"replies": [], "cursor": {"next": len(calls), "is_end": False, "all_count": 100}}}
+
+        with mock.patch.object(scraper, "request_signed_json", side_effect=fake_signed):
+            with mock.patch.object(scraper, "sleep_between_pages", lambda delay, page: None):
+                replies, count = scraper.fetch_main_replies("2", object(), "mixin", 0, lambda message: None)
+
+        self.assertEqual(replies, [])
+        self.assertEqual(count, 100)
+        self.assertEqual(len(calls), 1)
+
+
 class ChildReplyLoopTests(unittest.TestCase):
     class StubClient:
         def __init__(self, pages):

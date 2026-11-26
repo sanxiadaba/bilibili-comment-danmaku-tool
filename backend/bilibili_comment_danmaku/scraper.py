@@ -50,6 +50,8 @@ REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
 CHILD_REQUEST_SPACING_FACTOR = 0.65
 MAX_CHILD_PAGES = 500
 MAX_CHILD_PAGES_WITHOUT_GROWTH = 3
+MAX_MAIN_PAGES = 2000
+MAX_MAIN_PAGES_WITHOUT_GROWTH = 3
 SLOW_REQUEST_WARN_SECONDS = 12
 VERY_SLOW_REQUEST_SECONDS = 60
 VERY_SLOW_REQUEST_COOLDOWN_SECONDS = (30, 90)
@@ -1046,7 +1048,9 @@ def get_wbi_mixin_key(client, log, force_refresh=False):
     img_url = wbi_img.get("img_url")
     sub_url = wbi_img.get("sub_url")
     if not img_url or not sub_url:
-        raise RuntimeError(f"Could not get WBI image keys from nav API: code={nav_code} message={nav.get('message')}")
+        raise WbiSignatureUnavailableError(
+            f"Could not get WBI image keys from nav API: code={nav_code} message={nav.get('message')}"
+        )
 
     log(f"login: isLogin={data.get('isLogin')} nav_code={nav_code}")
     mixin_key = get_mixin_key(filename_stem(img_url), filename_stem(sub_url))
@@ -1126,6 +1130,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_
     replies = []
     seen_rpids = set()
     seen_cursors = set()
+    stagnant_pages = 0
     next_cursor = 0
     page_index = 0
     api_comment_count = None
@@ -1163,6 +1168,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_
         cursor = data.get("cursor") or {}
         api_comment_count = cursor.get("all_count", api_comment_count)
 
+        previous_total = len(replies)
         for reply in page_replies:
             rpid = reply.get("rpid_str") or str(reply.get("rpid"))
             if rpid not in seen_rpids:
@@ -1176,6 +1182,17 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_
 
         if isinstance(max_pages, int) and max_pages > 0 and page_index >= max_pages:
             log(f"main page limit reached: max_pages={max_pages} unique={len(replies)}")
+            break
+        if not page_replies:
+            log(f"main page {page_index} returned no comments; stop paging")
+            break
+        stagnant_pages = 0 if len(replies) > previous_total else stagnant_pages + 1
+        if stagnant_pages >= MAX_MAIN_PAGES_WITHOUT_GROWTH:
+            # A cursor that keeps advancing while returning only duplicates must not page forever.
+            log(f"main page {page_index}: {stagnant_pages} pages without new comments; stop paging")
+            break
+        if page_index >= MAX_MAIN_PAGES:
+            log(f"main page cap reached: max_pages={MAX_MAIN_PAGES} unique={len(replies)}")
             break
         if cursor.get("is_end"):
             break
@@ -1551,6 +1568,7 @@ def scrape_comments_to_sqlite(
     logger=None,
     max_main_pages=None,
     fetch_children=True,
+    force=False,
 ):
     output_data = scrape_comments(
         video_ref,
@@ -1562,4 +1580,6 @@ def scrape_comments_to_sqlite(
         max_main_pages=max_main_pages,
         fetch_children=fetch_children,
     )
-    return save_comments_to_sqlite(output_data, db_path)
+    # Public helper: keep the documented shrink guard unless the caller explicitly forces a
+    # small result over the stored archive.
+    return save_comments_to_sqlite(output_data, db_path, guard_shrink=True, force=force)

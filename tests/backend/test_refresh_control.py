@@ -185,7 +185,7 @@ class RefreshControlHttpTests(unittest.TestCase):
     def test_stop_requested_while_loading_is_not_cleared(self):
         # Regression: the stop flag used to be cleared right before the scrape, so a Stop that
         # arrived while the archive was still being loaded was silently dropped.
-        original_load = server_module.load_comment_data
+        original_load = server_module.load_video_metadata
         seen = []
 
         def slow_load(db_path, bvid=None, **kwargs):
@@ -196,7 +196,7 @@ class RefreshControlHttpTests(unittest.TestCase):
             seen.append(stop_checker() if stop_checker else None)
             raise scraper.ScrapeCancelled("stop")
 
-        with mock.patch.object(server_module, "load_comment_data", side_effect=slow_load):
+        with mock.patch.object(server_module, "load_video_metadata", side_effect=slow_load):
             with mock.patch.object(server_module, "scrape_comments", side_effect=fake_scrape):
                 status, payload = self.post(f"/api/refresh?bvid={BVID}")
 
