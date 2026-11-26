@@ -30,6 +30,32 @@ class AuthStoreTests(unittest.TestCase):
             self.assertEqual(payload["status"], "unchecked")
             self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=secret-session; bili_jct=secret-csrf")
 
+    def test_cookie_store_saves_httponly_netscape_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
+            with mock.patch("auth_store.inspect_cookie_status") as status:
+                status.return_value = {"status": "unchecked", "exists": True}
+
+                store.save(
+                    "# Netscape HTTP Cookie File\n"
+                    "#HttpOnly_.bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tsecret-session\n"
+                    ".bilibili.com\tTRUE\t/\tFALSE\t0\tbili_jct\tsecret-csrf\n"
+                )
+
+            self.assertEqual(
+                store.cookie_path.read_text(encoding="utf-8").strip(),
+                "SESSDATA=secret-session; bili_jct=secret-csrf",
+            )
+
+    def test_normalize_cookie_text_strips_cookie_prefix_from_pasted_header(self):
+        self.assertEqual(
+            auth_store.normalize_cookie_text("Cookie: SESSDATA=abc; bili_jct=def"),
+            "SESSDATA=abc; bili_jct=def",
+        )
+
+    def test_normalize_cookie_text_rejects_lookalike_domains(self):
+        self.assertEqual(auth_store.normalize_cookie_text("evilbilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\tx"), "")
+
     def test_cookie_store_rejects_empty_cookie_and_clears_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")

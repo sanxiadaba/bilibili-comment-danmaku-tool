@@ -348,6 +348,32 @@ class ScraperPerformanceTests(unittest.TestCase):
 
             self.assertEqual(scraper.load_cookie_file(cookie_file), "SESSDATA=abc; bili_jct=csrf")
 
+    def test_load_cookie_file_keeps_httponly_login_cookie(self):
+        # Cookie-Editor writes HttpOnly cookies as "#HttpOnly_<domain>" lines. SESSDATA is
+        # HttpOnly, so skipping every "#" line used to throw the login cookie away.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cookie_file = Path(tmpdir) / "cookie.txt"
+            cookie_file.write_text(
+                "# Netscape HTTP Cookie File\n"
+                "#HttpOnly_.bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tlogin-token\n"
+                ".bilibili.com\tTRUE\t/\tFALSE\t0\tbili_jct\tcsrf\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scraper.load_cookie_file(cookie_file), "SESSDATA=login-token; bili_jct=csrf")
+
+    def test_load_cookie_file_ignores_foreign_and_lookalike_domains(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cookie_file = Path(tmpdir) / "cookie.txt"
+            cookie_file.write_text(
+                "evilbilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\tbad\n"
+                "bilibili.com.attacker.test\tTRUE\t/\tFALSE\t0\tbili_jct\tbad\n"
+                ".bilibili.com\tTRUE\t/\tFALSE\t0\tDedeUserID\t42\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scraper.load_cookie_file(cookie_file), "DedeUserID=42")
+
     def test_cookie_browser_identifier_detection(self):
         self.assertTrue(scraper.cookie_has_browser_identifiers("SESSDATA=a; buvid3=b; bili_jct=c"))
         self.assertFalse(scraper.cookie_has_browser_identifiers("SESSDATA=a; bili_jct=c"))

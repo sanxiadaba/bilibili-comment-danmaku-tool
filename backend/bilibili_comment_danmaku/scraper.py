@@ -497,25 +497,48 @@ class BilibiliClient:
                 return
 
 
+COOKIE_DOMAIN = "bilibili.com"
+HTTPONLY_LINE_PREFIX = "#HttpOnly_"
+
+
+def cookie_header_from_text(text):
+    """Normalize a Netscape cookie export or a plain `k=v; k=v` header into one header string.
+
+    Browser extensions write HttpOnly cookies (SESSDATA and friends) as `#HttpOnly_<domain>`
+    lines inside the Netscape file. Those lines are real cookies, not comments, so the prefix
+    is removed before parsing; skipping every `#` line silently dropped the login cookie.
+    """
+    netscape_cookies = []
+    plain_parts = []
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(HTTPONLY_LINE_PREFIX):
+            line = line[len(HTTPONLY_LINE_PREFIX) :]
+        elif line.startswith("#"):
+            continue
+        columns = line.split("\t")
+        if len(columns) >= 7:
+            domain = columns[0].strip().lstrip(".").lower()
+            if domain == COOKIE_DOMAIN or domain.endswith("." + COOKIE_DOMAIN):
+                if columns[5]:
+                    netscape_cookies.append(f"{columns[5]}={columns[6]}")
+            continue
+        # A pasted header often keeps the `Cookie:` prefix browsers show in devtools.
+        if line.lower().startswith("cookie:"):
+            line = line.split(":", 1)[1].strip()
+        plain_parts.extend(part.strip() for part in line.split(";") if part.strip())
+
+    if netscape_cookies:
+        return "; ".join(netscape_cookies)
+    return "; ".join(plain_parts)
+
+
 def load_cookie_file(path):
     if not path or not Path(path).exists():
         return ""
-    text = Path(path).read_text(encoding="utf-8", errors="ignore").strip()
-    if not text:
-        return ""
-
-    cookies = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        columns = line.split("\t")
-        if len(columns) >= 7 and "bilibili.com" in columns[0]:
-            cookies.append(f"{columns[5]}={columns[6]}")
-
-    if cookies:
-        return "; ".join(cookies)
-    return text.replace("\r", "").replace("\n", "; ")
+    return cookie_header_from_text(Path(path).read_text(encoding="utf-8", errors="ignore"))
 
 
 def inspect_cookie_status(path, *, check_remote=True):

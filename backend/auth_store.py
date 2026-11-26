@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from pathlib import Path
 
-from bilibili_comment_danmaku.scraper import inspect_cookie_status, load_cookie_file
+from bilibili_comment_danmaku.scraper import cookie_header_from_text, inspect_cookie_status, load_cookie_file
 
 
 QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
@@ -198,20 +198,8 @@ class BilibiliQrLoginService:
 
 
 def normalize_cookie_text(raw_cookie):
-    text = str(raw_cookie or "").strip()
-    if not text:
-        return ""
-    cookies = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        columns = line.split("\t")
-        if len(columns) >= 7 and columns[5] and "bilibili.com" in columns[0]:
-            cookies.append(f"{columns[5]}={columns[6]}")
-        elif "=" in line and "\t" not in line:
-            cookies.append(line.rstrip(";"))
-    return "; ".join(cookies).replace("\r", "").strip()
+    """Accept a pasted header or a browser cookie export, including HttpOnly lines."""
+    return cookie_header_from_text(str(raw_cookie or "")).strip()
 
 
 def request_json_with_cookies(url, timeout=10):
