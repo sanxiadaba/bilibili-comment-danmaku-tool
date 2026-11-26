@@ -103,6 +103,22 @@ class DanmakuLikePreservationTests(unittest.TestCase):
         payload = load_danmaku_data(self.db_path, bvid=BVID, limit=None)
         self.assertEqual([item["dmid"] for item in payload["items"]], ["1000"])
 
+    def test_empty_remote_result_is_refused_unless_forced(self):
+        save_danmaku_to_sqlite(danmaku_payload(3), self.db_path, replace=True)
+
+        summary = save_danmaku_to_sqlite({"bvid": BVID, "cid": "456", "items": []}, self.db_path, replace=True)
+
+        self.assertTrue(summary["skipped"])
+        self.assertEqual(summary["danmaku_count"], 3)
+        self.assertEqual(load_danmaku_data(self.db_path, bvid=BVID, limit=None)["metadata"]["total_count"], 3)
+
+        forced = save_danmaku_to_sqlite(
+            {"bvid": BVID, "cid": "456", "items": []}, self.db_path, replace=True, force=True
+        )
+
+        self.assertNotIn("skipped", forced)
+        self.assertEqual(load_danmaku_data(self.db_path, bvid=BVID, limit=None)["metadata"]["total_count"], 0)
+
 
 class TaskQueueStateTests(unittest.TestCase):
     def test_paused_task_stays_paused_after_restart(self):

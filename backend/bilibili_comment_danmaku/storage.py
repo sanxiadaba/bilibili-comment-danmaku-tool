@@ -600,12 +600,25 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
 
 
 # --- 保存弹幕 ---
-def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True):
+def save_danmaku_to_sqlite(danmaku_data, db_path, replace=True, force=False):
     bvid = danmaku_data["bvid"]
     items = danmaku_data.get("items") or []
     conn = connect(db_path)
     try:
         ensure_schema_if_needed(conn)
+        stored_count = value_or_zero(
+            conn.execute("SELECT COUNT(*) FROM danmaku WHERE bvid = ?", (bvid,)).fetchone()[0]
+        )
+        if replace and not items and stored_count and not force:
+            # README promises an empty remote result never wipes the archive. Enforce it here,
+            # not only in the three current callers: the CLI and archive imports also save.
+            return {
+                "bvid": bvid,
+                "danmaku_count": stored_count,
+                "skipped": True,
+                "before_count": stored_count,
+                "scraped_count": 0,
+            }
         video = conn.execute("SELECT owner_mid FROM videos WHERE bvid = ?", (bvid,)).fetchone()
         owner_hash = danmaku_user_hash(video["owner_mid"]) if video and video["owner_mid"] else None
         if replace:
