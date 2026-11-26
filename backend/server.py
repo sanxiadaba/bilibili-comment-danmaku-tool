@@ -1262,13 +1262,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             return
 
         requested_bvid = None
-        lock_state = {"held": True}
-
-        def release_refresh_lock():
-            if lock_state["held"]:
-                lock_state["held"] = False
-                refresh_lock.release()
-
         try:
             query = parse_qs(parsed.query)
             requested_bvid = query.get("bvid", [None])[0]
@@ -1293,7 +1286,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             logs = []
             log = make_progress_logger("comments", current["metadata"]["bvid"], logs)
 
-            clear_stop("comments")
             try:
                 output_data = scrape_comments(
                     video_ref,
@@ -1442,13 +1434,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             return
 
         requested_bvid = None
-        lock_state = {"held": True}
-
-        def release_refresh_lock():
-            if lock_state["held"]:
-                lock_state["held"] = False
-                refresh_lock.release()
-
         try:
             query = parse_qs(parsed.query)
             requested_bvid = query.get("bvid", [None])[0]
@@ -1471,7 +1456,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=current["metadata"]["bvid"],
                 limit=0,
             )["metadata"]["total_count"]
-            clear_stop("danmaku")
             warning = ""
             try:
                 danmaku_result = scrape_danmaku(

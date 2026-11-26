@@ -182,6 +182,28 @@ class RefreshControlHttpTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
 
+    def test_stop_requested_while_loading_is_not_cleared(self):
+        # Regression: the stop flag used to be cleared right before the scrape, so a Stop that
+        # arrived while the archive was still being loaded was silently dropped.
+        original_load = server_module.load_comment_data
+        seen = []
+
+        def slow_load(db_path, bvid=None, **kwargs):
+            progress_state.request_stop("comments")
+            return original_load(db_path, bvid=bvid, **kwargs)
+
+        def fake_scrape(*args, stop_checker=None, **kwargs):
+            seen.append(stop_checker() if stop_checker else None)
+            raise scraper.ScrapeCancelled("stop")
+
+        with mock.patch.object(server_module, "load_comment_data", side_effect=slow_load):
+            with mock.patch.object(server_module, "scrape_comments", side_effect=fake_scrape):
+                status, payload = self.post(f"/api/refresh?bvid={BVID}")
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(seen, [True])
+        self.assertTrue(payload["refresh"]["stopped"])
+
     def test_stop_flag_is_cleared_after_a_refresh(self):
         refreshed = make_archive(
             "2024-02-01T00:00:00+00:00",
