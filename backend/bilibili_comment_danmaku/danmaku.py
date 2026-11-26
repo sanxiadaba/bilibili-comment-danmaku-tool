@@ -1,6 +1,5 @@
 """弹幕抓取与点赞数批量查询。"""
 
-import html
 import gzip
 import json
 import os
@@ -127,7 +126,9 @@ def parse_danmaku_xml(xml_bytes, bvid, cid):
                 "pool": parse_int(attrs[5], 0),
                 "user_hash": attrs[6],
                 "weight": parse_int(attrs[8], None) if len(attrs) > 8 else None,
-                "content": html.unescape(node.text or ""),
+                # ElementTree already decodes XML entities; unescaping again turned a literal
+                # "&lt;script&gt;" in the danmaku into "<script>".
+                "content": node.text or "",
                 "fetched_at": fetched_at,
                 "like_count": 0,
             }

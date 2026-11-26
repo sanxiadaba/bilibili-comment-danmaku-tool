@@ -1284,7 +1284,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     stop_checker=lambda: is_stop_requested("comments"),
                 )
             except ScrapeCancelled:
-                payload = current
+                payload = load_comment_data(
+                    db_path,
+                    bvid=current["metadata"]["bvid"],
+                    limit=DEFAULT_COMMENT_PAGE_SIZE,
+                    offset=0,
+                )
                 payload["refresh"] = {
                     "before_count": before_count,
                     "scraped_count": 0,
@@ -1316,7 +1321,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             if summary.get("skipped"):
                 # A blocked or partial scrape must not turn the archive into "everything deleted".
-                payload = current
+                payload = load_comment_data(
+                    db_path,
+                    bvid=current["metadata"]["bvid"],
+                    limit=DEFAULT_COMMENT_PAGE_SIZE,
+                    offset=0,
+                )
                 payload["refresh"] = {
                     "before_count": before_count,
                     "scraped_count": scraped_count,
@@ -1445,7 +1455,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     stop_checker=lambda: is_stop_requested("danmaku"),
                 )
             except ScrapeCancelled:
-                payload = current
+                payload = load_danmaku_data(
+                    db_path,
+                    bvid=current["metadata"]["bvid"],
+                    limit=DEFAULT_DANMAKU_PAGE_SIZE,
+                    offset=0,
+                )
                 payload["refresh"] = {
                     "before_count": before_count,
                     "after_count": before_count,
