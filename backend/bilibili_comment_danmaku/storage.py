@@ -485,6 +485,12 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
                     normalized.get("attr"),
                     normalized.get("message"),
                     normalized.get("ip_location"),
+                    # Carry lifecycle fields when the caller supplies them (archive import / export
+                    # round-trip); a fresh scrape falls back to "seen now, not deleted".
+                    normalized.get("first_seen_at") or fetched_at,
+                    normalized.get("last_seen_at") or fetched_at,
+                    normalized.get("missing_since"),
+                    1 if normalized.get("is_deleted") else 0,
                 )
             )
 
@@ -548,7 +554,7 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
                 rpid, bvid, level, oid, type, mid, root, parent, dialog, ctime,
                 time_iso, time_iso_utc, like_count, rcount, reply_count, state,
                 attr, message, ip_location, first_seen_at, last_seen_at, missing_since, is_deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(rpid) DO UPDATE SET
                 bvid = excluded.bvid,
                 level = excluded.level,
@@ -570,10 +576,10 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
                 ip_location = excluded.ip_location,
                 first_seen_at = COALESCE(comments.first_seen_at, excluded.first_seen_at),
                 last_seen_at = excluded.last_seen_at,
-                missing_since = NULL,
-                is_deleted = 0
+                missing_since = excluded.missing_since,
+                is_deleted = excluded.is_deleted
             """,
-            [row + (fetched_at, fetched_at) for row in comment_rows],
+            comment_rows,
         )
         conn.executemany(
             """
@@ -1314,8 +1320,8 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             conn = None
             checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "videos", chunks, wal_peak, checkpoint)
+            # This loop only uses the small IN (...) batch, so it does not need the temp scope.
             conn = connect(db_path)
-            stage_delete_scope(conn, selected_bvids)
 
         cleanup_unreferenced_users(conn, deleted_user_mids)
         conn.commit()
@@ -1412,7 +1418,8 @@ def cleanup_unreferenced_users(conn, mids=None):
 
 
 def count_archive_rows(conn, bvids):
-    params = [str(item).strip() for item in bvids if str(item).strip()]
+    # De-duplicate first: the same bvid in two batches would otherwise be counted twice.
+    params = list(dict.fromkeys(str(item).strip() for item in bvids if str(item).strip()))
     totals = {
         "videos": len(params),
         "comments": 0,

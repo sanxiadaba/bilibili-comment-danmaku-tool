@@ -150,9 +150,18 @@ def bilibili_api_error_response(exc):
     return api_error_response(exc, cookie_status=cookie_status)
 
 
+def text_field(body, *keys):
+    """Read the first non-empty string-ish field; JSON numbers/objects must not raise 500."""
+    for key in keys:
+        value = body.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
 def parse_archive_delete_request(body):
-    bvid = (body.get("bvid") or "").strip()
-    owner_mid = (body.get("owner_mid") or "").strip()
+    bvid = text_field(body, "bvid")
+    owner_mid = text_field(body, "owner_mid")
     raw_bvids = body.get("bvids")
     bvids = [str(item).strip() for item in raw_bvids if str(item).strip()] if isinstance(raw_bvids, list) else []
     if bvid:
@@ -710,7 +719,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_parse_video_api(self):
         body = self.read_json_body()
-        video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
+        video_ref = text_field(body, "url", "video_ref", "bvid")
         if not video_ref:
             log_event(
                 "task.parse.invalid_input",
@@ -753,7 +762,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_space_archive_api(self):
         body = self.read_json_body()
-        owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
+        owner_ref = text_field(body, "mid", "url", "owner_ref")
         mid = extract_space_mid(owner_ref)
         if not mid:
             log_event(
@@ -838,9 +847,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
     def handle_database_export_api(self):
         body = self.read_json_body()
         bvids = body.get("bvids")
-        bvid = (body.get("bvid") or "").strip()
-        owner_mid = (body.get("owner_mid") or "").strip()
-        label = (body.get("label") or body.get("owner_name") or bvid or owner_mid or "archive").strip()
+        bvid = text_field(body, "bvid")
+        owner_mid = text_field(body, "owner_mid")
+        label = text_field(body, "label", "owner_name") or bvid or owner_mid or "archive"
         export_format = str(body.get("format") or "sqlite").strip().lower()
         if export_format not in {"sqlite", "json"}:
             self.send_json({"error": "导出格式只支持 sqlite 或 json"}, status=400)
@@ -1084,7 +1093,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_database_import_api(self):
         body = self.read_json_body()
-        source_value = (body.get("path") or body.get("source_path") or "").strip()
+        source_value = text_field(body, "path", "source_path")
         if not source_value:
             self.send_json({"error": "请输入要导入的 SQLite 数据库或 JSON 归档路径"}, status=400)
             return
@@ -1253,11 +1262,21 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             return
 
         requested_bvid = None
+        lock_state = {"held": True}
+
+        def release_refresh_lock():
+            if lock_state["held"]:
+                lock_state["held"] = False
+                refresh_lock.release()
+
         try:
             query = parse_qs(parsed.query)
             requested_bvid = query.get("bvid", [None])[0]
             delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
             db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+            # Clear the previous stop flag before doing any work: a Stop that arrives while the
+            # archive is being loaded must not be wiped by a clear_stop further down.
+            clear_stop("comments")
             current = load_comment_data(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
@@ -1423,10 +1442,18 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             return
 
         requested_bvid = None
+        lock_state = {"held": True}
+
+        def release_refresh_lock():
+            if lock_state["held"]:
+                lock_state["held"] = False
+                refresh_lock.release()
+
         try:
             query = parse_qs(parsed.query)
             requested_bvid = query.get("bvid", [None])[0]
             db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+            clear_stop("danmaku")
             current = load_comment_data(db_path, bvid=requested_bvid)
             log_event(
                 "task.danmaku_refresh.start",

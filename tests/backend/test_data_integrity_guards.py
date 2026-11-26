@@ -145,6 +145,39 @@ class SchemaMigrationTests(unittest.TestCase):
 
 
 class MissingMemberTests(unittest.TestCase):
+    def test_normalize_reply_keeps_missing_ids_null(self):
+        from bilibili_comment_danmaku.scraper import normalize_reply
+
+        normalized = normalize_reply({}, 1)
+
+        # rpid is the global primary key: "None" would make two videos overwrite each other.
+        for key in ("rpid", "oid", "root", "parent", "dialog"):
+            self.assertIsNone(normalized[key], key)
+
+    def test_export_import_keeps_deleted_comments_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.db"
+            target = Path(tmp) / "target.db"
+            save_comments_to_sqlite(
+                make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "keep"), make_comment("2", 1, "gone")]),
+                source,
+                replace=True,
+            )
+            save_comments_to_sqlite(
+                make_archive("2024-01-05T00:00:00+00:00", [make_comment("1", 1, "keep")]),
+                source,
+                replace=True,
+            )
+            payload = load_comment_data(source, bvid=BVID)
+
+            save_comments_to_sqlite(payload, target, replace=True)
+
+            restored = {
+                item["normalized"]["rpid"]: item["normalized"] for item in load_comment_data(target, bvid=BVID)["comment_items"]
+            }
+            self.assertTrue(restored["2"]["is_deleted"])
+            self.assertEqual(restored["2"]["first_seen_at"], "2024-01-01T00:00:00+00:00")
+
     def test_reply_without_user_fields_still_saves(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "archive.db"

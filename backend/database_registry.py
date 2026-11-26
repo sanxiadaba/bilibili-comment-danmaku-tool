@@ -453,6 +453,12 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     if not path.exists():
         info["error"] = "文件不存在"
         return info
+    if include_details and path.stat().st_size == 0:
+        # Reading the catalog must not create a schema in an empty file; report it instead.
+        info["error"] = "空文件（0 字节），不是有效的归档库"
+        info["coverage_status"] = "unreadable"
+        info["coverage_message"] = info["error"]
+        return info
     try:
         conn = connect(path) if include_details else connect_readonly(path)
         try:

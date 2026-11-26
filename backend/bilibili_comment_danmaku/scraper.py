@@ -759,6 +759,9 @@ def retry_delay_seconds(attempt, status=None, api_code=None):
     return min(2 * attempt, 8)
 
 
+MAX_RETRY_AFTER_SECONDS = 300
+
+
 def retry_after_seconds(error):
     headers = getattr(error, "headers", None)
     if not headers:
@@ -767,7 +770,8 @@ def retry_after_seconds(error):
     if not value:
         return None
     try:
-        return max(int(value), 0)
+        # A bogus/hostile Retry-After must not park the client (and the queue) for a year.
+        return min(max(int(value), 0), MAX_RETRY_AFTER_SECONDS)
     except ValueError:
         return None
 
@@ -954,17 +958,23 @@ def normalize_reply(reply, level):
     content = reply.get("content") or {}
     control = reply.get("reply_control") or {}
     # "123" and 123 both appear in the API; a missing id must stay NULL rather than the string
-    # "None", which would violate the users(mid) foreign key when the archive is written.
+    # "None": comments.rpid is a global primary key, so two videos missing the field would
+    # overwrite each other, and a NULL users(mid) keeps the foreign key happy.
     user_mid = reply.get("mid_str") or reply.get("mid")
+
+    def id_value(raw_key, str_key):
+        value = reply.get(str_key) or reply.get(raw_key)
+        return str(value) if value not in (None, "") else None
+
     return {
         "level": level,
-        "rpid": reply.get("rpid_str") or str(reply.get("rpid")),
-        "oid": reply.get("oid_str") or str(reply.get("oid")),
+        "rpid": id_value("rpid", "rpid_str"),
+        "oid": id_value("oid", "oid_str"),
         "type": reply.get("type"),
         "mid": str(user_mid) if user_mid not in (None, "") else None,
-        "root": reply.get("root_str") or str(reply.get("root")),
-        "parent": reply.get("parent_str") or str(reply.get("parent")),
-        "dialog": reply.get("dialog_str") or str(reply.get("dialog")),
+        "root": id_value("root", "root_str"),
+        "parent": id_value("parent", "parent_str"),
+        "dialog": id_value("dialog", "dialog_str"),
         "ctime": reply.get("ctime"),
         "time_iso": unix_to_iso(reply.get("ctime"), CHINA_TZ),
         "time_iso_utc": unix_to_iso(reply.get("ctime"), timezone.utc),
