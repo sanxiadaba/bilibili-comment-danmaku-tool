@@ -36,14 +36,15 @@ import {
   buildOwnerGroups,
   deleteRequestsForTarget,
   dbPath,
-  deletePayloadForTarget,
   deleteTargetVideoCount,
+  exportDatabaseIdForVideos,
   extractBvid,
+  findVideoByBvid,
   formatBytes,
   initialDatabaseId,
   mergeVideosByBvid,
-  singleDatabaseIdForVideos,
-  summarizeVideos,
+  refreshLoadedVideos,
+  summarizeLibrary,
 } from "../lib/videoLibrary";
 import type { CookieStatus, DatabaseInfo, DeleteTarget, ExportFormat, OwnerGroup, OwnerSummary, ProgressQueue, ProgressTask, TaskControlAction, VideoSummary } from "../types";
 
@@ -81,11 +82,16 @@ export function VideoLibraryPage() {
   const [duplicateVideo, setDuplicateVideo] = useState<VideoSummary | null>(null);
   const [pendingParseTarget, setPendingParseTarget] = useState("");
   const [hiddenTaskKeys, setHiddenTaskKeys] = useState<Set<string>>(() => new Set());
+  const [failedDatabases, setFailedDatabases] = useState<Array<{ id: string; error: string }>>([]);
+  const [videoListIncomplete, setVideoListIncomplete] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const videosRequestRef = useRef(0);
+  const videosRef = useRef<VideoSummary[]>([]);
   const hasLoadedVideosRef = useRef(false);
   const videosAbortRef = useRef<AbortController | null>(null);
+  const duplicateRequestRef = useRef(0);
+  const duplicateAbortRef = useRef<AbortController | null>(null);
   const databasesRequestRef = useRef(0);
   const databasesAbortRef = useRef<AbortController | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
@@ -95,6 +101,10 @@ export function VideoLibraryPage() {
   useEffect(() => {
     activeDbIdRef.current = activeDbId;
   }, [activeDbId]);
+
+  useEffect(() => {
+    videosRef.current = videos;
+  }, [videos]);
   // One poller for the whole page: the backend tracks a single active task, so a second hook
   // would double the request rate for the same data.
   const polledProgress = useProgressPolling(true);
@@ -153,7 +163,7 @@ export function VideoLibraryPage() {
     [activeDbId],
   );
 
-  const loadVideos = useCallback(async (options?: { append?: boolean; includeMeta?: boolean; offset?: number; quiet?: boolean }) => {
+  const loadVideos = useCallback(async (options?: { includeMeta?: boolean; mode?: "append" | "head"; offset?: number; quiet?: boolean }) => {
     videosAbortRef.current?.abort();
     const controller = new AbortController();
     videosAbortRef.current = controller;
@@ -164,9 +174,10 @@ export function VideoLibraryPage() {
     }
     setError("");
     try {
+      const mode = options?.mode || "replace";
       const offset = options?.offset || 0;
       const payload = await fetchVideos(activeDbId, {
-        includeMeta: options?.includeMeta ?? !options?.append,
+        includeMeta: options?.includeMeta ?? mode === "replace",
         limit: VIDEO_PAGE_SIZE,
         offset,
         query: filtersRef.current.query,
@@ -174,12 +185,24 @@ export function VideoLibraryPage() {
         signal: controller.signal,
       });
       if (videosRequestRef.current !== requestId) return;
-      setVideos((current) => (options?.append ? mergeVideosByBvid(current, payload.videos) : payload.videos));
+      // Quiet refreshes fetch only the first page (the backend caps `limit`), so they merge into
+      // the already paged list instead of shrinking it back to one page.
+      const nextVideos =
+        mode === "append"
+          ? mergeVideosByBvid(videosRef.current, payload.videos)
+          : mode === "head"
+            ? refreshLoadedVideos(videosRef.current, payload.videos)
+            : payload.videos;
+      videosRef.current = nextVideos;
+      setVideos(nextVideos);
       if (payload.owners) {
         setOwnerSummaries(payload.owners);
       }
-      setVideoTotal(payload.total ?? payload.videos.length);
-      setHasMoreVideos(Boolean(payload.has_more));
+      const total = payload.total ?? nextVideos.length;
+      setVideoTotal(total);
+      setHasMoreVideos(nextVideos.length < total);
+      setFailedDatabases(payload.failed_databases || []);
+      setVideoListIncomplete(payload.complete === false);
     } catch (reason: unknown) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       if (videosRequestRef.current !== requestId) return;
@@ -227,6 +250,7 @@ export function VideoLibraryPage() {
     setOwnerFilter("all");
     setDuplicateVideo(null);
     setPendingParseTarget("");
+    cancelDuplicateCheck();
     hasLoadedVideosRef.current = false;
   }, [activeDbId]);
 
@@ -245,6 +269,7 @@ export function VideoLibraryPage() {
   useEffect(
     () => () => {
       if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+      cancelDuplicateCheck();
     },
     [],
   );
@@ -258,7 +283,9 @@ export function VideoLibraryPage() {
   useEffect(() => {
     if (!hasSpaceQueueWork) return;
     const timer = window.setInterval(() => {
-      void loadVideos({ includeMeta: false, quiet: true });
+      // Merge the first page instead of replacing: the user may have loaded extra pages, and a
+      // plain refresh would shrink the list back to one page.
+      void loadVideos({ includeMeta: false, mode: "head", quiet: true });
     }, 15000);
     return () => window.clearInterval(timer);
   }, [hasSpaceQueueWork, loadVideos]);
@@ -281,10 +308,45 @@ export function VideoLibraryPage() {
   const selectedOwner = ownerGroups.find((group) => group.key === ownerFilter);
   const selectedOwnerName = selectedOwner?.name;
 
-  const totals = useMemo(() => summarizeVideos(videos), [videos]);
+  // Owners are only trusted for whole-library totals when no filter narrows the list: the backend
+  // returns the full library's owner summaries even for a filtered single-database page.
+  const unfiltered = !query.trim() && ownerFilter === "all";
+  const totals = useMemo(
+    () => summarizeLibrary(videos, unfiltered ? ownerSummaries : []),
+    [ownerSummaries, unfiltered, videos],
+  );
 
   async function loadMoreVideos() {
-    await loadVideos({ append: true, offset: videos.length, quiet: true });
+    await loadVideos({ mode: "append", offset: videos.length, quiet: true });
+  }
+
+  function cancelDuplicateCheck() {
+    duplicateRequestRef.current += 1;
+    duplicateAbortRef.current?.abort();
+    duplicateAbortRef.current = null;
+  }
+
+  // 列表只加载了一部分，重复检测必须回到后端按 bvid 查全库，而不是只看当前页。
+  async function findExistingVideo(bvid: string, dbId: string): Promise<{ existing?: VideoSummary; cancelled: boolean }> {
+    cancelDuplicateCheck();
+    const controller = new AbortController();
+    duplicateAbortRef.current = controller;
+    const requestId = duplicateRequestRef.current;
+    try {
+      const payload = await fetchVideos(dbId, { limit: 1, query: bvid, signal: controller.signal });
+      if (duplicateRequestRef.current !== requestId || activeDbIdRef.current !== dbId) {
+        return { cancelled: true };
+      }
+      return { existing: findVideoByBvid(payload.videos, bvid), cancelled: false };
+    } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return { cancelled: true };
+      if (duplicateRequestRef.current !== requestId) return { cancelled: true };
+      // 查不到不能当成「没有重复」：否则会悄悄覆盖已有档案，宁可让用户重试。
+      setError(`检查重复视频失败：${reason instanceof Error ? reason.message : String(reason)}`);
+      return { cancelled: true };
+    } finally {
+      if (duplicateAbortRef.current === controller) duplicateAbortRef.current = null;
+    }
   }
 
   async function submitParse(event: React.FormEvent<HTMLFormElement>) {
@@ -296,13 +358,18 @@ export function VideoLibraryPage() {
     }
 
     const bvid = extractBvid(target);
-    const existingVideo = bvid ? videos.find((video) => video.bvid.toLowerCase() === bvid.toLowerCase()) : undefined;
-    if (existingVideo) {
-      setDuplicateVideo(existingVideo);
-      setPendingParseTarget(target);
+    if (bvid) {
+      setDuplicateVideo(null);
       setError("");
-      setMessage("");
-      return;
+      const result = await findExistingVideo(bvid, activeDbId);
+      if (result.cancelled) return;
+      if (result.existing) {
+        setDuplicateVideo(result.existing);
+        setPendingParseTarget(target);
+        setError("");
+        setMessage("");
+        return;
+      }
     }
 
     await runParse(target);
@@ -368,15 +435,8 @@ export function VideoLibraryPage() {
   async function exportBatchVideos(selectedVideos: VideoSummary[], format: ExportFormat) {
     const bvids = selectedVideos.map((video) => video.bvid);
     if (!bvids.length) return;
-    const targetDbId = singleDatabaseIdForVideos(selectedVideos, activeDbId);
-    if (!targetDbId) {
-      setNotice({
-        kind: "warning",
-        title: "Cannot batch export across databases",
-        message: "Selected videos are stored in different database files. Export one video at a time, or select videos from one database.",
-      });
-      return;
-    }
+    // 后端在 db_id=main 时按 bvid 到各库解析，跨库合并成一条导出记录也已经支持，不再拦。
+    const targetDbId = exportDatabaseIdForVideos(selectedVideos, activeDbId);
     setExportingKey("batch:videos");
     setError("");
     setMessage(`正在导出 ${bvids.length} 个视频`);
@@ -466,20 +526,25 @@ export function VideoLibraryPage() {
   async function queueArchiveDeleteTarget() {
     if (!deleteTarget) return;
     const target = deleteTarget;
-    const payloadTarget = deletePayloadForTarget(target);
     const requests = deleteRequestsForTarget(target, activeDbId);
     if (!requests.length) {
       setNotice({
         kind: "warning",
-        title: "请先选择数据库",
+        title: activeDbId === "main" ? "请先选择数据库" : "无法定位要删除的记录",
         message:
           target.kind === "video" || target.kind === "videos"
             ? "所选视频不在同一个数据库文件里，无法一次删除；请逐个删除，或先切换到具体数据库。"
-            : "「全部视频」是聚合视图，没有对应的数据库文件；请先在左侧选择具体数据库，或到批量管理里按视频删除。",
+            : activeDbId === "main"
+              ? "「全部视频」是聚合视图，没有对应的数据库文件；请先在左侧选择具体数据库，或到批量管理里按视频删除。"
+              : "这些 UP 主缺少 mid，且当前未加载到它们的视频，无法确定删除范围；请先加载更多视频，或在批量管理里按视频删除。",
       });
       return;
     }
-    const removedBvids = new Set(payloadTarget.bvids || (payloadTarget.bvid ? [payloadTarget.bvid] : []));
+    // 一次可能提交多条请求（多个 UP、多个库），乐观移除时以实际请求为准。
+    const removedMids = new Set(requests.map((request) => request.owner_mid).filter((mid): mid is string => Boolean(mid)));
+    const removedBvids = new Set(
+      requests.flatMap((request) => [...(request.bvids || []), ...(request.bvid ? [request.bvid] : [])]),
+    );
     setDeletingKey(`delete:${target.kind}`);
     setError("");
     setMessage("");
@@ -490,12 +555,14 @@ export function VideoLibraryPage() {
       setDeleteTarget(null);
       setOwnerFilter("all");
       setLibraryView("tasks");
-      if (payloadTarget.owner_mid) {
-        setVideos((current) => current.filter((video) => video.owner_mid !== payloadTarget.owner_mid));
-        setOwnerSummaries((current) => current.filter((owner) => owner.owner_mid !== payloadTarget.owner_mid));
-      } else {
-        setVideos((current) => current.filter((video) => !removedBvids.has(video.bvid)));
-      }
+      setVideos((current) =>
+        current.filter(
+          (video) => !removedBvids.has(video.bvid) && !(video.owner_mid && removedMids.has(video.owner_mid)),
+        ),
+      );
+      setOwnerSummaries((current) =>
+        current.filter((owner) => !(owner.owner_mid && removedMids.has(owner.owner_mid))),
+      );
       setVideoTotal((current) => Math.max(0, current - deleteTargetVideoCount(target)));
       setMessage(requests.length > 1 ? `已提交 ${requests.length} 个数据库的删除任务` : "删除任务已加入队列");
       setNotice({
@@ -509,7 +576,8 @@ export function VideoLibraryPage() {
         // Bail out if the user switched database while the delete ran.
         if (activeDbIdRef.current !== refreshDbId) return;
         refreshTimerRef.current = null;
-        void loadVideos({ quiet: true });
+        // Merge the first page so already loaded pages are not dropped by this background refresh.
+        void loadVideos({ mode: "head", quiet: true });
         void loadDatabases({ quiet: true, selectId: refreshDbId });
       }, 8000);
     } catch (reason: unknown) {
@@ -711,8 +779,10 @@ export function VideoLibraryPage() {
       <LibraryHeader
         activeDatabase={activeDatabase}
         commentCount={totals.comments}
+        commentScope={totals.scope}
         isLoading={isLoading}
         isLoadingDatabases={isLoadingDatabases}
+        loadedCount={videos.length}
         showSettings={showSettings}
         videoCount={videoTotal || videos.length}
         onRefresh={() => {
@@ -732,7 +802,12 @@ export function VideoLibraryPage() {
         spaceProgress={spaceProgress}
       />
 
-      <LibraryStats totals={totals} videoCount={videoTotal || videos.length} />
+      <LibraryStats
+        loadedCount={videos.length}
+        scope={totals.scope}
+        totals={totals}
+        videoCount={videoTotal || videos.length}
+      />
 
       <LibraryTabs
         active={libraryView}
@@ -781,20 +856,24 @@ export function VideoLibraryPage() {
               setUrl(value);
               setDuplicateVideo(null);
               setPendingParseTarget("");
+              cancelDuplicateCheck();
             }}
           />
 
           <VideoListPanel
             activeDbId={activeDbId}
+            backendTotalVideoCount={videoTotal}
+            failedDatabases={failedDatabases}
+            hasMore={hasMoreVideos}
+            incomplete={videoListIncomplete}
             isLoading={isLoading}
             query={query}
             selectedOwnerName={selectedOwnerName}
             totalVideoCount={videos.length}
-            backendTotalVideoCount={videoTotal}
-            hasMore={hasMoreVideos}
             videos={videos}
             onLoadMore={() => void loadMoreVideos()}
             onQueryChange={setQuery}
+            onRetryVideos={() => void loadVideos()}
           />
         </section>
       )}

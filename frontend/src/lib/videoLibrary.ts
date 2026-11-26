@@ -127,6 +127,36 @@ export function summarizeVideos(videos: VideoSummary[]): VideoTotals {
   );
 }
 
+export type LibraryTotals = VideoTotals & {
+  /** "library": comment/danmaku sums cover the whole library; "loaded": only the loaded page. */
+  scope: "library" | "loaded";
+};
+
+/**
+ * Prefer the backend's whole-library totals over the current page.
+ *
+ * `/api/videos` builds `owners` from the complete (unfiltered) list, so summing them covers every
+ * page. Only comment/danmaku counts exist there; views, likes and comment states still come from
+ * the rows currently loaded, which callers must label as such.
+ */
+export function summarizeLibrary(videos: VideoSummary[], owners: OwnerSummary[] = []): LibraryTotals {
+  const totals = summarizeVideos(videos);
+  if (!owners.length) return { ...totals, scope: "loaded" };
+  let comments = 0;
+  let danmaku = 0;
+  for (const owner of owners) {
+    comments += owner.comment_count || 0;
+    danmaku += owner.danmaku_count || 0;
+  }
+  return { ...totals, comments, danmaku, scope: "library" };
+}
+
+export function findVideoByBvid(videos: VideoSummary[], bvid: string) {
+  const needle = bvid.trim().toLowerCase();
+  if (!needle) return undefined;
+  return videos.find((video) => video.bvid.toLowerCase() === needle);
+}
+
 export function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummary[]) {
   const byBvid = new Map(current.map((video) => [video.bvid, video]));
   for (const video of incoming) {
@@ -135,9 +165,30 @@ export function mergeVideosByBvid(current: VideoSummary[], incoming: VideoSummar
   return Array.from(byBvid.values());
 }
 
+/**
+ * Swap the freshly loaded first page into an already paged list.
+ *
+ * Quiet refreshes fetch only the first page (the backend caps `limit`), so a plain replace would
+ * shrink the list back to one page. This keeps the loaded tail and puts new rows at the top.
+ */
+export function refreshLoadedVideos(current: VideoSummary[], firstPage: VideoSummary[]) {
+  const firstPageBvids = new Set(firstPage.map((video) => video.bvid));
+  return [...firstPage, ...current.filter((video) => !firstPageBvids.has(video.bvid))];
+}
+
 export function singleDatabaseIdForVideos(videos: VideoSummary[], fallbackDbId: string) {
   const ids = new Set(videos.map((video) => video.db_id || fallbackDbId));
   return ids.size === 1 ? Array.from(ids)[0] : "";
+}
+
+/**
+ * Export scope for a batch of videos.
+ *
+ * One concrete database is used when every row lives there; otherwise `main` is correct because
+ * `/api/database/export` resolves each bvid to the database that actually stores it.
+ */
+export function exportDatabaseIdForVideos(videos: VideoSummary[], fallbackDbId: string) {
+  return singleDatabaseIdForVideos(videos, fallbackDbId) || "main";
 }
 
 export function estimateOwnerStorageBytes(commentCount: number, danmakuCount: number, videoCount: number) {
@@ -192,15 +243,33 @@ export function deleteRequestsForTarget(target: DeleteTarget, activeDbId: string
     return Array.from(grouped, ([db_id, bvids]) => ({ db_id, bvids }));
   }
   if (activeDbId === "main") return [];
-  if (target.kind === "owners") {
-    // Owner summaries intentionally carry no bvids (the page only knows the current slice), so a
-    // multi-owner delete must become one owner_mid request per owner instead of an empty bvids list.
-    const perOwner = target.owners
-      .filter((owner) => owner.ownerMid)
-      .map((owner) => ({ db_id: activeDbId, owner_mid: owner.ownerMid }));
-    if (perOwner.length === target.owners.length && perOwner.length > 0) return perOwner;
+  if (target.kind === "owner") {
+    return ownerDeleteRequests(activeDbId, target.owner);
   }
-  return [{ db_id: activeDbId, ...deletePayloadForTarget(target) }];
+  if (target.kind === "owners") {
+    // Owner summaries intentionally carry no bvids (the page only knows the current slice), so
+    // every owner with a mid becomes its own request instead of one incomplete bvids fallback.
+    const requests: DeleteRequest[] = [];
+    const bvids: string[] = [];
+    for (const owner of target.owners) {
+      if (owner.ownerMid) {
+        requests.push({ db_id: activeDbId, owner_mid: owner.ownerMid });
+      } else {
+        bvids.push(...owner.bvids);
+      }
+    }
+    if (bvids.length) {
+      requests.push({ db_id: activeDbId, bvids: Array.from(new Set(bvids)) });
+    }
+    return requests;
+  }
+  return [];
+}
+
+function ownerDeleteRequests(dbId: string, owner: OwnerGroup): DeleteRequest[] {
+  if (owner.ownerMid) return [{ db_id: dbId, owner_mid: owner.ownerMid }];
+  const bvids = Array.from(new Set(owner.bvids));
+  return bvids.length ? [{ db_id: dbId, bvids }] : [];
 }
 
 export function deleteTargetVideoCount(target: DeleteTarget) {

@@ -252,6 +252,10 @@ export type VideoListResponse = {
   limit?: number;
   offset?: number;
   has_more?: boolean;
+  /** Aggregate view only: databases whose rows could not be read, so the list may be partial. */
+  failed_databases?: Array<{ id: string; error: string }>;
+  /** False when the aggregate list was assembled while at least one database failed. */
+  complete?: boolean;
 };
 
 export type ParseVideoResponse = {

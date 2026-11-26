@@ -1,12 +1,16 @@
 import { Database, RefreshCcw, Settings } from "lucide-react";
 import { cn, formatNumber } from "../../lib/utils";
+import type { LibraryTotals } from "../../lib/videoLibrary";
 import type { DatabaseInfo } from "../../types";
 
 type LibraryHeaderProps = {
   activeDatabase?: DatabaseInfo;
   commentCount: number;
+  /** Where the comment total comes from; a loaded-only sum must not look like the whole library. */
+  commentScope?: LibraryTotals["scope"];
   isLoading: boolean;
   isLoadingDatabases: boolean;
+  loadedCount?: number;
   showSettings: boolean;
   videoCount: number;
   onRefresh: () => void;
@@ -16,14 +20,18 @@ type LibraryHeaderProps = {
 export function LibraryHeader({
   activeDatabase,
   commentCount,
+  commentScope = "loaded",
   isLoading,
   isLoadingDatabases,
+  loadedCount,
   showSettings,
   videoCount,
   onRefresh,
   onToggleSettings,
 }: LibraryHeaderProps) {
   const busy = isLoading || isLoadingDatabases;
+  const commentsPartial =
+    commentScope === "loaded" && typeof loadedCount === "number" && loadedCount < videoCount;
   return (
     <section className="app-header">
       <div className="mx-auto grid max-w-[1540px] gap-5 px-4 py-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:px-6">
@@ -34,7 +42,9 @@ export function LibraryHeader({
               评论视频库
             </span>
             <span>{videoCount} 个视频</span>
-            <span>{formatNumber(commentCount)} 条评论档案</span>
+            <span>
+              {formatNumber(commentCount)} 条评论档案{commentsPartial ? `（已加载 ${loadedCount} 条）` : ""}
+            </span>
             {activeDatabase && <span>当前库：{activeDatabase.name}</span>}
           </div>
           <h1 className="mt-3 text-2xl font-semibold tracking-normal text-ink lg:text-3xl">
