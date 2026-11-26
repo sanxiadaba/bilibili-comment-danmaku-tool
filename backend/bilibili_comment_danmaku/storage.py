@@ -941,7 +941,7 @@ def list_video_summaries_page(db_path, limit=40, offset=0, include_owners=True, 
                 SELECT *
                 FROM videos
                 {where_sql}
-                ORDER BY fetched_at DESC
+                ORDER BY fetched_at DESC, bvid ASC
                 LIMIT ? OFFSET ?
             )
             SELECT

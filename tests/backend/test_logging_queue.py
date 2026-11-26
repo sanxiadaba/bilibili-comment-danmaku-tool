@@ -308,6 +308,31 @@ class TaskQueueTests(unittest.TestCase):
             self.assertEqual(events, ["1"])
             self.assertTrue(queue.wait_until_idle())
 
+    def test_resume_does_not_cancel_a_stop_request(self):
+        # Pause, stop, resume used to silently drop the stop flag on the active task.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            release = threading.Event()
+
+            def runner(task):
+                release.wait(2)
+
+            queue = InMemoryTaskQueue("space", runner, state_path=state_path)
+            task = queue.enqueue({"mid": "1", "owner_ref": "1"})
+            deadline = time.time() + 2
+            while time.time() < deadline and queue.active is None:
+                time.sleep(0.01)
+            queue.control("pause", task_id=task["id"])
+            queue.control("stop", task_id=task["id"])
+
+            queue.control("resume", task_id=task["id"])
+
+            self.assertIsNotNone(queue.active)
+            self.assertTrue(queue.active["stop_requested"])
+            self.assertFalse(queue.active["pause_requested"])
+            release.set()
+            queue.wait_until_idle(timeout=2.0)
+
     def test_queue_can_clear_and_retry_history(self):
         events = []
 

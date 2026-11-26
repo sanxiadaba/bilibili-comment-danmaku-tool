@@ -642,7 +642,10 @@ class SpaceArchiveService:
                     )
                 except Exception as exc:
                     if isinstance(exc, (TaskCancelled, scraper.ScrapeCancelled)):
-                        stopped = bool(task.get("stop_requested"))
+                        # The cancellation logger already reset the flags when it raised, so trust
+                        # the exception action first and only fall back to the task flags.
+                        action = getattr(exc, "action", "") or ("stop" if task.get("stop_requested") else "pause")
+                        stopped = action == "stop"
                         self.update_task(
                             task,
                             status="stopped" if stopped else "paused",

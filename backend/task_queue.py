@@ -141,11 +141,10 @@ class InMemoryTaskQueue:
                         task["status"] = "queued"
                         task["message"] = "queued"
                         task["pause_requested"] = False
-                        task["stop_requested"] = False
                         changed.append(self.public_task(task))
                 if self.active and self.matches_task(self.active, task_id):
+                    # Clearing stop_requested here would turn "pause, stop, resume" into a resume.
                     self.active["pause_requested"] = False
-                    self.active["stop_requested"] = False
                     changed.append(self.public_task(self.active))
                 if any(task.get("status") == "queued" for task in self.queued):
                     self.start_worker_locked()
