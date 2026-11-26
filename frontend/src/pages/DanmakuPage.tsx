@@ -16,7 +16,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { fetchDanmakuData,refreshDanmakuData } from "../api/client";
+import { fetchDanmakuData, refreshDanmakuData, stopRunningTask } from "../api/client";
 import { DanmakuColorList, DanmakuModeChart, DanmakuTimelineChart, RepeatedDanmakuList } from "../components/danmaku/DanmakuCharts";
 import { DanmakuDetail } from "../components/danmaku/DanmakuDetail";
 import { DanmakuListRow } from "../components/danmaku/DanmakuList";
@@ -164,6 +164,15 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
     setSelectedId((current) => (sortedItems.some((item) => item.dmid === current) ? current : sortedItems[0].dmid));
   }, [sortedItems]);
 
+  const stopRefresh = useCallback(async () => {
+    try {
+      const payload = await stopRunningTask("danmaku");
+      setMessage(payload.message || "已请求停止抓取");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
   async function refreshCurrentDanmaku() {
     requestSeqRef.current += 1;
     loadAbortRef.current?.abort();
@@ -173,15 +182,17 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
     try {
       const payload = await refreshDanmakuData(danmaku?.metadata.bvid || bvid, dbId);
       applyDanmakuPayload(payload);
+      if (payload.refresh?.stopped) {
+        setMessage(payload.refresh.reason || "已停止抓取，本地档案未改动");
+        return;
+      }
       setMessage(
         payload.refresh?.warning ||
           `已刷新弹幕：本次抓到 ${payload.refresh?.scraped_count ?? payload.metadata.total_count} 条，档案共 ${
             payload.metadata.total_count
           } 条`,
       );
-      if (!payload.refresh?.stopped) {
-        await loadDanmaku();
-      }
+      await loadDanmaku();
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setMessage("");
@@ -278,6 +289,15 @@ export function DanmakuPage({ bvid }: { bvid?: string }) {
               <RefreshCcw className={cn(isRefreshing && "animate-spin")} size={16} aria-hidden="true" />
               {isRefreshing ? "抓取中" : "刷新弹幕"}
             </button>
+            {isRefreshing && (
+              <button
+                className="btn-quiet inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
+                type="button"
+                onClick={() => void stopRefresh()}
+              >
+                停止抓取
+              </button>
+            )}
             <a
               className="btn-primary inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium"
               href={`https://www.bilibili.com/video/${danmaku?.metadata.bvid || bvid || ""}`}
