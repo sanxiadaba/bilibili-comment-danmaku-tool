@@ -39,6 +39,14 @@
 
 ## 启动
 
+### Windows 一键启动（推荐）
+
+双击仓库根目录的 **`start.cmd`**：它会检查 Python/pnpm、首次缺少 `dist/` 时自动构建前端，然后启动本地服务并自动打开浏览器（`http://127.0.0.1:8001/`）。关掉那个黑窗口就是停止服务。
+
+- 想要「无窗口后台运行」：双击 **`start-hidden.vbs`**（首次仍需先跑一次 `start.cmd` 生成 `dist/`）；停止时在任务管理器结束 `pythonw.exe`。
+- 数据在 `data/`，日志在 `logs/app.jsonl`；Cookie 放 `data/cookie.txt`（或在「登录态」页扫码/粘贴）。
+- 起不来时看 `logs/app.jsonl` 末尾几行；端口被占用会自动顺延，真实地址在窗口和 `data/.server-port` 里。
+
 ### 打包好的 exe（Windows）
 
 在任意一台装了 Node/Python 的机器上执行 `pnpm package:windows`，产物在 `release/bilibili-comment-danmaku-tool/`：解压/拷走后双击 `bilibili-comment-danmaku-tool.exe` 即可。它会启动本地服务、弹出状态窗口并打开浏览器。数据在 exe 旁边的 `data/`，日志在 `logs/`；换电脑时一起拷走即可。
@@ -50,7 +58,7 @@
 ```powershell
 pnpm install
 pnpm build        # 编码检查 + 测试 + TypeScript 检查 + Vite 构建
-pnpm server       # http://127.0.0.1:8001/
+pnpm server       # http://127.0.0.1:8001/，需要自己开浏览器
 ```
 
 改前端时开两个终端，`pnpm dev` 会热更新并把 `/api` 代理到后端：
