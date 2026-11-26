@@ -1,5 +1,6 @@
 """数据库目录：解析 db_id、扫描 catalog、聚合视频列表、导入/导出路径。"""
 
+import os
 import re
 import shutil
 import time
@@ -83,12 +84,41 @@ def video_database_path_from_archive(archive, database_dir=DEFAULT_DATABASE_DIR)
     )
 
 
-def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
-    filename = video_database_filename(bvid)
+def iter_database_files(database_dir):
+    """Yield .db-style files under database_dir without following junctions or symlinks.
+
+    A junction inside data/databases used to be scanned as if it were part of the archive, so a
+    file outside the tree was listed as a hot-plug database (and migrated/refreshed in place).
+    """
     database_dir = Path(database_dir).resolve()
     if not database_dir.exists():
-        return None
-    matches = sorted(database_dir.rglob(filename), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+        return
+    for root, dirs, files in os.walk(database_dir):
+        kept = []
+        for name in sorted(dirs):
+            candidate = Path(root) / name
+            if candidate.is_symlink():
+                continue
+            if hasattr(os.path, "isjunction") and os.path.isjunction(candidate):
+                continue
+            kept.append(name)
+        dirs[:] = kept
+        for name in sorted(files):
+            path = Path(root) / name
+            if path.suffix.lower() not in DATABASE_EXTENSIONS:
+                continue
+            if path.is_symlink():
+                continue
+            resolved = path.resolve()
+            if not is_path_inside(resolved, database_dir):
+                continue
+            yield resolved, f"db:{resolved.relative_to(database_dir).as_posix()}"
+
+
+def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
+    filename = video_database_filename(bvid)
+    matches = [path for path, _db_id in iter_database_files(database_dir) if path.name.lower() == filename.lower()]
+    matches.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
     for match in matches:
         if match.is_file() and match.suffix.lower() in DATABASE_EXTENSIONS:
             return match.resolve()
@@ -227,12 +257,8 @@ def database_id_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DAT
 
 
 def iter_catalog_database_paths(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
-    database_dir = Path(database_dir).resolve()
-    if not database_dir.exists():
-        return
-    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
-        if path.is_file() and path.suffix.lower() in DATABASE_EXTENSIONS:
-            yield path.resolve(), f"db:{path.relative_to(database_dir).as_posix()}"
+    for path, db_id in iter_database_files(database_dir):
+        yield path, db_id
 
 
 def video_owner_key(video):
@@ -269,6 +295,7 @@ def list_all_video_summaries_page(
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
     by_bvid = {}
+    failed_databases = []
     for db_path, db_id in iter_catalog_database_paths(main_db_path, database_dir):
         if not Path(db_path).exists():
             continue
@@ -281,7 +308,10 @@ def list_all_video_summaries_page(
                 offset=0,
                 include_owners=False,
             )
-        except Exception:
+        except Exception as exc:
+            # Keep going, but never pretend the aggregate is complete: the empty/partial list
+            # used to look identical to "this database has no videos".
+            failed_databases.append({"id": db_id, "error": str(exc)})
             continue
         for video in page.get("videos") or []:
             item = {**video, "db_id": db_id}
@@ -300,6 +330,8 @@ def list_all_video_summaries_page(
         "limit": limit,
         "offset": offset,
         "has_more": offset + limit < total,
+        "failed_databases": failed_databases,
+        "complete": not failed_databases,
     }
     if include_owners:
         payload["owners"] = owner_summaries_from_videos(videos)
@@ -350,23 +382,24 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
     databases = []
     seen = set()
 
-    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
-        if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
-            continue
+    for path, db_id in iter_database_files(database_dir):
         resolved = path.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
-        databases.append(
-            database_info_for_path(
-                resolved,
-                main_db_path,
-                database_dir,
-                db_id=f"db:{path.relative_to(database_dir).as_posix()}",
-                role="hotplug",
-                include_details=include_details,
-            )
+        info = database_info_for_path(
+            resolved,
+            main_db_path,
+            database_dir,
+            db_id=db_id,
+            role="hotplug",
+            include_details=include_details,
         )
+        if not info.get("ok"):
+            # An unreadable archive must not look like a healthy one in the list.
+            info["coverage_status"] = "unreadable"
+            info["coverage_message"] = info.get("error") or "数据库无法读取"
+        databases.append(info)
     if include_details:
         annotate_database_coverage(databases)
     return [public_database_info(database) for database in databases]
