@@ -309,6 +309,23 @@ class TaskQueueTests(unittest.TestCase):
             self.assertEqual(events, ["1"])
             self.assertTrue(queue.wait_until_idle())
 
+    def test_finished_run_with_failures_can_be_retried(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+
+            def runner(task):
+                queue.update(task, status="finished", message="done", finished_at="done", failed=2)
+
+            queue = InMemoryTaskQueue("space", runner, state_path=state_path)
+            queue.enqueue({"mid": "1", "owner_ref": "1"})
+            self.assertTrue(queue.wait_until_idle(timeout=5))
+            task_id = queue.snapshot()["recent"][0]["id"]
+
+            retried = queue.control("retry", task_id=task_id)
+
+            self.assertEqual(len(retried["queue"]["queued"]), 1)
+            queue.wait_until_idle(timeout=5)
+
     def test_resume_does_not_cancel_a_stop_request(self):
         # Pause, stop, resume used to silently drop the stop flag on the active task.
         with tempfile.TemporaryDirectory() as tmpdir:

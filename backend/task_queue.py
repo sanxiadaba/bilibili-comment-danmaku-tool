@@ -198,7 +198,12 @@ class InMemoryTaskQueue:
                 for task in list(self.history):
                     if not self.matches_task(task, task_id):
                         continue
-                    if task.get("status") not in {"failed", "stopped"}:
+                    status = str(task.get("status") or "")
+                    failed = int(task.get("failed") or 0)
+                    # A run that finished with failed videos is retryable: the failed items were
+                    # skipped, not archived, so "finished" alone must not hide that work.
+                    retryable = status in {"failed", "stopped"} or (status == "finished" and failed > 0)
+                    if not retryable:
                         continue
                     retry_fields = self.retry_fields(task, retry_defaults)
                     if self.retry_validator and not self.retry_validator(retry_fields):
