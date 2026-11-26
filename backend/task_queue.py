@@ -36,6 +36,23 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def clean_task_text(value):
+    """Drop lone surrogates so the queue state file can always be written as UTF-8."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    return value
+
+
+def clean_task_fields(fields):
+    cleaned = {}
+    for key, value in (fields or {}).items():
+        if isinstance(value, (list, tuple)):
+            cleaned[key] = [clean_task_text(item) for item in value]
+        else:
+            cleaned[key] = clean_task_text(value)
+    return cleaned
+
+
 class InMemoryTaskQueue:
     def __init__(self, kind, runner, history_limit=DEFAULT_HISTORY_LIMIT, state_path=None, retry_validator=None):
         self.kind = kind
@@ -81,7 +98,7 @@ class InMemoryTaskQueue:
             "archived": 0,
             "skipped": 0,
             "failed": 0,
-            **fields,
+            **clean_task_fields(fields),
         }
 
     def start_pending_worker(self):
@@ -305,7 +322,11 @@ class InMemoryTaskQueue:
             return
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            self._quarantine_state_file(exc)
+            return
+        if not isinstance(payload, dict):
+            self._quarantine_state_file(TypeError(f"unexpected state payload: {type(payload).__name__}"))
             return
 
         if payload.get("kind") and payload.get("kind") != self.kind:
@@ -376,15 +397,33 @@ class InMemoryTaskQueue:
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
             temp_path.replace(self.state_path)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             if temp_path:
                 try:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
             self._log_persist_failure(exc)
+
+    def _quarantine_state_file(self, exc):
+        """Keep an unreadable state file around for inspection instead of silently starting empty."""
+        quarantined = ""
+        try:
+            quarantine = self.state_path.with_name(f"{self.state_path.name}.corrupt-{int(time.time())}")
+            self.state_path.replace(quarantine)
+            quarantined = str(quarantine)
+        except OSError:
+            pass
+        log_event(
+            "task_queue.state_unreadable",
+            f"task queue state could not be read: {exc}",
+            level="warning",
+            kind=self.kind,
+            state_path=str(self.state_path),
+            quarantined=quarantined,
+        )
 
     def _log_persist_failure(self, exc):
         if self._persist_failure_logged:

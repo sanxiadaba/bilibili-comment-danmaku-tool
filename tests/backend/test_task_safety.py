@@ -199,6 +199,36 @@ class TaskQueueStateTests(unittest.TestCase):
             log_event.assert_called_once()
             self.assertEqual(log_event.call_args.args[0], "task_queue.persist_error")
 
+    def test_lone_surrogate_in_a_task_does_not_break_the_queue(self):
+        # Regression: json.dumps(ensure_ascii=False) + write_text raised UnicodeEncodeError,
+        # which persist_locked did not catch, so the queue rejected every later enqueue.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "parse_queue.json"
+            queue = InMemoryTaskQueue("parse", lambda task: None, state_path=state_path)
+
+            queued = queue.enqueue({"video_ref": "BV1xx411c7mD\ud800", "bvid": "BV1xx411c7mD"})
+            second = queue.enqueue({"video_ref": "BV1xx411c7mD", "bvid": "BV1xx411c7mD"})
+
+            self.assertEqual(queued["status"], "queued")
+            self.assertEqual(second["status"], "queued")
+            queue.wait_until_idle(timeout=2.0)
+            self.assertTrue(state_path.exists())
+            self.assertIsInstance(json.loads(state_path.read_text(encoding="utf-8"))["queued"], list)
+
+    def test_non_object_state_file_is_quarantined_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "space_queue.json"
+            state_path.write_text("[]", encoding="utf-8")
+
+            with mock.patch.object(task_queue_module, "log_event") as log_event:
+                queue = InMemoryTaskQueue("space", lambda task: None, state_path=state_path)
+
+            self.assertEqual(queue.snapshot()["queued"], [])
+            self.assertFalse(state_path.exists())
+            self.assertTrue(list(Path(tmp).glob("space_queue.json.corrupt-*")))
+            log_event.assert_called_once()
+            self.assertEqual(log_event.call_args.args[0], "task_queue.state_unreadable")
+
 
 class DeleteTaskControlTests(unittest.TestCase):
     def _service(self, tmp):
