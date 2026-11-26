@@ -100,7 +100,13 @@ def filename_stem(url):
 
 
 def get_mixin_key(img_key, sub_key):
-    raw = img_key + sub_key
+    """按 B 站混淆表生成 mixin key；密钥太短时报可读的签名不可用错误。"""
+    raw = f"{img_key or ''}{sub_key or ''}"
+    if len(raw) < 64:
+        # scraper 里定义了这个异常类型；延迟导入避免 scraper <-> wbi 的循环导入。
+        from .scraper import WbiSignatureUnavailableError
+
+        raise WbiSignatureUnavailableError(f"WBI 密钥长度不足（{len(raw)} < 64），无法生成 mixin key")
     return "".join(raw[index] for index in MIXIN_KEY_ENC_TAB)[:32]
 
 

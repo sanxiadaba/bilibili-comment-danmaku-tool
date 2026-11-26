@@ -1,8 +1,10 @@
 import http.client
 import json
+import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -10,11 +12,17 @@ from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
 
+import database_registry  # noqa: E402
+import server as server_module  # noqa: E402
 from auth_store import safe_login_url  # noqa: E402
-from app_logging import redact_text  # noqa: E402
-from bilibili_comment_danmaku import save_comments_to_sqlite  # noqa: E402
+from app_logging import clean_fields, is_sensitive_key, redact_text  # noqa: E402
+from bilibili_comment_danmaku import save_comments_to_sqlite, scraper  # noqa: E402
+from bilibili_comment_danmaku.scraper import WbiSignatureUnavailableError  # noqa: E402
+from bilibili_comment_danmaku.wbi import get_mixin_key  # noqa: E402
+from database_registry import list_database_catalog  # noqa: E402
 from http_utils import safe_print  # noqa: E402
-from server import CommentDanmakuServer, validate_bind_host  # noqa: E402
+from local_server import create_threading_server  # noqa: E402
+from server import CommentDanmakuServer, SingleInstanceLock, validate_bind_host  # noqa: E402
 
 
 class LocalHttpTestCase(unittest.TestCase):
@@ -202,13 +210,70 @@ class MutatingRequestGuardTests(LocalHttpTestCase):
 
 
 class BindHostTests(unittest.TestCase):
-    def test_loopback_hosts_are_allowed(self):
-        for host in ("127.0.0.1", "localhost", "::1", ""):
+    def test_ipv4_loopback_hosts_are_allowed(self):
+        for host in ("127.0.0.1", "localhost", ""):
             self.assertEqual(validate_bind_host(host), host or "127.0.0.1")
 
     def test_public_bind_is_refused(self):
         with self.assertRaises(SystemExit):
             validate_bind_host("0.0.0.0")
+
+    def test_ipv6_loopback_is_refused_with_a_chinese_hint(self):
+        # ::1 used to pass validation but AF_INET could never bind it.
+        with self.assertRaises(SystemExit) as refusal:
+            validate_bind_host("::1")
+
+        message = str(refusal.exception)
+        self.assertIn("IPv6", message)
+        self.assertIn("127.0.0.1", message)
+        self.assertIn("拒绝绑定", message)
+
+        with self.assertRaises(ValueError) as server_refusal:
+            create_threading_server("::1", 0, lambda *args, **kwargs: None)
+        self.assertIn("127.0.0.1", str(server_refusal.exception))
+
+
+class SingleInstanceLockTests(unittest.TestCase):
+    def test_second_instance_is_refused_and_the_lock_is_reusable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            name = f"dsh-single-instance-test-{os.getpid()}"
+            first = SingleInstanceLock(name=name, lock_dir=tmp)
+            self.assertTrue(first.acquire())
+            second = SingleInstanceLock(name=name, lock_dir=tmp)
+            try:
+                self.assertFalse(second.acquire())
+            finally:
+                first.release()
+            third = SingleInstanceLock(name=name, lock_dir=tmp)
+            try:
+                self.assertTrue(third.acquire())
+            finally:
+                third.release()
+
+
+class ExportLocationTests(LocalHttpTestCase):
+    def test_export_lands_in_the_exports_directory_and_is_not_a_catalog_entry(self):
+        exports = self.root / "exports"
+        with mock.patch.object(server_module, "DEFAULT_EXPORT_DIR", exports), mock.patch.object(
+            database_registry, "DEFAULT_EXPORT_DIR", exports
+        ):
+            status, _content_type, payload = self.request(
+                "POST",
+                "/api/database/export",
+                body=json.dumps({"bvid": BVID, "format": "sqlite"}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "X-Bilibili-Tool-Request": "1"},
+            )
+
+        body = self.json_body(payload)
+        self.assertEqual(status, 200, body)
+        exported = Path(body["path"]).resolve()
+        self.assertEqual(exported.parent, exports.resolve())
+        self.assertNotIn(str(self.databases.resolve()), str(exported))
+        catalog_paths = {
+            str(Path(item["path"]).resolve())
+            for item in list_database_catalog(self.legacy, self.databases, include_details=False)
+        }
+        self.assertNotIn(str(exported), catalog_paths)
 
 
 class StaticCacheTests(LocalHttpTestCase):
@@ -302,6 +367,79 @@ class RedactionTests(unittest.TestCase):
     def test_safe_print_survives_a_missing_stdout(self):
         with mock.patch.object(sys, "stdout", None):
             safe_print("should not raise")
+
+
+class SensitiveKeyTests(unittest.TestCase):
+    def test_cookie_status_keys_are_kept_but_cookie_credentials_are_dropped(self):
+        # cookie_status 是状态字段，不能因为名字里有 cookie 就整段丢掉。
+        self.assertFalse(is_sensitive_key("cookie_status"))
+        self.assertFalse(is_sensitive_key("cookie_expires_at"))
+        self.assertTrue(is_sensitive_key("cookie"))
+        self.assertTrue(is_sensitive_key("cookies"))
+        self.assertTrue(is_sensitive_key("set-cookie"))
+        self.assertTrue(is_sensitive_key("bili_cookie"))
+        # 其它凭据规则保持不变。
+        self.assertTrue(is_sensitive_key("access_token"))
+        self.assertTrue(is_sensitive_key("password"))
+        self.assertTrue(is_sensitive_key("client_secret"))
+        self.assertTrue(is_sensitive_key("credential"))
+
+        cleaned = clean_fields(
+            {
+                "cookie_status": "valid",
+                "cookie": "SESSDATA=secret",
+                "access_token": "token-value",
+            }
+        )
+
+        self.assertEqual(cleaned, {"cookie_status": "valid"})
+
+
+class WbiKeyTests(unittest.TestCase):
+    def test_short_keys_raise_signature_unavailable_instead_of_index_error(self):
+        for img_key, sub_key in (("", ""), ("a" * 63, ""), ("short", "key"), (None, None)):
+            with self.assertRaises(WbiSignatureUnavailableError):
+                get_mixin_key(img_key, sub_key)
+
+    def test_valid_keys_are_permuted_to_32_characters(self):
+        mixin_key = get_mixin_key("a" * 32, "b" * 32)
+
+        self.assertEqual(len(mixin_key), 32)
+
+
+class BackoffStatePersistenceTests(unittest.TestCase):
+    def test_stale_writer_cannot_shrink_persisted_blocked_until(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "backoff.json"
+            first = scraper.RequestBackoff(state_path=state_path)
+            # second 在 first 落盘前就已加载，模拟另一个进程的旧状态。
+            stale = scraper.RequestBackoff(state_path=state_path)
+
+            first.block_for(30)
+            stale.block_for(0.1)
+
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertGreater(payload["blocked_until"] - time.time(), 20)
+
+    def test_write_retries_once_after_replace_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "backoff.json"
+            backoff = scraper.RequestBackoff(state_path=state_path)
+            original_replace = Path.replace
+            calls = {"count": 0}
+
+            def flaky_replace(path, target):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise OSError("ReplaceFileW EIO")
+                return original_replace(path, target)
+
+            with mock.patch.object(Path, "replace", flaky_replace):
+                backoff.block_for(5)
+
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(calls["count"], 2)
+            self.assertGreater(payload["blocked_until"] - time.time(), 3)
 
 
 if __name__ == "__main__":

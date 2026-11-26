@@ -107,6 +107,42 @@ class AuthStoreTests(unittest.TestCase):
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "SESSDATA=old\n")
             self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=new")
 
+    def test_backup_existing_returns_the_backup_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
+            store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            store.cookie_path.write_text("SESSDATA=old\n", encoding="utf-8")
+
+            backup_path, error = store.backup_existing()
+
+            self.assertEqual(error, "")
+            self.assertIsNotNone(backup_path)
+            self.assertEqual(backup_path.read_text(encoding="utf-8"), "SESSDATA=old\n")
+
+    def test_cookie_store_reports_backup_failure_but_still_saves(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            store = auth_store.CookieStore(root / "cookie.txt", backup_dir=root / "blocked-backup")
+            store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            store.cookie_path.write_text("SESSDATA=old\n", encoding="utf-8")
+            # 用一个同名文件占住备份目录，mkdir 必然失败，模拟磁盘/权限问题。
+            store.backup_dir.write_text("not a directory", encoding="utf-8")
+
+            backup_path, error = store.backup_existing()
+            self.assertIsNone(backup_path)
+            self.assertTrue(error)
+
+            with mock.patch("auth_store.inspect_cookie_status") as status:
+                status.return_value = {"status": "unchecked", "exists": True}
+                with mock.patch("auth_store.log_event") as log_event:
+                    payload = store.save("SESSDATA=new")
+
+            self.assertEqual(payload["status"], "unchecked")
+            self.assertIn("backup_warning", payload)
+            self.assertTrue(payload["backup_warning"])
+            log_event.assert_called_once()
+            self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=new")
+
     def test_qr_login_success_persists_response_cookies(self):
         headers = Message()
         headers.add_header("Set-Cookie", "SESSDATA=session-value; Path=/; Domain=.bilibili.com")

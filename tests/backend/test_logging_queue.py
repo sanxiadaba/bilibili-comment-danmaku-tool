@@ -10,6 +10,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
 
@@ -696,3 +697,46 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["queued"][0]["id"], first["id"])
         self.assertEqual(snapshot["queued"][0]["status"], "paused")
         self.assertEqual(snapshot["recent"], [])
+
+    def test_failed_persist_stays_pending_until_a_retry_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            queue = InMemoryTaskQueue("space", lambda task: None, state_path=state_path)
+            queue.enqueue({"mid": "1", "owner_ref": "1"})
+            self.assertTrue(queue.wait_until_idle(timeout=2))
+            task = queue.history[0]
+
+            with mock.patch("pathlib.Path.replace", side_effect=PermissionError("locked")):
+                queue.update(task, message="updated")
+            self.assertTrue(queue.snapshot()["persist_pending"])
+
+            queue.update(task, message="updated again")
+
+            self.assertFalse(queue.snapshot()["persist_pending"])
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["history"][0]["message"], "updated again")
+
+    def test_shutdown_joins_the_worker_and_never_starts_a_new_one(self):
+        started = threading.Event()
+        release = threading.Event()
+        events = []
+
+        def runner(task):
+            events.append(task["mid"])
+            started.set()
+            release.wait(2)
+            queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+        queue = InMemoryTaskQueue("space", runner)
+        queue.enqueue({"mid": "1", "owner_ref": "1"})
+        self.assertTrue(started.wait(1))
+
+        # The in-flight task is not killed, so the first join has to time out.
+        self.assertFalse(queue.shutdown(timeout=0.1))
+        release.set()
+        self.assertTrue(queue.shutdown(timeout=2))
+
+        queue.enqueue({"mid": "2", "owner_ref": "2"})
+        time.sleep(0.05)
+
+        self.assertEqual(events, ["1"], "shutdown 之后不应再启动 worker")

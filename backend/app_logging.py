@@ -310,8 +310,12 @@ def sanitize_value(value):
 
 
 def is_sensitive_key(key):
-    lowered = str(key).lower()
-    return any(marker in lowered for marker in ("cookie", "token", "password", "secret", "credential"))
+    """状态键（如 cookie_status）要保留，只丢弃真正装着凭据的键。"""
+    lowered = str(key).strip().lower()
+    if any(marker in lowered for marker in ("token", "password", "secret", "credential")):
+        return True
+    # cookie 不能再按子串匹配：cookie_status / cookie_expires_at 只是状态字段。
+    return lowered in {"cookie", "cookies", "set-cookie"} or lowered.endswith("_cookie")
 
 
 SENSITIVE_VALUE_PATTERN = re.compile(

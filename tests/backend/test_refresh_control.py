@@ -214,6 +214,23 @@ class RefreshControlHttpTests(unittest.TestCase):
 
         self.assertFalse(progress_state.is_stop_requested("comments"))
 
+    def test_stopped_branch_sends_its_reply_only_after_the_lock_is_released(self):
+        locked_at_send = []
+        original_send_json = CommentDanmakuServer.send_json
+
+        def recording_send_json(handler, payload, status=200):
+            locked_at_send.append(server_module.refresh_lock.locked())
+            return original_send_json(handler, payload, status)
+
+        with mock.patch.object(CommentDanmakuServer, "send_json", recording_send_json):
+            with mock.patch.object(server_module, "scrape_comments", side_effect=scraper.ScrapeCancelled("stop")):
+                status, payload = self.post(f"/api/refresh?bvid={BVID}")
+
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["refresh"]["stopped"])
+        self.assertEqual(locked_at_send, [False], "响应必须在释放 refresh_lock 之后再发送")
+        self.assertFalse(server_module.refresh_lock.locked())
+
 
 if __name__ == "__main__":
     unittest.main()

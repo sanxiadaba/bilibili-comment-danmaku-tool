@@ -6,8 +6,8 @@ from pathlib import Path
 import sqlite3
 
 
-DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 32 * 1024 * 1024
 DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
+READ_BUSY_TIMEOUT_MS = 5000
 DELETE_COMMENT_BATCH_SIZE = 5000
 DELETE_DANMAKU_BATCH_SIZE = 10000
 DELETE_VIDEO_BATCH_SIZE = 200
@@ -155,6 +155,9 @@ MAX_VIDEO_LIST_LIMIT = 200
 
 
 # --- 连接与初始化 ---
+_WAL_CONFIRMED = set()
+
+
 def connect(db_path, readonly=False):
     if readonly:
         uri = Path(db_path).resolve().as_uri() + "?mode=ro"
@@ -163,7 +166,8 @@ def connect(db_path, readonly=False):
         conn = sqlite3.connect(db_path)
     try:
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 60000")
+        # Browsing must fail fast instead of parking the UI for a minute behind a writer.
+        conn.execute(f"PRAGMA busy_timeout = {READ_BUSY_TIMEOUT_MS if readonly else 60000}")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA temp_store = MEMORY")
@@ -176,7 +180,27 @@ def connect(db_path, readonly=False):
         # handle (and the file lock) until the process exits.
         conn.close()
         raise
+    if not readonly:
+        restore_wal_mode(conn, db_path)
     return conn
+
+
+def restore_wal_mode(conn, db_path):
+    """A delete that was killed mid-run leaves the file in rollback-journal mode; heal it once."""
+    try:
+        key = str(Path(db_path).resolve())
+    except OSError:
+        key = str(db_path)
+    if key in _WAL_CONFIRMED:
+        return
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode or "").lower() != "wal":
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.commit()
+    except sqlite3.DatabaseError:
+        return
+    _WAL_CONFIRMED.add(key)
 
 
 def connect_readonly(db_path):
@@ -1022,17 +1046,32 @@ def list_owner_summaries(conn):
     used_bytes = max(0, (page_count - freelist_count) * page_size)
     rows = conn.execute(
         """
-        WITH owner_videos AS (
+        WITH keyed AS (
             SELECT
                 CASE
                     WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid
                     ELSE 'name:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
                 END AS owner_key,
-                MAX(COALESCE(NULLIF(owner_mid, ''), '')) AS owner_mid,
+                COALESCE(NULLIF(owner_mid, ''), '') AS owner_mid,
                 COALESCE(NULLIF(owner_name, ''), 'Unknown') AS owner_name,
-                COUNT(*) AS video_count
+                fetched_at
             FROM videos
-            GROUP BY owner_key, owner_name
+        ),
+        ranked AS (
+            SELECT
+                owner_key,
+                owner_mid,
+                owner_name,
+                COUNT(*) OVER (PARTITION BY owner_key) AS video_count,
+                ROW_NUMBER() OVER (PARTITION BY owner_key ORDER BY fetched_at DESC) AS rn
+            FROM keyed
+        ),
+        owner_videos AS (
+            -- One row per owner. Grouping by name as well used to split a renamed UP into two
+            -- rows, each showing the whole owner's comment count.
+            SELECT owner_key, owner_mid, owner_name, video_count
+            FROM ranked
+            WHERE rn = 1
         ),
         comment_stats AS (
             SELECT
@@ -1351,10 +1390,18 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
 
 
 def delete_mode_checkpoint(db_path):
+    """Measure the rollback journal the chunked delete is actually writing.
+
+    The delete runs with `journal_mode=DELETE`, so the old WAL-based numbers were constants and
+    every assertion about them was vacuous.
+    """
+    journal_path = Path(db_path).with_name(f"{Path(db_path).name}-journal")
+    size = journal_path.stat().st_size if journal_path.exists() else 0
     return {
-        "checkpointed": False,
-        "wal_before": wal_file_size(db_path),
-        "wal_after": wal_file_size(db_path),
+        "checkpointed": True,
+        "wal_before": 0,
+        "wal_after": size,
+        "journal_after": size,
     }
 
 

@@ -143,6 +143,117 @@ def default_backoff_state_path():
     return paths.state_file("bilibili_backoff_state.json")
 
 
+def _backoff_lock_path(state_path):
+    return Path(state_path).with_name(f"{Path(state_path).name}.lock")
+
+
+def _read_backoff_state_file(state_path):
+    """读磁盘上的退避状态；文件损坏或过期时按空状态处理。"""
+    try:
+        payload = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    try:
+        updated_at = float(payload.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if updated_at and time.time() - updated_at > BACKOFF_STATE_MAX_AGE_SECONDS:
+        return {}
+    return payload
+
+
+def _merge_backoff_blocked_until(payload, disk_state):
+    """跨进程合并：磁盘上更晚的 blocked_until 不能被后写的进程改小。"""
+    def as_epoch(value):
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    payload["blocked_until"] = max(as_epoch(payload.get("blocked_until")), as_epoch(disk_state.get("blocked_until")))
+
+
+def _acquire_backoff_state_lock(state_path):
+    """拿进程间文件锁，返回 (handle, locked)；拿不到锁也不阻塞保存。"""
+    state_path = Path(state_path)
+    handle = None
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(_backoff_lock_path(state_path), "a+b")
+        # msvcrt.locking 锁的是字节区间，空文件先补一个字节再锁。
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            for _ in range(50):
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    return handle, True
+                except OSError:
+                    time.sleep(0.02)
+            return handle, False
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle, True
+    except OSError:
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        return None, False
+
+
+def _release_backoff_state_lock(handle, locked):
+    if handle is None:
+        return
+    if locked:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
+def _write_backoff_state(state_path, payload):
+    """读改写：在文件锁内合并磁盘现值（blocked_until 取最大）后原子落盘。"""
+    state_path = Path(state_path)
+    lock_handle, locked = _acquire_backoff_state_lock(state_path)
+    temp_path = None
+    try:
+        _merge_backoff_blocked_until(payload, _read_backoff_state_file(state_path))
+        temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(state_path)
+        return True
+    except OSError:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        return False
+    finally:
+        _release_backoff_state_lock(lock_handle, locked)
+
+
 class RequestBackoff:
     def __init__(
         self,
@@ -323,15 +434,11 @@ class RequestBackoff:
             "last_slow_limit_at": max(monotonic_to_epoch(self.last_slow_limit_at), 0),
             "fast_request_count": self.fast_request_count,
         }
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self.state_path.with_name(
-                f"{self.state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            temp_path.replace(self.state_path)
-        except OSError:
+        if _write_backoff_state(self.state_path, payload):
             return
+        # 落盘失败（Windows 换名/锁冲突等）：重新读磁盘合并后只重试一次。
+        _merge_backoff_blocked_until(payload, _read_backoff_state_file(self.state_path))
+        _write_backoff_state(self.state_path, payload)
 
 
 GLOBAL_REQUEST_BACKOFF = RequestBackoff()

@@ -1,7 +1,10 @@
+import os
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -11,22 +14,31 @@ if str(BACKEND) not in sys.path:
 if str(TEST_BACKEND) not in sys.path:
     sys.path.insert(0, str(TEST_BACKEND))
 
+import database_registry  # noqa: E402
 from helpers import BVID, make_archive, make_comment
 
-from database_registry import (
+from database_registry import (  # noqa: E402
+    clear_video_summary_cache,
     database_id_for_path,
+    database_info_for_path,
+    export_database_path,
     find_video_database_path,
+    import_database_file,
     iter_catalog_database_paths,
     list_all_video_summaries_page,
     list_database_catalog,
     normalize_path_component,
     owner_database_dir,
+    owner_key,
+    owner_summaries_from_videos,
     resolve_database_path,
     video_database_path,
     video_database_path_from_archive,
+    video_database_sources,
+    video_owner_key,
 )
 from errors import BadRequestError
-from bilibili_comment_danmaku.storage import save_comments_to_sqlite, save_danmaku_to_sqlite
+from bilibili_comment_danmaku.storage import SCHEMA_VERSION, save_comments_to_sqlite, save_danmaku_to_sqlite
 
 
 def archive_for(bvid, owner_mid, owner_name, fetched_at, comments=None):
@@ -227,6 +239,191 @@ class DatabaseRegistryArchitectureTests(unittest.TestCase):
         self.assertTrue(normalized.startswith("测试_UP_1538787344_"))
         self.assertLessEqual(len(normalized), 100)
         self.assertNotIn("/", normalized)
+
+    def test_owner_key_is_shared_by_python_and_storage_sql(self):
+        self.assertEqual(owner_key("42", "Owner"), "mid:42")
+        self.assertEqual(owner_key("", ""), "name:Unknown")
+        self.assertEqual(owner_key("  ", "  "), "name:Unknown")
+        self.assertEqual(video_owner_key({"owner_mid": "", "owner_name": ""}), "name:Unknown")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            database_dir = Path(tmp) / "databases"
+            archive = archive_for(BVID, "", "", "2024-01-01T00:00:00+00:00")
+            db_path = video_database_path_from_archive(archive, database_dir)
+            save_comments_to_sqlite(archive, db_path, replace=True)
+
+            from bilibili_comment_danmaku.storage import list_video_summaries_page as storage_page
+
+            page = storage_page(db_path, limit=10, owner_key="name:Unknown")
+
+            self.assertEqual([video["bvid"] for video in page["videos"]], [BVID])
+            owners = owner_summaries_from_videos(page["videos"])
+            self.assertEqual(len(owners), 1)
+            self.assertEqual(owners[0]["key"], "name:Unknown")
+
+    def test_export_directory_is_default_outside_the_scan_root(self):
+        self.assertEqual(database_registry.DEFAULT_EXPORT_DIR, ROOT / "data" / "exports")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = Path(tmp) / "exports"
+            export_path = export_database_path("Owner_42", export_dir, suffix=".db")
+
+            self.assertEqual(export_path.parent, export_dir.resolve())
+            self.assertTrue(export_dir.exists())
+
+    def test_export_copies_are_not_scanned_as_archives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            real_path = database_dir / "Owner_42" / f"{BVID}.db"
+            export_dir = database_dir / "exports"
+            export_copy = export_dir / f"{BVID}.db"
+            real_path.parent.mkdir(parents=True)
+            export_dir.mkdir(parents=True)
+            archive = archive_for(BVID, "42", "Owner", "2024-01-01T00:00:00+00:00")
+            save_comments_to_sqlite(archive, real_path, replace=True)
+            save_comments_to_sqlite(archive, export_copy, replace=True)
+            newer = export_copy.stat().st_mtime + 120
+            os.utime(export_copy, (newer, newer))
+
+            with mock.patch.object(database_registry, "DEFAULT_EXPORT_DIR", export_dir):
+                found = find_video_database_path(BVID, database_dir)
+                paths = [db_id for _path, db_id in iter_catalog_database_paths(root / "main.db", database_dir)]
+                catalog_ids = [item["id"] for item in list_database_catalog(root / "main.db", database_dir)]
+
+            self.assertEqual(found, real_path.resolve())
+            self.assertEqual(paths, [f"db:Owner_42/{BVID}.db"])
+            self.assertNotIn(f"db:exports/{BVID}.db", catalog_ids)
+            self.assertIn(f"db:Owner_42/{BVID}.db", catalog_ids)
+
+    def test_import_validation_does_not_migrate_the_source_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "imports" / "Owner Archive.db"
+            source.parent.mkdir(parents=True)
+            archive = archive_for(BVID, "42", "Owner", "2024-01-01T00:00:00+00:00")
+            save_comments_to_sqlite(archive, source, replace=True)
+            conn = sqlite3.connect(source)
+            try:
+                conn.execute("PRAGMA user_version = 0")
+                conn.commit()
+            finally:
+                conn.close()
+            before_bytes = source.read_bytes()
+            before_mtime = source.stat().st_mtime_ns
+
+            target = import_database_file(source, root / "databases")
+
+            self.assertNotEqual(target.resolve(), source.resolve())
+            self.assertEqual(source.read_bytes(), before_bytes)
+            self.assertEqual(source.stat().st_mtime_ns, before_mtime)
+            self.assertEqual(read_user_version(source), 0)
+            self.assertEqual(read_user_version(target), SCHEMA_VERSION)
+
+    def test_light_catalog_only_reads_video_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            archive = archive_for(BVID, "42", "Owner", "2024-01-01T00:00:00+00:00")
+            db_path = video_database_path_from_archive(archive, database_dir)
+            save_comments_to_sqlite(archive, db_path, replace=True)
+
+            with mock.patch.object(
+                database_registry, "database_counts", side_effect=AssertionError("轻量模式不能跑全量计数")
+            ), mock.patch.object(
+                database_registry, "list_database_bvid_stats", side_effect=AssertionError("轻量模式不能读 bvid_stats")
+            ), mock.patch.object(
+                database_registry, "list_database_top_owners", side_effect=AssertionError("轻量模式不能读 top_owners")
+            ), mock.patch.object(
+                database_registry, "database_storage_info", side_effect=AssertionError("轻量模式不能读存储统计")
+            ):
+                info = database_info_for_path(db_path, root / "main.db", database_dir, include_details=False)
+
+            self.assertTrue(info["ok"])
+            self.assertEqual(info["video_count"], 1)
+            self.assertEqual(info["comment_count"], 0)
+            self.assertEqual(info["bvid_stats"], [])
+            self.assertEqual(info["top_owners"], [])
+
+    def test_aggregate_listing_caches_database_videos_until_the_file_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            archive = archive_for(BVID, "42", "Owner", "2024-01-01T00:00:00+00:00")
+            db_path = video_database_path_from_archive(archive, database_dir)
+            save_comments_to_sqlite(archive, db_path, replace=True)
+            clear_video_summary_cache()
+            calls = []
+            original = database_registry.list_video_summaries_page
+
+            def counting_page(*args, **kwargs):
+                calls.append(args)
+                return original(*args, **kwargs)
+
+            with mock.patch.object(database_registry, "list_video_summaries_page", side_effect=counting_page):
+                first = list_all_video_summaries_page(root / "main.db", database_dir)
+                second = list_all_video_summaries_page(root / "main.db", database_dir)
+
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(first["total"], 1)
+                self.assertEqual(second["videos"], first["videos"])
+
+                newer = db_path.stat().st_mtime + 60
+                os.utime(db_path, (newer, newer))
+                list_all_video_summaries_page(root / "main.db", database_dir)
+
+            self.assertEqual(len(calls), 2)
+
+    def test_video_database_sources_scans_the_tree_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            first = archive_for("BV1111111111", "42", "Owner", "2024-01-01T00:00:00+00:00")
+            second = archive_for("BV2222222222", "43", "Other", "2024-01-02T00:00:00+00:00")
+            first_path = video_database_path_from_archive(first, database_dir)
+            second_path = video_database_path_from_archive(second, database_dir)
+            save_comments_to_sqlite(first, first_path, replace=True)
+            save_comments_to_sqlite(second, second_path, replace=True)
+
+            with mock.patch.object(database_registry, "iter_database_files", wraps=database_registry.iter_database_files) as walk:
+                sources, missing = video_database_sources(
+                    ["BV1111111111", "BV2222222222"], database_dir
+                )
+
+            self.assertEqual(walk.call_count, 1)
+            self.assertEqual(missing, [])
+            grouped = {path: sorted(group) for path, group in sources}
+            self.assertEqual(
+                grouped,
+                {first_path.resolve(): ["BV1111111111"], second_path.resolve(): ["BV2222222222"]},
+            )
+
+    def test_file_symlink_outside_the_archive_root_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            outside_db = Path(outside_tmp) / f"{BVID}.db"
+            save_comments_to_sqlite(
+                archive_for(BVID, "42", "Owner", "2024-01-01T00:00:00+00:00"), outside_db, replace=True
+            )
+            link_path = database_dir / "Owner_42" / f"{BVID}.db"
+            link_path.parent.mkdir(parents=True)
+            try:
+                os.symlink(outside_db, link_path)
+            except (OSError, NotImplementedError):
+                self.skipTest("当前系统/权限不允许创建文件符号链接")
+
+            self.assertEqual(list(iter_catalog_database_paths(root / "main.db", database_dir)), [])
+            self.assertIsNone(find_video_database_path(BVID, database_dir))
+            self.assertEqual(list_database_catalog(root / "main.db", database_dir), [])
+
+
+def read_user_version(path):
+    conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

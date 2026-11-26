@@ -10,6 +10,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
 
@@ -31,6 +32,7 @@ from space_archive import (  # noqa: E402
 )
 from task_queue import InMemoryTaskQueue  # noqa: E402
 from bilibili_comment_danmaku.danmaku import decode_response_body, parse_danmaku_xml  # noqa: E402
+from bilibili_comment_danmaku import danmaku as danmaku_module  # noqa: E402
 from bilibili_comment_danmaku.archive import (  # noqa: E402
     export_archive_to_json,
     export_archive_to_sqlite,
@@ -71,6 +73,19 @@ class UrlAndDanmakuTests(unittest.TestCase):
         self.assertEqual(rows[0]["progress"], 12.5)
         self.assertEqual(rows[0]["weight"], 9)
         self.assertEqual(rows[0]["content"], "hello & hi")
+
+    def test_danmaku_xml_rejects_doctype_and_oversized_gzip(self):
+        # A DOCTYPE lets ElementTree expand internal entities (billion laughs); Bilibili never
+        # sends one, so it is refused before parsing.
+        with self.assertRaises(ValueError):
+            parse_danmaku_xml(b'<!DOCTYPE i [<!ENTITY x "boom">]><i><d p="1,1,25,0,0,0,h,1">&x;</d></i>', BVID, "456")
+
+        payload = b"<i>" + b" " * 4096 + b"</i>"
+        with mock.patch.object(danmaku_module, "DANMAKU_XML_MAX_BYTES", 1024):
+            with self.assertRaises(ValueError):
+                decode_response_body(gzip.compress(payload), "gzip")
+            with self.assertRaises(ValueError):
+                decode_response_body(b"x" * 2048, "")
 
 
 

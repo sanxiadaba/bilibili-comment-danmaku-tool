@@ -65,7 +65,10 @@ class InMemoryTaskQueue:
         self.active = None
         self.history = []
         self.worker_running = False
+        self.worker_thread = None
+        self.shutting_down = False
         self.next_id = 0
+        self._persist_dirty = False
         self._persist_failure_logged = False
         self.load_state()
 
@@ -106,6 +109,26 @@ class InMemoryTaskQueue:
             if self.queued:
                 self.start_worker_locked()
                 self.condition.notify_all()
+
+    def shutdown(self, timeout=5):
+        """Stop the worker and wait for it to leave.
+
+        The running task is not force-killed: a delete in progress must finish its current
+        batch and commit before the database can be closed. If ``timeout`` expires the
+        process still exits (the thread is a daemon) and the state file is recovered on the
+        next start.
+        """
+        try:
+            timeout = max(0.0, float(timeout))
+        except (TypeError, ValueError):
+            timeout = 5.0
+        with self.condition:
+            self.shutting_down = True
+            thread = self.worker_thread
+            self.condition.notify_all()
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout)
+        return not (thread is not None and thread.is_alive())
 
     def wait_until_idle(self, timeout=2.0):
         try:
@@ -211,13 +234,21 @@ class InMemoryTaskQueue:
         return not task_id or task.get("id") == task_id
 
     def start_worker_locked(self):
-        if not self.worker_running:
-            self.worker_running = True
-            threading.Thread(target=self._worker_loop, daemon=True).start()
+        if self.worker_running or self.shutting_down:
+            return
+        self.worker_running = True
+        thread = threading.Thread(target=self._worker_loop, name=f"task-queue-{self.kind}", daemon=True)
+        self.worker_thread = thread
+        thread.start()
 
     def _worker_loop(self):
         while True:
             with self.condition:
+                if self.shutting_down:
+                    self.worker_running = False
+                    self.persist_locked()
+                    self.condition.notify_all()
+                    return
                 if not self.queued:
                     self.worker_running = False
                     self.persist_locked()
@@ -243,6 +274,22 @@ class InMemoryTaskQueue:
                 )
 
             with self.condition:
+                if self.shutting_down:
+                    self.active = None
+                    if task.get("finished_at"):
+                        self.history.insert(0, dict(task))
+                        del self.history[self.history_limit :]
+                    else:
+                        # Do not turn interrupted work into "finished": put it back so the
+                        # next start recovers it as a queued task.
+                        task["status"] = "queued"
+                        task["message"] = "服务正在退出；重启后继续"
+                        task["started_at"] = ""
+                        self.queued.insert(0, task)
+                    self.worker_running = False
+                    self.persist_locked()
+                    self.condition.notify_all()
+                    return
                 if task.get("status") == "paused":
                     self.active = None
                     self.queued.insert(0, task)
@@ -284,6 +331,8 @@ class InMemoryTaskQueue:
             "active": self.public_task(self.active) if self.active else None,
             "queued": queued,
             "recent": [self.public_task(task) for task in self.history],
+            # True while the on-disk queue state is behind memory; the next update retries.
+            "persist_pending": bool(self._persist_dirty),
         }
 
     def public_task(self, task, queue_position=None):
@@ -404,7 +453,12 @@ class InMemoryTaskQueue:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+            # Keep retrying on later updates instead of letting memory and disk diverge.
+            self._persist_dirty = True
             self._log_persist_failure(exc)
+        else:
+            self._persist_dirty = False
+            self._persist_failure_logged = False
 
     def _quarantine_state_file(self, exc):
         """Keep an unreadable state file around for inspection instead of silently starting empty."""

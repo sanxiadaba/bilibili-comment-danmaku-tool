@@ -1,11 +1,15 @@
 import json
 import tempfile
+import threading
+import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
 
+import archive_delete_tasks as archive_delete_tasks_module  # noqa: E402
 import task_queue as task_queue_module  # noqa: E402
 from archive_delete_tasks import ArchiveDeleteTaskService  # noqa: E402
 from bilibili_comment_danmaku import load_danmaku_data, save_comments_to_sqlite, save_danmaku_to_sqlite  # noqa: E402
@@ -249,9 +253,6 @@ class DeleteTaskControlTests(unittest.TestCase):
             task = {"id": "delete-1", "pause_requested": True}
             progress = service.delete_progress_callback(task)
 
-            import threading
-            import time
-
             timer = threading.Timer(0.5, lambda: task.update(pause_requested=False))
             timer.start()
             started_at = time.time()
@@ -260,6 +261,55 @@ class DeleteTaskControlTests(unittest.TestCase):
             timer.join(timeout=2)
 
             self.assertGreater(elapsed, 0.3)
+
+    def test_pause_never_auto_resumes_a_destructive_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self._service(tmp)
+            task = {"id": "delete-1", "pause_requested": True}
+            messages = []
+            original_update = service.queue.update
+
+            def record_update(target, **fields):
+                messages.append(fields.get("message", ""))
+                return original_update(target, **fields)
+
+            service.queue.update = record_update
+            progress = service.delete_progress_callback(task)
+
+            def fake_sleep(_seconds):
+                time.sleep(0.01)
+
+            # MAX_PAUSE_SECONDS may no longer exist; create=True makes the old bound visible so
+            # this test fails if delete ever starts resuming itself again.
+            with mock.patch.object(
+                archive_delete_tasks_module, "time", types.SimpleNamespace(sleep=fake_sleep)
+            ), mock.patch.object(archive_delete_tasks_module, "MAX_PAUSE_SECONDS", 0.0, create=True):
+                worker = threading.Thread(
+                    target=lambda: progress({"stage": "comments", "chunks": 1, "wal_peak": 0, "wal_after": 0}),
+                    daemon=True,
+                )
+                worker.start()
+                time.sleep(0.15)
+                self.assertTrue(worker.is_alive(), "删除任务暂停后不应自动继续")
+                self.assertFalse(any("自动继续" in message for message in messages))
+                task["pause_requested"] = False
+                worker.join(timeout=2)
+
+            self.assertFalse(worker.is_alive(), "恢复暂停后应继续删除")
+
+    def test_delete_of_an_already_missing_target_finishes_instead_of_failing(self):
+        # Regression: a stop after the last batch, followed by a retry, used to hit
+        # LookupError ("no videos to delete") and be recorded as a failed task.
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self._service(tmp)
+            service.enqueue(Path(tmp) / "archive.db", bvids=[BVID], request_id="req-gone")
+
+            self.assertTrue(service.queue.wait_until_idle(timeout=10))
+            recent = service.snapshot()["recent"][0]
+            self.assertEqual(recent["status"], "finished", recent)
+            self.assertIn("不存在", recent["message"])
+            self.assertEqual(recent["failed"], 0)
+            self.assertEqual(recent["progress"], 100)
 
 
 if __name__ == "__main__":
