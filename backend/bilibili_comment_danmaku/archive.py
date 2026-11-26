@@ -73,8 +73,12 @@ def _temporary_sibling(target_path, purpose):
     return target_path.with_name(f".{target_path.name}.{purpose}-{os.getpid()}-{uuid.uuid4().hex[:8]}")
 
 
-def replace_file(temp_path, target_path, attempts=5):
-    """Swap a staged file into place, retrying the transient Windows ReplaceFileW EIO error."""
+def replace_file(temp_path, target_path, attempts=20):
+    """Swap a staged file into place, retrying the transient Windows file-busy errors.
+
+    A task worker (or Windows Defender) can hold the target for a moment; five tries of <1s total
+    used to surface as a 500 on an otherwise fine import.
+    """
     last_error = None
     for attempt in range(attempts):
         try:
@@ -88,7 +92,12 @@ def replace_file(temp_path, target_path, attempts=5):
 
 def remove_wal_sidecars(path):
     path = Path(path)
-    for candidate in (path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+    for candidate in (
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+        # A hot rollback journal left by a crash would be replayed into the newly imported file.
+        path.with_name(f"{path.name}-journal"),
+    ):
         try:
             if candidate.exists():
                 candidate.unlink()
@@ -509,7 +518,11 @@ def import_archive_json_to_sqlite(source_path, target_path):
     source_path = Path(source_path).resolve()
     target_path = Path(target_path).resolve()
     try:
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        # json.load parses from the handle instead of building a second full copy as a string;
+        # the object itself still has to fit in memory, so SQLite export stays the default for
+        # very large archives.
+        with source_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
     except json.JSONDecodeError as exc:
         raise ValueError("JSON 归档格式不正确") from exc
     if not isinstance(payload, dict) or payload.get("format") not in {
@@ -543,9 +556,12 @@ def import_archive_json_to_sqlite(source_path, target_path):
             save_comments_to_sqlite(comments, temp_path, replace=True)
             danmaku = item.get("danmaku")
             if isinstance(danmaku, dict):
+                # A malformed archive may miss keys entirely; report it as a bad archive instead
+                # of letting KeyError surface as a 500.
+                metadata = danmaku.get("metadata") if isinstance(danmaku.get("metadata"), dict) else {}
                 danmaku_data = {
-                    "bvid": danmaku.get("metadata", {}).get("bvid") or comments.get("metadata", {}).get("bvid"),
-                    "cid": danmaku.get("metadata", {}).get("cid") or comments.get("video_raw", {}).get("cid"),
+                    "bvid": metadata.get("bvid") or comments.get("metadata", {}).get("bvid"),
+                    "cid": metadata.get("cid") or comments.get("video_raw", {}).get("cid"),
                     "items": danmaku.get("items") or [],
                 }
                 save_danmaku_to_sqlite(danmaku_data, temp_path, replace=True)

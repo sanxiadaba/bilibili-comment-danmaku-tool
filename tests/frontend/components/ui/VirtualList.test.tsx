@@ -98,4 +98,31 @@ describe("VirtualList", () => {
       expect(screen.getAllByTestId("row").length).toBeGreaterThan(0);
     });
   });
+
+  it("resets the scroll offset when the list shrinks", async () => {
+    const { container, rerender } = renderList(makeItems(200));
+    const scroller = container.firstElementChild as HTMLElement;
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, value: 4000, writable: true });
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(screen.queryByText("条目 0")).toBeNull());
+
+    rerender(
+      <VirtualList
+        className="list"
+        empty={<div>没有数据</div>}
+        estimateSize={40}
+        getKey={(item) => item.id}
+        items={makeItems(3)}
+        overscan={6}
+        renderItem={(item) => (
+          <div data-testid="row" key={item.id}>
+            {item.label}
+          </div>
+        )}
+      />,
+    );
+
+    // The browser clamps scrollTop silently; without an explicit reset the window stayed blank.
+    expect(screen.getByText("条目 0")).toBeTruthy();
+  });
 });

@@ -559,6 +559,23 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(result["manifest"]["bvids"], [BVID])
             self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
 
+    def test_json_import_drops_a_stale_target_journal(self):
+        # A hot rollback journal left by a crash must not be replayed into the imported file.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            json_path = Path(tmp) / "exports" / "one.json"
+            imported_db = Path(tmp) / "imported.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "top", mid="42")]), db_path, replace=True)
+            export_archive_to_json(db_path, json_path, bvids=[BVID])
+            imported_db.write_bytes(b"stale")
+            journal = imported_db.with_name(f"{imported_db.name}-journal")
+            journal.write_bytes(b"stale-journal")
+
+            import_archive_json_to_sqlite(json_path, imported_db)
+
+            self.assertFalse(journal.exists())
+            self.assertEqual(load_comment_data(imported_db, bvid=BVID)["metadata"]["comment_total_count"], 1)
+
     def test_export_archive_to_json_can_be_imported_back_to_sqlite(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"

@@ -853,6 +853,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.send_json(payload)
 
     def handle_database_export_api(self):
+        # Read the request body before taking the archive lock: a slow client must not be able to
+        # hold every comment/danmaku refresh at 409 while it dribbles its body in.
+        body = self.read_json_body()
         # Exporting copies a whole database; never wait forever behind an archive task.
         if not refresh_lock.acquire(timeout=EXPORT_LOCK_TIMEOUT_SECONDS):
             log_event(
@@ -864,13 +867,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": "已有任务正在读写数据库，暂时无法导出，请稍后再试"}, status=409)
             return
         try:
-            payload, status = self.export_archive_response()
+            payload, status = self.export_archive_response(body)
         finally:
             refresh_lock.release()
         self.send_json(payload, status=status)
 
-    def export_archive_response(self):
-        body = self.read_json_body()
+    def export_archive_response(self, body):
         bvids = body.get("bvids")
         bvid = text_field(body, "bvid")
         owner_mid = text_field(body, "owner_mid")
@@ -1803,7 +1805,9 @@ def main():
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
     validate_bind_host(args.host)
-    instance_lock = acquire_single_instance_lock(name=single_instance_name(ROOT))
+    # Keep the fallback lock next to the data it protects: %TEMP% is per-user, so two accounts
+    # could otherwise start two servers over the same data/ directory.
+    instance_lock = acquire_single_instance_lock(name=single_instance_name(ROOT), lock_dir=ROOT / "data")
     if instance_lock is None:
         safe_print("已经有一个 Bilibili 评论/弹幕归档工具实例在运行；本次启动已退出。")
         raise SystemExit(0)

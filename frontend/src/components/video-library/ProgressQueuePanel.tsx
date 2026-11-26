@@ -112,7 +112,11 @@ function QueueTaskRow({
   const title = taskTitle(task);
   const canControl = Boolean(onControl) && tone !== "recent" && isControllableTaskKind(task.kind) && !isTerminalTaskStatus(task.status);
   const canManageHistory = Boolean(onControl) && tone === "recent";
-  const canRetry = task.status === "failed" || task.status === "stopped";
+  // A finished run that skipped failed videos is retryable: those videos were never archived.
+  const canRetry =
+    task.status === "failed" ||
+    task.status === "stopped" ||
+    (task.status === "finished" && (task.failed ?? 0) > 0);
   const canResume = task.status === "paused" || task.pause_requested;
   return (
     <div
