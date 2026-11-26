@@ -1106,15 +1106,20 @@ def delete_videos_from_sqlite(db_path, bvids, vacuum=True, progress_callback=Non
     conn = connect(db_path)
     try:
         ensure_schema_if_needed(conn)
-        existing_rows = conn.execute(
-            f"""
-            SELECT bvid, title, owner_mid, owner_name
-            FROM videos
-            WHERE bvid IN ({placeholders(len(selected_bvids))})
-            ORDER BY fetched_at DESC
-            """,
-            selected_bvids,
-        ).fetchall()
+        existing_rows = []
+        # SQLite caps one statement at 32766 variables; an owner can own more videos than that.
+        for batch in chunked(selected_bvids, DELETE_SCOPE_BATCH_SIZE):
+            existing_rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT bvid, title, owner_mid, owner_name, fetched_at
+                    FROM videos
+                    WHERE bvid IN ({placeholders(len(batch))})
+                    """,
+                    batch,
+                ).fetchall()
+            )
+        existing_rows.sort(key=lambda row: row["fetched_at"] or "", reverse=True)
         if not existing_rows:
             raise LookupError("没有找到要删除的视频")
 
@@ -1259,9 +1264,10 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
     conn = connect(db_path)
     try:
         ensure_schema_if_needed(conn, journal_mode=None)
-        deleted_user_mids = collect_comment_mids(conn, selected_bvids)
+        stage_delete_scope(conn, selected_bvids)
+        deleted_user_mids = collect_comment_mids(conn)
         while True:
-            batch = fetch_comment_rpid_batch(conn, selected_bvids, DELETE_COMMENT_BATCH_SIZE)
+            batch = fetch_comment_rpid_batch(conn, DELETE_COMMENT_BATCH_SIZE)
             if not batch:
                 break
             marks = placeholders(len(batch))
@@ -1276,9 +1282,14 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "comments", chunks, wal_peak, checkpoint)
             conn = connect(db_path)
+            stage_delete_scope(conn, selected_bvids)
 
         while True:
-            batch = fetch_scalar_batch(conn, "SELECT dmid FROM danmaku WHERE bvid IN ({marks}) LIMIT ?", selected_bvids, DELETE_DANMAKU_BATCH_SIZE)
+            batch = fetch_scalar_batch(
+                conn,
+                "SELECT dmid FROM danmaku WHERE bvid IN (SELECT bvid FROM temp.delete_scope) LIMIT ?",
+                DELETE_DANMAKU_BATCH_SIZE,
+            )
             if not batch:
                 break
             marks = placeholders(len(batch))
@@ -1291,6 +1302,7 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "danmaku", chunks, wal_peak, checkpoint)
             conn = connect(db_path)
+            stage_delete_scope(conn, selected_bvids)
 
         for batch in chunked(selected_bvids, DELETE_VIDEO_BATCH_SIZE):
             marks = placeholders(len(batch))
@@ -1303,6 +1315,7 @@ def delete_video_rows_chunked(db_path, bvids, progress_callback=None):
             checkpoint = delete_mode_checkpoint(db_path)
             notify_delete_progress(progress_callback, "videos", chunks, wal_peak, checkpoint)
             conn = connect(db_path)
+            stage_delete_scope(conn, selected_bvids)
 
         cleanup_unreferenced_users(conn, deleted_user_mids)
         conn.commit()
@@ -1342,21 +1355,31 @@ def notify_delete_progress(callback, stage, chunks, wal_peak, checkpoint):
     )
 
 
-def collect_comment_mids(conn, bvids):
-    params = list(bvids)
-    marks = placeholders(len(params))
-    rows = conn.execute(f"SELECT DISTINCT mid FROM comments WHERE bvid IN ({marks}) AND mid IS NOT NULL AND mid != ''", params).fetchall()
+def collect_comment_mids(conn):
+    rows = conn.execute(
+        "SELECT DISTINCT mid FROM comments "
+        "WHERE bvid IN (SELECT bvid FROM temp.delete_scope) AND mid IS NOT NULL AND mid != ''"
+    ).fetchall()
     return [row["mid"] for row in rows]
 
 
-def fetch_comment_rpid_batch(conn, bvids, limit):
-    return fetch_scalar_batch(conn, "SELECT rpid FROM comments WHERE bvid IN ({marks}) LIMIT ?", bvids, limit)
+def fetch_comment_rpid_batch(conn, limit):
+    return fetch_scalar_batch(conn, "SELECT rpid FROM comments WHERE bvid IN (SELECT bvid FROM temp.delete_scope) LIMIT ?", limit)
 
 
-def fetch_scalar_batch(conn, sql_template, bvids, limit):
-    params = list(bvids)
-    marks = placeholders(len(params))
-    rows = conn.execute(sql_template.format(marks=marks), [*params, int(limit)]).fetchall()
+DELETE_SCOPE_BATCH_SIZE = 5000
+
+
+def stage_delete_scope(conn, bvids):
+    """Stage the bvid list in a temp table so no statement exceeds SQLite's variable limit."""
+    conn.execute("DROP TABLE IF EXISTS temp.delete_scope")
+    conn.execute("CREATE TEMP TABLE delete_scope (bvid TEXT PRIMARY KEY)")
+    for batch in chunked(list(bvids), DELETE_SCOPE_BATCH_SIZE):
+        conn.executemany("INSERT OR IGNORE INTO delete_scope (bvid) VALUES (?)", [(bvid,) for bvid in batch])
+
+
+def fetch_scalar_batch(conn, sql_template, limit):
+    rows = conn.execute(sql_template, (int(limit),)).fetchall()
     return [row[0] for row in rows]
 
 
@@ -1389,21 +1412,24 @@ def cleanup_unreferenced_users(conn, mids=None):
 
 
 def count_archive_rows(conn, bvids):
-    params = list(bvids)
-    marks = placeholders(len(params))
-    return {
+    params = [str(item).strip() for item in bvids if str(item).strip()]
+    totals = {
         "videos": len(params),
-        "comments": conn.execute(f"SELECT COUNT(*) FROM comments WHERE bvid IN ({marks})", params).fetchone()[0],
-        "comment_pictures": conn.execute(
-            f"SELECT COUNT(*) FROM comment_pictures WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
-            params,
-        ).fetchone()[0],
-        "comment_emotes": conn.execute(
-            f"SELECT COUNT(*) FROM comment_emotes WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
-            params,
-        ).fetchone()[0],
-        "danmaku": conn.execute(f"SELECT COUNT(*) FROM danmaku WHERE bvid IN ({marks})", params).fetchone()[0],
+        "comments": 0,
+        "comment_pictures": 0,
+        "comment_emotes": 0,
+        "danmaku": 0,
     }
+    for batch in chunked(params, DELETE_SCOPE_BATCH_SIZE):
+        marks = placeholders(len(batch))
+        totals["comments"] += conn.execute(f"SELECT COUNT(*) FROM comments WHERE bvid IN ({marks})", batch).fetchone()[0]
+        for table in ("comment_pictures", "comment_emotes"):
+            totals[table] += conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE rpid IN (SELECT rpid FROM comments WHERE bvid IN ({marks}))",
+                batch,
+            ).fetchone()[0]
+        totals["danmaku"] += conn.execute(f"SELECT COUNT(*) FROM danmaku WHERE bvid IN ({marks})", batch).fetchone()[0]
+    return totals
 
 
 def placeholders(count):

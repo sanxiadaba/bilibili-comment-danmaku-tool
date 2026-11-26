@@ -942,6 +942,22 @@ class ScraperPerformanceTests(unittest.TestCase):
         self.assertEqual(summary[0]["fetched_count"], 1)
         self.assertEqual(sleeps, [])
 
+    def test_stop_during_cooldown_raises_cancelled_not_request_error(self):
+        # "Stop" while the client is cooling down used to be swallowed by the generic
+        # retry handler and re-raised as a request failure, which the HTTP layer reported as 500.
+        client = scraper.BilibiliClient(scraper.make_headers(BVID, ""), use_proxy=False)
+        client.backoff.blocked_until = scraper.time.monotonic() + 30
+        polls = []
+
+        def stop_checker():
+            polls.append(1)
+            return len(polls) > 1
+
+        client.stop_checker = stop_checker
+
+        with self.assertRaises(scraper.ScrapeCancelled):
+            client.request_json("https://example.invalid/x", retries=1)
+
     def test_child_fetch_412_raises_without_global_backoff(self):
         calls = []
         logs = []

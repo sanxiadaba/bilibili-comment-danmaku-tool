@@ -443,6 +443,10 @@ class BilibiliClient:
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
                 sleep_interruptible(delay, self.stop_checker)
+            except ScrapeCancelled:
+                # The user asked to stop while waiting for a cooldown; never turn that into a
+                # generic request failure, or the UI shows a 500 instead of a clean stop.
+                raise
             except Exception as exc:
                 if request_elapsed == 0 and "started_at" in locals():
                     request_elapsed = time.perf_counter() - started_at
