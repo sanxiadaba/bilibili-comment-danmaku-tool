@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  coarsenBuckets,
   filterComments,
   flattenThread,
   getCommentPictures,
   getCommentTextParts,
+  hourlyBuckets,
   locationBuckets,
   sortComments,
   topAuthors,
@@ -77,5 +79,33 @@ describe("comment utilities", () => {
     expect(topAuthors([comment, reply]).map((item) => item.name)).toEqual(["alice", "bob"]);
     expect(topLiked([reply, comment])[0].normalized.rpid).toBe("1");
     expect(flattenThread(comment).map((item) => item.rpid)).toEqual(["1", "2"]);
+  });
+
+  it("ignores malformed time_iso values instead of throwing", () => {
+    const comments = [
+      makeComment({ rpid: "bad", time_iso: "not-a-date" }),
+      makeComment({ rpid: "ok", time_iso: "2024-01-01T00:00:00+08:00" }),
+    ];
+
+    expect(() => hourlyBuckets(comments)).not.toThrow();
+    expect(hourlyBuckets(comments)).toHaveLength(1);
+  });
+
+  it("coarsens filtered buckets with the all-buckets day granularity", () => {
+    const comments = Array.from({ length: 200 }, (_, index) =>
+      makeComment({
+        rpid: String(index),
+        ctime: 1700000000 + index * 3600,
+        time_iso: new Date(Date.UTC(2024, 0, 1) + index * 3600_000).toISOString(),
+      }),
+    );
+
+    const allBuckets = coarsenBuckets(hourlyBuckets(comments));
+    expect(allBuckets.length).toBeLessThanOrEqual(180);
+    expect(allBuckets.every((bucket) => new Date(bucket.timestamp).getHours() === 0)).toBe(true);
+
+    const filteredBuckets = coarsenBuckets(hourlyBuckets(comments.slice(0, 10)), 180, "day");
+    expect(filteredBuckets.length).toBeGreaterThan(0);
+    expect(filteredBuckets.every((bucket) => new Date(bucket.timestamp).getHours() === 0)).toBe(true);
   });
 });

@@ -178,10 +178,21 @@ const HOUR_FORMAT = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
 });
 
+export type BucketGranularity = "hour" | "day";
+
+/** Chart density cap shared by the all/filtered comment timelines. */
+export const HOUR_BUCKET_LIMIT = 180;
+
+export function bucketGranularity(bucketCount: number, maxBuckets = HOUR_BUCKET_LIMIT): BucketGranularity {
+  return bucketCount > maxBuckets ? "day" : "hour";
+}
+
 export function hourlyBuckets(comments: CommentNode[]) {
   const buckets = new Map<string, { label: string; count: number; likes: number; timestamp: number }>();
   for (const comment of comments) {
-    const date = new Date(comment.normalized.time_iso);
+    const date = parseDate(comment.normalized.time_iso);
+    // A malformed time_iso used to throw RangeError from toISOString and blank the whole chart.
+    if (!date) continue;
     date.setMinutes(0, 0, 0);
     const key = date.toISOString();
     const current = buckets.get(key) || {
@@ -199,12 +210,17 @@ export function hourlyBuckets(comments: CommentNode[]) {
 
 const DAY_FORMAT = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" });
 
-/** Keep the time chart readable: a multi-year archive is grouped by day instead of by hour. */
+/**
+ * Keep the time chart readable: a multi-year archive is grouped by day instead of by hour.
+ * Pass the all-buckets granularity explicitly when coarsening the filtered subset, otherwise a
+ * small filtered result would stay hourly while the all-buckets chart is daily.
+ */
 export function coarsenBuckets<T extends { count: number; label: string; likes: number; timestamp: number }>(
   buckets: T[],
-  maxBuckets = 180,
+  maxBuckets = HOUR_BUCKET_LIMIT,
+  granularity = bucketGranularity(buckets.length, maxBuckets),
 ): T[] {
-  if (buckets.length <= maxBuckets) return buckets;
+  if (granularity === "hour" || buckets.length === 0) return buckets;
   const byDay = new Map<string, T>();
   for (const bucket of buckets) {
     const date = new Date(bucket.timestamp);
