@@ -63,7 +63,10 @@ export function VirtualList<T>({
 
     items.forEach((item, index) => {
       const key = getKey(item, index);
-      const size = sizes[key] || estimateSize;
+      const measured = sizes[key];
+      // A row inside a hidden container measures 0; fall back to the estimate instead of
+      // collapsing every following row onto the same offset.
+      const size = measured && measured > 0 ? measured : estimateSize;
       offsets[index] = totalSize;
       rowSizes[index] = size;
       totalSize += size;
@@ -109,6 +112,7 @@ export function VirtualList<T>({
   }, [items, visibleRange.end, visibleRange.start]);
 
   const handleMeasure = useCallback((key: string, size: number) => {
+    if (!Number.isFinite(size) || size <= 0) return;
     setSizes((current) => {
       if (Math.abs((current[key] || 0) - size) < 1) return current;
       return { ...current, [key]: size };

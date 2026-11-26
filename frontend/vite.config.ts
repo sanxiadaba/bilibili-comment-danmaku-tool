@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import react from "@vitejs/plugin-react";
+import type { ProxyOptions } from "vite";
 import { defineConfig } from "vitest/config";
 
 const PORT_HINT_FILE = path.resolve(process.cwd(), "data", ".server-port");
@@ -33,7 +34,14 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": apiTarget(),
+      // `router` runs per request, so a backend that restarted on another port is picked up
+      // without restarting `pnpm dev` (a plain target is resolved once at startup). Vite's own
+      // ProxyOptions type omits it even though http-proxy supports it.
+      "/api": {
+        target: DEFAULT_API_TARGET,
+        router: () => apiTarget(),
+        changeOrigin: true,
+      } as ProxyOptions,
     },
   },
   test: {

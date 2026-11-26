@@ -21,7 +21,7 @@ describe("ErrorBoundary", () => {
 
     expect(screen.getByText("页面渲染出错")).toBeTruthy();
     expect(screen.getByText("接口数据格式不对")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新加载" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "返回视频库" })).toBeTruthy();
 
     consoleError.mockRestore();
@@ -37,21 +37,29 @@ describe("ErrorBoundary", () => {
     expect(screen.getByText("内容正常")).toBeTruthy();
   });
 
-  it("retries rendering children after the user asks to", async () => {
+  it("reloads the page instead of re-rendering the same broken tree", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload },
+    });
     const user = userEvent.setup();
 
-    render(
-      <ErrorBoundary>
-        <Boom explode />
-      </ErrorBoundary>,
-    );
+    try {
+      render(
+        <ErrorBoundary>
+          <Boom explode />
+        </ErrorBoundary>,
+      );
 
-    // The boundary clears its error state; the same throwing child re-throws, which is fine —
-    // what matters is that the action is wired and the UI stays interactive.
-    await user.click(screen.getByRole("button", { name: "重试" }));
+      await user.click(screen.getByRole("button", { name: "重新加载" }));
 
-    expect(screen.getByText("页面渲染出错")).toBeTruthy();
-    consoleError.mockRestore();
+      expect(reload).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
+      consoleError.mockRestore();
+    }
   });
 });
