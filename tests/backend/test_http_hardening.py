@@ -277,6 +277,21 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(redact_text("comment refresh finished"), "comment refresh finished")
         self.assertIsNone(redact_text(None))
 
+    def test_generic_credential_names_are_redacted(self):
+        redacted = redact_text("password=hunter2 Authorization: Bearer abc123 token: xyz")
+
+        self.assertNotIn("hunter2", redacted)
+        self.assertNotIn("abc123", redacted)
+        self.assertNotIn("xyz", redacted)
+
+    def test_event_fields_are_redacted_before_they_reach_the_json_log(self):
+        from app_logging import clean_fields  # noqa: E402
+
+        fields = clean_fields({"detail": "SESSDATA=leak-value", "nested": {"note": "bili_jct=csrf-leak"}})
+
+        self.assertNotIn("leak-value", json.dumps(fields))
+        self.assertNotIn("csrf-leak", json.dumps(fields))
+
     def test_login_url_loses_query_and_fragment(self):
         self.assertEqual(
             safe_login_url("https://passport.bilibili.com/login?token=secret#frag"),
