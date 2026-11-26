@@ -192,6 +192,14 @@ export function deleteRequestsForTarget(target: DeleteTarget, activeDbId: string
     return Array.from(grouped, ([db_id, bvids]) => ({ db_id, bvids }));
   }
   if (activeDbId === "main") return [];
+  if (target.kind === "owners") {
+    // Owner summaries intentionally carry no bvids (the page only knows the current slice), so a
+    // multi-owner delete must become one owner_mid request per owner instead of an empty bvids list.
+    const perOwner = target.owners
+      .filter((owner) => owner.ownerMid)
+      .map((owner) => ({ db_id: activeDbId, owner_mid: owner.ownerMid }));
+    if (perOwner.length === target.owners.length && perOwner.length > 0) return perOwner;
+  }
   return [{ db_id: activeDbId, ...deletePayloadForTarget(target) }];
 }
 

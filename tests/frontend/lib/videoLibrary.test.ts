@@ -142,5 +142,20 @@ describe("video library helpers", () => {
     ]);
     expect(deleteRequestsForTarget({ kind: "owner", owner }, "main")).toEqual([]);
     expect(deleteRequestsForTarget({ kind: "owner", owner }, "db:a")).toEqual([{ db_id: "db:a", owner_mid: "42" }]);
+
+    const groups = buildOwnerGroups(
+      [
+        makeVideo({ bvid: "BV1OwnerA01", owner_mid: "42", owner_name: "Alice" }),
+        makeVideo({ bvid: "BV1OwnerB01", owner_mid: "7", owner_name: "Bob" }),
+      ],
+      [
+        { key: "mid:42", name: "Alice", owner_mid: "42", video_count: 1, comment_count: 1, danmaku_count: 0, storage_bytes: 0 },
+        { key: "mid:7", name: "Bob", owner_mid: "7", video_count: 1, comment_count: 1, danmaku_count: 0, storage_bytes: 0 },
+      ],
+    );
+    expect(deleteRequestsForTarget({ kind: "owners", owners: groups }, "db:a")).toEqual([
+      { db_id: "db:a", owner_mid: "42" },
+      { db_id: "db:a", owner_mid: "7" },
+    ]);
   });
 });
