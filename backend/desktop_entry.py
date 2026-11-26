@@ -10,7 +10,7 @@ from pathlib import Path
 import server as server_module
 from app_logging import configure_logging, logging_status, log_event, shutdown_logging
 from bilibili_comment_danmaku import prepare_database_path, scraper
-from bilibili_comment_danmaku.paths import publish_data_dir
+from bilibili_comment_danmaku.paths import default_data_dir, publish_data_dir
 from bilibili_comment_danmaku.storage import connect, ensure_schema
 from http_utils import safe_print
 from legacy_migration import migrate_legacy_database
@@ -67,6 +67,11 @@ def initialize_database(db_path):
         conn.close()
 
 
+def desktop_cookie_file():
+    """Cookie 必须跟随已发布的数据目录，而不是写死打包根下的 data/cookie.txt。"""
+    return default_data_dir() / DEFAULT_COOKIE_FILE.name
+
+
 def main():
     if "--cli" in sys.argv:
         from app_cli import main as cli_main
@@ -86,6 +91,10 @@ def main():
     parser.add_argument("--space-cache-dir", default=str(root / "data" / "space_cache"))
     args = parser.parse_args()
     validate_bind_host(args.host)
+    instance_lock = server_module.acquire_single_instance_lock(name=server_module.single_instance_name(root))
+    if instance_lock is None:
+        safe_print("已经有一个 Bilibili 评论/弹幕归档工具实例在运行；本次启动已退出。")
+        return 0
 
     log_dir = Path(args.log_dir).resolve()
     configure_logging(log_dir, console=False)
@@ -108,7 +117,7 @@ def main():
     scraper.GLOBAL_REQUEST_BACKOFF.state_path = scraper.default_backoff_state_path()
     migrate_legacy_database(handler.db_path, handler.database_dir)
 
-    cookie_file = root / "data" / DEFAULT_COOKIE_FILE.name
+    cookie_file = desktop_cookie_file()
     configure_task_services(cookie_file, Path(args.space_cache_dir).resolve(), persist=True)
     server_module.space_archive_service.start_pending_tasks()
     server_module.video_parse_service.start_pending_tasks()
@@ -139,8 +148,10 @@ def main():
     except KeyboardInterrupt:
         log_event("desktop.stop", "desktop app stopped by keyboard interrupt")
     finally:
+        server_module.shutdown_task_services()
         server.server_close()
         shutdown_logging()
+        instance_lock.release()
 
 
 if __name__ == "__main__":

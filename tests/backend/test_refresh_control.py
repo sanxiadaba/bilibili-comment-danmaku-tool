@@ -165,6 +165,45 @@ class RefreshControlHttpTests(unittest.TestCase):
         self.assertEqual(payload["refresh"]["after_count"], 5)
         self.assertEqual(payload["metadata"]["comment_total_count"], 5)
 
+    def test_invalid_db_id_does_not_leak_the_refresh_lock(self):
+        # Regression: the lock was taken before the db_id was resolved, so a 400 skipped the
+        # finally block and every later refresh/task was rejected with 409 until a restart.
+        status, payload = self.post(f"/api/refresh?bvid={BVID}&db_id=db:missing.db")
+
+        self.assertEqual(status, 400, payload)
+        self.assertFalse(server_module.refresh_lock.locked())
+
+        refreshed = make_archive(
+            "2024-02-01T00:00:00+00:00",
+            [make_comment("1", 1, "refreshed", mid="42")],
+        )
+        with mock.patch.object(server_module, "scrape_comments", return_value=refreshed):
+            status, payload = self.post(f"/api/refresh?bvid={BVID}")
+
+        self.assertEqual(status, 200, payload)
+
+    def test_stop_requested_while_loading_is_not_cleared(self):
+        # Regression: the stop flag used to be cleared right before the scrape, so a Stop that
+        # arrived while the archive was still being loaded was silently dropped.
+        original_load = server_module.load_video_metadata
+        seen = []
+
+        def slow_load(db_path, bvid=None, **kwargs):
+            progress_state.request_stop("comments")
+            return original_load(db_path, bvid=bvid, **kwargs)
+
+        def fake_scrape(*args, stop_checker=None, **kwargs):
+            seen.append(stop_checker() if stop_checker else None)
+            raise scraper.ScrapeCancelled("stop")
+
+        with mock.patch.object(server_module, "load_video_metadata", side_effect=slow_load):
+            with mock.patch.object(server_module, "scrape_comments", side_effect=fake_scrape):
+                status, payload = self.post(f"/api/refresh?bvid={BVID}")
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(seen, [True])
+        self.assertTrue(payload["refresh"]["stopped"])
+
     def test_stop_flag_is_cleared_after_a_refresh(self):
         refreshed = make_archive(
             "2024-02-01T00:00:00+00:00",
@@ -174,6 +213,23 @@ class RefreshControlHttpTests(unittest.TestCase):
             self.post(f"/api/refresh?bvid={BVID}")
 
         self.assertFalse(progress_state.is_stop_requested("comments"))
+
+    def test_stopped_branch_sends_its_reply_only_after_the_lock_is_released(self):
+        locked_at_send = []
+        original_send_json = CommentDanmakuServer.send_json
+
+        def recording_send_json(handler, payload, status=200):
+            locked_at_send.append(server_module.refresh_lock.locked())
+            return original_send_json(handler, payload, status)
+
+        with mock.patch.object(CommentDanmakuServer, "send_json", recording_send_json):
+            with mock.patch.object(server_module, "scrape_comments", side_effect=scraper.ScrapeCancelled("stop")):
+                status, payload = self.post(f"/api/refresh?bvid={BVID}")
+
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["refresh"]["stopped"])
+        self.assertEqual(locked_at_send, [False], "响应必须在释放 refresh_lock 之后再发送")
+        self.assertFalse(server_module.refresh_lock.locked())
 
 
 if __name__ == "__main__":

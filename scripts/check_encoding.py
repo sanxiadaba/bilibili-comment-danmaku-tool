@@ -20,6 +20,8 @@ CHECK_EXTENSIONS = {
 SKIP_DIRS = {
     ".git",
     ".pytest_cache",
+    # Local audit scratch dir (git-excluded): it stores raw console output, not source.
+    ".repo-audit",
     "data",
     "dist",
     "logs",

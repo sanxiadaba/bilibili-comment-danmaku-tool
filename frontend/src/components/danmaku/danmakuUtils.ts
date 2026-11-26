@@ -25,6 +25,11 @@ export type DanmakuBucket = {
   count: number;
 };
 
+/** Stable row key for VirtualList; an inline closure here re-measures every row on each render. */
+export function getDanmakuKey(item: DanmakuItem) {
+  return item.dmid;
+}
+
 export function formatProgress(seconds?: number) {
   const value = Math.max(0, Math.floor(seconds || 0));
   const minutes = Math.floor(value / 60);

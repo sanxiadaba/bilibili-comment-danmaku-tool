@@ -36,6 +36,23 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def clean_task_text(value):
+    """Drop lone surrogates so the queue state file can always be written as UTF-8."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    return value
+
+
+def clean_task_fields(fields):
+    cleaned = {}
+    for key, value in (fields or {}).items():
+        if isinstance(value, (list, tuple)):
+            cleaned[key] = [clean_task_text(item) for item in value]
+        else:
+            cleaned[key] = clean_task_text(value)
+    return cleaned
+
+
 class InMemoryTaskQueue:
     def __init__(self, kind, runner, history_limit=DEFAULT_HISTORY_LIMIT, state_path=None, retry_validator=None):
         self.kind = kind
@@ -48,7 +65,10 @@ class InMemoryTaskQueue:
         self.active = None
         self.history = []
         self.worker_running = False
+        self.worker_thread = None
+        self.shutting_down = False
         self.next_id = 0
+        self._persist_dirty = False
         self._persist_failure_logged = False
         self.load_state()
 
@@ -81,7 +101,7 @@ class InMemoryTaskQueue:
             "archived": 0,
             "skipped": 0,
             "failed": 0,
-            **fields,
+            **clean_task_fields(fields),
         }
 
     def start_pending_worker(self):
@@ -89,6 +109,26 @@ class InMemoryTaskQueue:
             if self.queued:
                 self.start_worker_locked()
                 self.condition.notify_all()
+
+    def shutdown(self, timeout=5):
+        """Stop the worker and wait for it to leave.
+
+        The running task is not force-killed: a delete in progress must finish its current
+        batch and commit before the database can be closed. If ``timeout`` expires the
+        process still exits (the thread is a daemon) and the state file is recovered on the
+        next start.
+        """
+        try:
+            timeout = max(0.0, float(timeout))
+        except (TypeError, ValueError):
+            timeout = 5.0
+        with self.condition:
+            self.shutting_down = True
+            thread = self.worker_thread
+            self.condition.notify_all()
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout)
+        return not (thread is not None and thread.is_alive())
 
     def wait_until_idle(self, timeout=2.0):
         try:
@@ -124,11 +164,10 @@ class InMemoryTaskQueue:
                         task["status"] = "queued"
                         task["message"] = "queued"
                         task["pause_requested"] = False
-                        task["stop_requested"] = False
                         changed.append(self.public_task(task))
                 if self.active and self.matches_task(self.active, task_id):
+                    # Clearing stop_requested here would turn "pause, stop, resume" into a resume.
                     self.active["pause_requested"] = False
-                    self.active["stop_requested"] = False
                     changed.append(self.public_task(self.active))
                 if any(task.get("status") == "queued" for task in self.queued):
                     self.start_worker_locked()
@@ -159,7 +198,12 @@ class InMemoryTaskQueue:
                 for task in list(self.history):
                     if not self.matches_task(task, task_id):
                         continue
-                    if task.get("status") not in {"failed", "stopped"}:
+                    status = str(task.get("status") or "")
+                    failed = int(task.get("failed") or 0)
+                    # A run that finished with failed videos is retryable: the failed items were
+                    # skipped, not archived, so "finished" alone must not hide that work.
+                    retryable = status in {"failed", "stopped"} or (status == "finished" and failed > 0)
+                    if not retryable:
                         continue
                     retry_fields = self.retry_fields(task, retry_defaults)
                     if self.retry_validator and not self.retry_validator(retry_fields):
@@ -195,13 +239,21 @@ class InMemoryTaskQueue:
         return not task_id or task.get("id") == task_id
 
     def start_worker_locked(self):
-        if not self.worker_running:
-            self.worker_running = True
-            threading.Thread(target=self._worker_loop, daemon=True).start()
+        if self.worker_running or self.shutting_down:
+            return
+        self.worker_running = True
+        thread = threading.Thread(target=self._worker_loop, name=f"task-queue-{self.kind}", daemon=True)
+        self.worker_thread = thread
+        thread.start()
 
     def _worker_loop(self):
         while True:
             with self.condition:
+                if self.shutting_down:
+                    self.worker_running = False
+                    self.persist_locked()
+                    self.condition.notify_all()
+                    return
                 if not self.queued:
                     self.worker_running = False
                     self.persist_locked()
@@ -227,6 +279,22 @@ class InMemoryTaskQueue:
                 )
 
             with self.condition:
+                if self.shutting_down:
+                    self.active = None
+                    if task.get("finished_at"):
+                        self.history.insert(0, dict(task))
+                        del self.history[self.history_limit :]
+                    else:
+                        # Do not turn interrupted work into "finished": put it back so the
+                        # next start recovers it as a queued task.
+                        task["status"] = "queued"
+                        task["message"] = "服务正在退出；重启后继续"
+                        task["started_at"] = ""
+                        self.queued.insert(0, task)
+                    self.worker_running = False
+                    self.persist_locked()
+                    self.condition.notify_all()
+                    return
                 if task.get("status") == "paused":
                     self.active = None
                     self.queued.insert(0, task)
@@ -268,6 +336,8 @@ class InMemoryTaskQueue:
             "active": self.public_task(self.active) if self.active else None,
             "queued": queued,
             "recent": [self.public_task(task) for task in self.history],
+            # True while the on-disk queue state is behind memory; the next update retries.
+            "persist_pending": bool(self._persist_dirty),
         }
 
     def public_task(self, task, queue_position=None):
@@ -305,7 +375,11 @@ class InMemoryTaskQueue:
             return
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            self._quarantine_state_file(exc)
+            return
+        if not isinstance(payload, dict):
+            self._quarantine_state_file(TypeError(f"unexpected state payload: {type(payload).__name__}"))
             return
 
         if payload.get("kind") and payload.get("kind") != self.kind:
@@ -376,15 +450,38 @@ class InMemoryTaskQueue:
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self.state_path.with_name(f"{self.state_path.name}.{os.getpid()}.tmp")
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
             temp_path.replace(self.state_path)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             if temp_path:
                 try:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+            # Keep retrying on later updates instead of letting memory and disk diverge.
+            self._persist_dirty = True
             self._log_persist_failure(exc)
+        else:
+            self._persist_dirty = False
+            self._persist_failure_logged = False
+
+    def _quarantine_state_file(self, exc):
+        """Keep an unreadable state file around for inspection instead of silently starting empty."""
+        quarantined = ""
+        try:
+            quarantine = self.state_path.with_name(f"{self.state_path.name}.corrupt-{int(time.time())}")
+            self.state_path.replace(quarantine)
+            quarantined = str(quarantine)
+        except OSError:
+            pass
+        log_event(
+            "task_queue.state_unreadable",
+            f"task queue state could not be read: {exc}",
+            level="warning",
+            kind=self.kind,
+            state_path=str(self.state_path),
+            quarantined=quarantined,
+        )
 
     def _log_persist_failure(self, exc):
         if self._persist_failure_logged:

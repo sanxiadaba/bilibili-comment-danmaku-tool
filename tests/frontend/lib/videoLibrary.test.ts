@@ -7,19 +7,24 @@ import {
   deletePayloadForTarget,
   deleteRequestsForTarget,
   deleteTargetVideoCount,
+  exportDatabaseIdForVideos,
   extractBvid,
+  findVideoByBvid,
   formatBytes,
   initialDatabaseId,
   mergeVideosByBvid,
   ownerKey,
   ownerName,
+  refreshLoadedVideos,
   singleDatabaseIdForVideos,
+  summarizeLibrary,
   summarizeOwnerRef,
   summarizeVideos,
   videoExportLabel,
 } from "../../../frontend/src/lib/videoLibrary";
 import { installWindowStub } from "../helpers/browser";
 import { makeVideo } from "../helpers/factories";
+import type { OwnerGroup } from "../../../frontend/src/types";
 
 describe("video library helpers", () => {
   beforeEach(() => {
@@ -98,6 +103,22 @@ describe("video library helpers", () => {
     expect(singleDatabaseIdForVideos([makeVideo({ db_id: "" })], "fallback")).toBe("fallback");
   });
 
+  it("refreshes the first page without dropping already loaded pages", () => {
+    const loaded = [
+      makeVideo({ bvid: "BV1A", title: "stale" }),
+      makeVideo({ bvid: "BV1B" }),
+      makeVideo({ bvid: "BV1C" }),
+      makeVideo({ bvid: "BV1D" }),
+      makeVideo({ bvid: "BV1E" }),
+    ];
+    const firstPage = [makeVideo({ bvid: "BV1New", title: "newest" }), makeVideo({ bvid: "BV1A", title: "fresh" })];
+
+    const refreshed = refreshLoadedVideos(loaded, firstPage);
+    expect(refreshed.map((video) => video.bvid)).toEqual(["BV1New", "BV1A", "BV1B", "BV1C", "BV1D", "BV1E"]);
+    expect(refreshed[1].title).toBe("fresh");
+    expect(refreshed).toHaveLength(loaded.length + 1);
+  });
+
   it("summarizes library totals", () => {
     const videos = [
       makeVideo({ bvid: "BV1Alpha001", title: "Alpha", owner_mid: "42", owner_name: "Alice", stat_view: 10, comment_total_count: 2, active_comment_count: 1, deleted_comment_count: 1, comment_like_count: 5, danmaku_count: 7 }),
@@ -105,6 +126,42 @@ describe("video library helpers", () => {
     ];
 
     expect(summarizeVideos(videos)).toEqual({ views: 30, comments: 5, active: 4, deleted: 1, likes: 11, danmaku: 15 });
+  });
+
+  it("prefers whole-library owner totals and falls back to the loaded page", () => {
+    const videos = [
+      makeVideo({ bvid: "BV1Alpha001", stat_view: 10, comment_total_count: 2, active_comment_count: 1, deleted_comment_count: 1, comment_like_count: 5, danmaku_count: 7 }),
+    ];
+    const owners = [
+      { key: "mid:42", name: "Alice", owner_mid: "42", video_count: 60, comment_count: 1200, danmaku_count: 340 },
+      { key: "name:guest", name: "Guest", owner_mid: "", video_count: 2, comment_count: 30, danmaku_count: 9 },
+    ];
+
+    expect(summarizeLibrary(videos, owners)).toEqual({
+      views: 10,
+      comments: 1230,
+      active: 1,
+      deleted: 1,
+      likes: 5,
+      danmaku: 349,
+      scope: "library",
+    });
+    expect(summarizeLibrary(videos)).toMatchObject({ comments: 2, danmaku: 7, scope: "loaded" });
+  });
+
+  it("finds a video by bvid regardless of case", () => {
+    const videos = [makeVideo({ bvid: "BV1xx411c7mD" })];
+    expect(findVideoByBvid(videos, "bv1XX411c7Md")).toBe(videos[0]);
+    expect(findVideoByBvid(videos, "BV1Other0000")).toBeUndefined();
+    expect(findVideoByBvid(videos, "  ")).toBeUndefined();
+  });
+
+  it("resolves the export scope to one database or the aggregate view", () => {
+    expect(exportDatabaseIdForVideos([makeVideo({ db_id: "db:a" })], "db:a")).toBe("db:a");
+    expect(exportDatabaseIdForVideos([makeVideo({ db_id: "" })], "db:fallback")).toBe("db:fallback");
+    expect(
+      exportDatabaseIdForVideos([makeVideo({ db_id: "db:a" }), makeVideo({ bvid: "BV1Second001", db_id: "db:b" })], "db:a"),
+    ).toBe("main");
   });
 
   it("builds export labels and delete request helpers", () => {
@@ -142,5 +199,64 @@ describe("video library helpers", () => {
     ]);
     expect(deleteRequestsForTarget({ kind: "owner", owner }, "main")).toEqual([]);
     expect(deleteRequestsForTarget({ kind: "owner", owner }, "db:a")).toEqual([{ db_id: "db:a", owner_mid: "42" }]);
+
+    const groups = buildOwnerGroups(
+      [
+        makeVideo({ bvid: "BV1OwnerA01", owner_mid: "42", owner_name: "Alice" }),
+        makeVideo({ bvid: "BV1OwnerB01", owner_mid: "7", owner_name: "Bob" }),
+      ],
+      [
+        { key: "mid:42", name: "Alice", owner_mid: "42", video_count: 1, comment_count: 1, danmaku_count: 0, storage_bytes: 0 },
+        { key: "mid:7", name: "Bob", owner_mid: "7", video_count: 1, comment_count: 1, danmaku_count: 0, storage_bytes: 0 },
+      ],
+    );
+    expect(deleteRequestsForTarget({ kind: "owners", owners: groups }, "db:a")).toEqual([
+      { db_id: "db:a", owner_mid: "42" },
+      { db_id: "db:a", owner_mid: "7" },
+    ]);
+  });
+
+  it("splits mixed owner deletes instead of silently skipping owners with a mid", () => {
+    const midOwner: OwnerGroup = {
+      bvids: [],
+      key: "mid:42",
+      name: "Alice",
+      ownerMid: "42",
+      videoCount: 3,
+      commentCount: 10,
+      danmakuCount: 2,
+    };
+    const guestOwner: OwnerGroup = {
+      bvids: ["BV1Guest001", "BV1Guest002"],
+      key: "name:Guest",
+      name: "Guest",
+      ownerMid: "",
+      videoCount: 2,
+      commentCount: 4,
+      danmakuCount: 0,
+    };
+    const otherGuest: OwnerGroup = {
+      bvids: ["BV1Guest002", "BV1Guest003"],
+      key: "name:Other",
+      name: "Other",
+      ownerMid: "",
+      videoCount: 2,
+      commentCount: 1,
+      danmakuCount: 0,
+    };
+
+    expect(deleteRequestsForTarget({ kind: "owners", owners: [midOwner, guestOwner, otherGuest] }, "db:a")).toEqual([
+      { db_id: "db:a", owner_mid: "42" },
+      { db_id: "db:a", bvids: ["BV1Guest001", "BV1Guest002", "BV1Guest003"] },
+    ]);
+    expect(deleteRequestsForTarget({ kind: "owner", owner: guestOwner }, "db:a")).toEqual([
+      { db_id: "db:a", bvids: ["BV1Guest001", "BV1Guest002"] },
+    ]);
+    expect(
+      deleteRequestsForTarget(
+        { kind: "owners", owners: [{ ...otherGuest, bvids: [], videoCount: 0 }] },
+        "db:a",
+      ),
+    ).toEqual([]);
   });
 });

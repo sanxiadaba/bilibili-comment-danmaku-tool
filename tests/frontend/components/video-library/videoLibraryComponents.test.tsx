@@ -1,11 +1,21 @@
+import { render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { LibraryHeader } from "../../../../frontend/src/components/video-library/LibraryHeader";
 import { LibraryStats } from "../../../../frontend/src/components/video-library/LibraryStats";
 import { LibrarySidebar } from "../../../../frontend/src/components/video-library/LibrarySidebar";
 import { StatusStrips } from "../../../../frontend/src/components/video-library/StatusStrips";
 import { NoticeDialog } from "../../../../frontend/src/components/video-library/NoticeDialog";
 import { VideoListPanel } from "../../../../frontend/src/components/video-library/VideoListPanel";
 import { makeCookieStatus, makeProgress, makeVideo } from "../../helpers/factories";
+
+// jsdom has no layout: give the virtualized list a measurable viewport.
+Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+  configurable: true,
+  get() {
+    return 480;
+  },
+});
 
 describe("video library components", () => {
   it("renders library totals without mutating values", () => {
@@ -118,12 +128,12 @@ describe("video library components", () => {
     expect(html).toContain("1 / 1");
   });
 
-  it("renders a backend pagination affordance for large video lists", () => {
+  it("virtualizes long video lists instead of rendering every card", () => {
     const videos = Array.from({ length: 40 }, (_item, index) =>
       makeVideo({ bvid: `BV1xx411c${String(index).padStart(3, "0")}`, title: `Video ${index}` }),
     );
 
-    const html = renderToStaticMarkup(
+    render(
       <VideoListPanel
         activeDbId="main"
         backendTotalVideoCount={45}
@@ -137,9 +147,83 @@ describe("video library components", () => {
       />,
     );
 
-    expect(html).toContain("40 / 45");
-    expect(html).toContain("加载更多视频");
-    expect(html).toContain("Video 39");
+    expect(screen.getByText("40 / 45")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /加载更多视频/ })).toBeTruthy();
+    expect(screen.getByText("Video 0")).toBeTruthy();
+    // Only a window is mounted; the 40th card must not be in the DOM.
+    expect(screen.queryByText("Video 39")).toBeNull();
+  });
+
+  it("labels loaded-only statistics so a partial page does not look like the whole library", () => {
+    const html = renderToStaticMarkup(
+      <LibraryStats
+        loadedCount={40}
+        scope="library"
+        totals={{ views: 1000, comments: 5000, active: 40, deleted: 10, likes: 99, danmaku: 800 }}
+        videoCount={120}
+      />,
+    );
+
+    expect(html).toContain("评论档案（全库）");
+    expect(html).toContain("弹幕档案（全库）");
+    expect(html).toContain("播放量（已加载 40 条）");
+    expect(html).toContain("仍可见 / 未返回（已加载 40 条）");
+    expect(html).toContain("评论点赞（已加载 40 条）");
+  });
+
+  it("marks a loaded-only comment total in the page header", () => {
+    const partial = renderToStaticMarkup(
+      <LibraryHeader
+        commentCount={5000}
+        commentScope="loaded"
+        isLoading={false}
+        isLoadingDatabases={false}
+        loadedCount={40}
+        showSettings={false}
+        videoCount={120}
+        onRefresh={() => undefined}
+        onToggleSettings={() => undefined}
+      />,
+    );
+    expect(partial).toContain("条评论档案（已加载 40 条）");
+
+    const whole = renderToStaticMarkup(
+      <LibraryHeader
+        commentCount={5000}
+        commentScope="library"
+        isLoading={false}
+        isLoadingDatabases={false}
+        loadedCount={40}
+        showSettings={false}
+        videoCount={120}
+        onRefresh={() => undefined}
+        onToggleSettings={() => undefined}
+      />,
+    );
+    expect(whole).not.toContain("条评论档案（已加载");
+  });
+
+  it("warns when part of the library failed to load and offers a retry", () => {
+    const html = renderToStaticMarkup(
+      <VideoListPanel
+        activeDbId="main"
+        backendTotalVideoCount={5}
+        failedDatabases={[{ id: "db:broken", error: "database is locked" }]}
+        hasMore={false}
+        incomplete
+        isLoading={false}
+        query=""
+        totalVideoCount={5}
+        videos={[makeVideo()]}
+        onLoadMore={() => undefined}
+        onQueryChange={() => undefined}
+        onRetryVideos={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("数据库读取失败");
+    expect(html).toContain("db:broken");
+    expect(html).toContain("重试");
   });
 
   it("renders cookie login diagnostics in settings", () => {

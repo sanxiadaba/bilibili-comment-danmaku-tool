@@ -12,6 +12,7 @@ from bilibili_comment_danmaku import (
     scrape_danmaku,
 )
 from bilibili_comment_danmaku.scraper import inspect_cookie_status, load_cookie_file, make_headers
+from bilibili_comment_danmaku.storage import load_video_metadata
 from database_registry import video_database_path_from_archive
 from progress_state import fail_progress, finish_progress, make_progress_logger, parse_float, start_progress, update_progress
 from space_archive import api_error_response
@@ -76,6 +77,10 @@ class VideoParseTaskService:
             self.run_parse_task(task)
         finally:
             self.refresh_lock.release()
+
+    def task_stop_checker(self, task):
+        """Stop/pause flags as seen by the scraper's cooldown and page sleeps."""
+        return lambda: bool(task.get("stop_requested") or task.get("pause_requested"))
 
     def stop_or_pause_requested(self, task, bvid, progress):
         if task.get("stop_requested"):
@@ -166,6 +171,9 @@ class VideoParseTaskService:
                 cookie_file=str(self.cookie_file),
                 delay=delay,
                 logger=log,
+                # Without this, a stop/pause during a cooldown waits up to hours and the task
+                # keeps holding the global refresh lock.
+                stop_checker=self.task_stop_checker(task),
             )
             bvid = output_data["metadata"]["bvid"]
             task["bvid"] = bvid
@@ -173,7 +181,7 @@ class VideoParseTaskService:
             task["db_path"] = str(db_path)
             self.queue.update(task, db_path=str(db_path))
             try:
-                before = load_comment_data(db_path, bvid=bvid)["metadata"]["comment_total_count"]
+                before = load_video_metadata(db_path, bvid=bvid)["metadata"]["comment_total_count"]
             except LookupError:
                 before = 0
 
@@ -204,6 +212,7 @@ class VideoParseTaskService:
                 output_data["video_raw"],
                 headers=make_headers(bvid, load_cookie_file(self.cookie_file)),
                 logger=danmaku_log,
+                stop_checker=self.task_stop_checker(task),
             )
             if len(danmaku_result.get("items") or []) > 0:
                 self.queue.update(task, message="正在保存弹幕", progress=94)

@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import random
 import re
 import time
@@ -81,7 +82,7 @@ def read_space_cache(cache_path, mid):
     return items if isinstance(items, list) else None
 
 
-def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0):
+def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0, stop_checker=None):
     max_items = max(0, first_int(max_items, 0))
     if use_cache:
         cached_items = read_space_cache(cache_path, mid)
@@ -98,6 +99,8 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
     if cookie:
         headers["Cookie"] = cookie
     client = scraper.BilibiliClient(headers, use_proxy=False, backoff=space_request_backoff())
+    # Cooldown waits between pages must observe the task's stop/pause flags too.
+    client.stop_checker = stop_checker
     log = lambda message: update_progress("space", mid, message)
     mixin = scraper.get_wbi_mixin_key(client, log)
     endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
@@ -105,7 +108,10 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
     seen_bvids = set()
     stagnant_pages = 0
     page = 1
+    truncated = False
     while True:
+        if stop_checker is not None and stop_checker():
+            raise TaskCancelled("stop")
         update_progress("space", mid, f"UP视频列表请求 page={page}")
         payload, mixin = fetch_space_page(client, endpoint, make_space_page_params(mid, page), page, mid, mixin, log)
         data = payload.get("data") or {}
@@ -124,33 +130,41 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
         if max_items and len(items) >= max_items:
             items = items[:max_items]
             break
-        if not vlist or len(items) >= total:
+        if not vlist or (total > 0 and len(items) >= total):
             break
         if stagnant_pages >= SPACE_MAX_STAGNANT_PAGES:
             log(f"UP视频列表连续 {stagnant_pages} 页没有新视频，停止翻页（已收 {len(items)} 条）")
+            truncated = True
             break
         if page >= SPACE_MAX_PAGES:
             log(f"UP视频列表达到 {SPACE_MAX_PAGES} 页上限，停止翻页（已收 {len(items)} 条）")
+            truncated = True
             break
         page += 1
-        time.sleep(random.uniform(2.0, 5.0))
+        scraper.sleep_interruptible(random.uniform(2.0, 5.0), stop_checker)
 
     if cache_path and not max_items:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(
-                {
-                    "mid": str(mid),
-                    "cached_at": utc_now(),
-                    "total": len(items),
-                    "partial": False,
-                    "items": items,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        if total > 0 and len(items) < total:
+            # The API reported more videos than the pages delivered (over-reported count or an
+            # early empty page); never cache a shorter list as if it were complete.
+            truncated = True
+        payload = {
+            "mid": str(mid),
+            "cached_at": utc_now(),
+            "total": len(items),
+            "partial": truncated,
+            "items": items,
+        }
+        temp_path = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
+        try:
+            temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+            temp_path.replace(cache_path)
+        except (OSError, ValueError) as exc:
+            # The cache is an optimisation; losing it must not fail the archive task.
+            log_event("task.space_archive.cache_write_failed", "could not write UP video cache", mid=mid, level="warning")
+        finally:
+            temp_path.unlink(missing_ok=True)
     return items
 
 
@@ -171,7 +185,8 @@ def make_space_page_params(mid, page):
 
 def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
     log = log or (lambda message: update_progress("space", mid, message))
-    backoff_wait = client.backoff.wait(include_spacing=True, spacing_factor=1.0)
+    stop_checker = getattr(client, "stop_checker", None)
+    backoff_wait = client.backoff.wait(include_spacing=True, spacing_factor=1.0, stop_checker=stop_checker)
     if backoff_wait >= 5:
         log(f"等待 Bilibili 请求冷却 {backoff_wait:.0f}s 后读取 page={page}")
 
@@ -199,7 +214,7 @@ def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
             log(f"UP视频列表 page={page} 遇到风控校验，等待 {delay:.0f}s 后刷新签名重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
             mixin_key = scraper.get_wbi_mixin_key(client, log, force_refresh=True)
             request_url = scraper.build_url(endpoint, scraper.sign_wbi_params(params, mixin_key))
-            time.sleep(delay)
+            scraper.sleep_interruptible(delay, stop_checker)
         except TimeoutError:
             if attempt >= SPACE_PAGE_RETRIES:
                 raise
@@ -207,7 +222,7 @@ def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
             cache_buster = urlencode({"_": int(time.time() * 1000), "retry": attempt})
             request_url = f"{url}&{cache_buster}"
             log(f"UP视频列表 page={page} 超时，等待 {delay:.0f}s 后重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
-            time.sleep(delay)
+            scraper.sleep_interruptible(delay, stop_checker)
 
 
 def retry_delay(delays, attempt, jitter=(0.0, 0.0)):
@@ -356,6 +371,10 @@ class SpaceArchiveService:
     def update_task(self, task, **fields):
         self.queue.update(task, **fields)
 
+    def task_stop_checker(self, task):
+        """Stop/pause flags as seen by the scraper's cooldown and page sleeps."""
+        return lambda: bool(task.get("stop_requested") or task.get("pause_requested"))
+
     def cancellation_logger(self, task, bvid, index, total):
         def log(message):
             if task.get("stop_requested"):
@@ -431,13 +450,27 @@ class SpaceArchiveService:
             update_progress("space", mid, f"正在读取 UP {mid} 的视频列表")
             self.update_task(task, message="正在读取视频列表", progress=5)
             cookie_status = inspect_cookie_status(self.cookie_file)
-            items = fetch_space_videos(
-                mid,
-                cookie,
-                cache_path=cache_path,
-                use_cache=not options.get("no_cache"),
-                max_items=options.get("max_videos", 0),
-            )
+            stop_checker = self.task_stop_checker(task)
+            try:
+                items = fetch_space_videos(
+                    mid,
+                    cookie,
+                    cache_path=cache_path,
+                    use_cache=not options.get("no_cache"),
+                    max_items=options.get("max_videos", 0),
+                    stop_checker=stop_checker,
+                )
+            except (TaskCancelled, scraper.ScrapeCancelled):
+                self.update_task(
+                    task,
+                    status="paused" if task.get("pause_requested") else "stopped",
+                    message="已暂停，可继续" if task.get("pause_requested") else "已停止",
+                    finished_at=utc_now(),
+                    pause_requested=bool(task.get("pause_requested")),
+                    stop_requested=False,
+                )
+                finish_progress("space", mid, "UP 主归档已停止：视频列表读取被中断")
+                return
             max_videos = int(options.get("max_videos") or 0)
             if max_videos > 0:
                 items = items[:max_videos]
@@ -478,10 +511,33 @@ class SpaceArchiveService:
                     update_progress("space", current_bvid or mid, f"UP视频归档已暂停 complete={complete} total={total}")
                     return
                 current_bvid = item.get("bvid") or ""
-                current_db_path = find_video_database_path(current_bvid, database_dir) if current_bvid else None
-                if current_db_path is None:
-                    current_db_path = database_dir / "unknown_owner" / f"{current_bvid or 'unknown'}.db"
-                current_status = db_status_for_bvid(current_db_path, current_bvid)
+                try:
+                    current_db_path = find_video_database_path(current_bvid, database_dir) if current_bvid else None
+                    if current_db_path is None:
+                        current_db_path = database_dir / "unknown_owner" / f"{current_bvid or 'unknown'}.db"
+                    current_status = db_status_for_bvid(current_db_path, current_bvid)
+                except Exception as exc:
+                    # One unreadable/locked .db must not abort the whole UP archive.
+                    failed += 1
+                    self.update_task(
+                        task,
+                        failed=failed,
+                        current_bvid=current_bvid,
+                        progress=space_task_percent(index, total),
+                        message=f"库文件不可用，已跳过 {index}/{total}",
+                    )
+                    log_exception(
+                        "task.space_archive.video_error",
+                        f"无法读取 {current_bvid} 的库文件，已跳过",
+                        request_id=request_id,
+                        mid=mid,
+                        task_id=task["id"],
+                        bvid=current_bvid,
+                        index=index,
+                        total=total,
+                        failed=failed,
+                    )
+                    continue
                 if is_complete(item, current_status):
                     skipped += 1
                     complete += 1
@@ -529,6 +585,7 @@ class SpaceArchiveService:
                         logger=video_logger,
                         max_main_pages=None,
                         fetch_children=True,
+                        stop_checker=stop_checker,
                     )
                     current_db_path = video_database_path_from_archive(comments, database_dir)
                     self.update_task(task, message=f"正在保存评论 {index}/{total}")
@@ -553,6 +610,7 @@ class SpaceArchiveService:
                         # whole space would spend most of its time on them, so bulk runs skip them;
                         # refreshing a single video still collects them.
                         fetch_likes=False,
+                        stop_checker=stop_checker,
                     )
                     if danmaku_result.get("items"):
                         self.update_task(task, message=f"正在保存弹幕 {index}/{total}")
@@ -591,7 +649,25 @@ class SpaceArchiveService:
                         failed=failed,
                     )
                 except Exception as exc:
-                    if isinstance(exc, TaskCancelled):
+                    if isinstance(exc, (TaskCancelled, scraper.ScrapeCancelled)):
+                        # The cancellation logger already reset the flags when it raised, so trust
+                        # the exception action first and only fall back to the task flags.
+                        action = getattr(exc, "action", "") or ("stop" if task.get("stop_requested") else "pause")
+                        stopped = action == "stop"
+                        self.update_task(
+                            task,
+                            status="stopped" if stopped else "paused",
+                            message="已停止" if stopped else "已暂停，可继续",
+                            finished_at=utc_now() if stopped else "",
+                            total=total,
+                            complete=complete,
+                            archived=archived,
+                            skipped=skipped,
+                            failed=failed,
+                            pause_requested=not stopped,
+                            stop_requested=False,
+                        )
+                        finish_progress("space", mid, f"UP 主归档已{'停止' if stopped else '暂停'}：{complete}/{total}")
                         return
                     if should_abort_space_archive(exc):
                         raise
@@ -628,20 +704,39 @@ class SpaceArchiveService:
                     pause = random.uniform(options.get("between_videos_min", 8.0), options.get("between_videos_max", 20.0))
                     self.update_task(task, message=f"等待下一条 {index}/{total}")
                     update_progress("space", current_bvid, f"UP视频间隔 {index}/{total} seconds={pause:.1f} next={index + 1}")
-                    time.sleep(pause)
+                    try:
+                        scraper.sleep_interruptible(pause, stop_checker)
+                    except scraper.ScrapeCancelled:
+                        stopped = bool(task.get("stop_requested"))
+                        self.update_task(
+                            task,
+                            status="stopped" if stopped else "paused",
+                            message="已停止" if stopped else "已暂停，可继续",
+                            finished_at=utc_now() if stopped else "",
+                            total=total,
+                            complete=complete,
+                            archived=archived,
+                            skipped=skipped,
+                            failed=failed,
+                            pause_requested=not stopped,
+                            stop_requested=False,
+                        )
+                        finish_progress("space", mid, f"UP 主归档已{'停止' if stopped else '暂停'}：{complete}/{total}")
+                        return
 
             complete = archived + skipped
             self.update_task(
                 task,
                 status="finished",
-                message=f"已完成 {complete}/{total}",
+                message=f"已完成 {complete}/{total}" + (f"，失败 {failed}" if failed else ""),
                 finished_at=utc_now(),
                 total=total,
                 complete=complete,
                 archived=archived,
                 skipped=skipped,
                 failed=failed,
-                progress=100,
+                # A run with failed videos is not 100% done, even though the queue has moved on.
+                progress=99 if failed else 100,
                 pause_requested=False,
                 stop_requested=False,
             )

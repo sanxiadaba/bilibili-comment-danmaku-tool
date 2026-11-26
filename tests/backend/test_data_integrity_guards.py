@@ -144,7 +144,73 @@ class SchemaMigrationTests(unittest.TestCase):
             self.assertEqual(migrated.call_count, 0)
 
 
+class MetadataLoadTests(unittest.TestCase):
+    def test_metadata_load_does_not_build_the_comment_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            comments = [make_comment(str(index), 1, f"c{index}", mid="42") for index in range(1, 30)]
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", comments), db_path, replace=True)
+
+            with mock.patch.object(storage, "select_comment_rows", side_effect=AssertionError("full load")):
+                metadata = storage.load_video_metadata(db_path, bvid=BVID)["metadata"]
+
+            self.assertEqual(metadata["bvid"], BVID)
+            self.assertEqual(metadata["comment_total_count"], 29)
+            self.assertTrue(metadata["source_url"])
+
+    def test_public_scrape_helper_keeps_the_shrink_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(
+                make_archive("2024-01-01T00:00:00+00:00", [make_comment(str(i), 1, "c", mid="42") for i in range(20)]),
+                db_path,
+                replace=True,
+            )
+            tiny = make_archive("2024-01-02T00:00:00+00:00", [make_comment("900", 1, "c", mid="42")])
+
+            with mock.patch("bilibili_comment_danmaku.scraper.scrape_comments", return_value=tiny):
+                from bilibili_comment_danmaku.scraper import scrape_comments_to_sqlite
+
+                summary = scrape_comments_to_sqlite(BVID, db_path=db_path)
+
+            self.assertTrue(summary.get("skipped"))
+            self.assertEqual(load_comment_data(db_path, bvid=BVID)["metadata"]["comment_total_count"], 20)
+
+
 class MissingMemberTests(unittest.TestCase):
+    def test_normalize_reply_keeps_missing_ids_null(self):
+        from bilibili_comment_danmaku.scraper import normalize_reply
+
+        normalized = normalize_reply({}, 1)
+
+        # rpid is the global primary key: "None" would make two videos overwrite each other.
+        for key in ("rpid", "oid", "root", "parent", "dialog"):
+            self.assertIsNone(normalized[key], key)
+
+    def test_export_import_keeps_deleted_comments_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.db"
+            target = Path(tmp) / "target.db"
+            save_comments_to_sqlite(
+                make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "keep"), make_comment("2", 1, "gone")]),
+                source,
+                replace=True,
+            )
+            save_comments_to_sqlite(
+                make_archive("2024-01-05T00:00:00+00:00", [make_comment("1", 1, "keep")]),
+                source,
+                replace=True,
+            )
+            payload = load_comment_data(source, bvid=BVID)
+
+            save_comments_to_sqlite(payload, target, replace=True)
+
+            restored = {
+                item["normalized"]["rpid"]: item["normalized"] for item in load_comment_data(target, bvid=BVID)["comment_items"]
+            }
+            self.assertTrue(restored["2"]["is_deleted"])
+            self.assertEqual(restored["2"]["first_seen_at"], "2024-01-01T00:00:00+00:00")
+
     def test_reply_without_user_fields_still_saves(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "archive.db"

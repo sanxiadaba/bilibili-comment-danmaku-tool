@@ -2,6 +2,7 @@ import unittest
 import sys
 import io
 import json
+import os
 import tempfile
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
@@ -329,6 +330,17 @@ class AppCliTests(unittest.TestCase):
         self.assertIn('if "--cli" in sys.argv:', source)
         self.assertIn("from app_cli import main as cli_main", source)
         self.assertLess(source.index('if "--cli" in sys.argv:'), source.index("parser = argparse.ArgumentParser"))
+
+    def test_desktop_entry_derives_cookie_path_from_the_published_data_directory(self):
+        import desktop_entry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "custom-data"
+            data_dir.mkdir()
+            with patch.dict(os.environ, {"BILIBILI_TOOL_DATA_DIR": str(data_dir)}):
+                cookie_file = desktop_entry.desktop_cookie_file()
+
+        self.assertEqual(cookie_file, (data_dir / "cookie.txt").resolve())
 
     def test_frontend_uses_packaged_favicon(self):
         html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")

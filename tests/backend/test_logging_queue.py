@@ -10,6 +10,7 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
 
@@ -308,6 +309,48 @@ class TaskQueueTests(unittest.TestCase):
             self.assertEqual(events, ["1"])
             self.assertTrue(queue.wait_until_idle())
 
+    def test_finished_run_with_failures_can_be_retried(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+
+            def runner(task):
+                queue.update(task, status="finished", message="done", finished_at="done", failed=2)
+
+            queue = InMemoryTaskQueue("space", runner, state_path=state_path)
+            queue.enqueue({"mid": "1", "owner_ref": "1"})
+            self.assertTrue(queue.wait_until_idle(timeout=5))
+            task_id = queue.snapshot()["recent"][0]["id"]
+
+            retried = queue.control("retry", task_id=task_id)
+
+            self.assertEqual(len(retried["queue"]["queued"]), 1)
+            queue.wait_until_idle(timeout=5)
+
+    def test_resume_does_not_cancel_a_stop_request(self):
+        # Pause, stop, resume used to silently drop the stop flag on the active task.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            release = threading.Event()
+
+            def runner(task):
+                release.wait(2)
+
+            queue = InMemoryTaskQueue("space", runner, state_path=state_path)
+            task = queue.enqueue({"mid": "1", "owner_ref": "1"})
+            deadline = time.time() + 2
+            while time.time() < deadline and queue.active is None:
+                time.sleep(0.01)
+            queue.control("pause", task_id=task["id"])
+            queue.control("stop", task_id=task["id"])
+
+            queue.control("resume", task_id=task["id"])
+
+            self.assertIsNotNone(queue.active)
+            self.assertTrue(queue.active["stop_requested"])
+            self.assertFalse(queue.active["pause_requested"])
+            release.set()
+            queue.wait_until_idle(timeout=2.0)
+
     def test_queue_can_clear_and_retry_history(self):
         events = []
 
@@ -462,7 +505,7 @@ class TaskQueueTests(unittest.TestCase):
         original_timeout = space_archive.scraper.call_with_hard_timeout
 
         class FakeBackoff:
-            def wait(self, include_spacing=True, spacing_factor=1.0):
+            def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
                 calls.append(("wait", include_spacing, spacing_factor))
                 return 12
 
@@ -503,7 +546,7 @@ class TaskQueueTests(unittest.TestCase):
         original_delay = space_archive.retry_delay
 
         class FakeBackoff:
-            def wait(self, include_spacing=True, spacing_factor=1.0):
+            def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
                 return 0
 
         class FakeClient:
@@ -550,7 +593,7 @@ class TaskQueueTests(unittest.TestCase):
         original_delay = space_archive.retry_delay
 
         class FakeBackoff:
-            def wait(self, include_spacing=True, spacing_factor=1.0):
+            def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
                 return 0
 
         class FakeClient:
@@ -671,3 +714,46 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["queued"][0]["id"], first["id"])
         self.assertEqual(snapshot["queued"][0]["status"], "paused")
         self.assertEqual(snapshot["recent"], [])
+
+    def test_failed_persist_stays_pending_until_a_retry_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "queue.json"
+            queue = InMemoryTaskQueue("space", lambda task: None, state_path=state_path)
+            queue.enqueue({"mid": "1", "owner_ref": "1"})
+            self.assertTrue(queue.wait_until_idle(timeout=2))
+            task = queue.history[0]
+
+            with mock.patch("pathlib.Path.replace", side_effect=PermissionError("locked")):
+                queue.update(task, message="updated")
+            self.assertTrue(queue.snapshot()["persist_pending"])
+
+            queue.update(task, message="updated again")
+
+            self.assertFalse(queue.snapshot()["persist_pending"])
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["history"][0]["message"], "updated again")
+
+    def test_shutdown_joins_the_worker_and_never_starts_a_new_one(self):
+        started = threading.Event()
+        release = threading.Event()
+        events = []
+
+        def runner(task):
+            events.append(task["mid"])
+            started.set()
+            release.wait(2)
+            queue.update(task, status="finished", message="done", finished_at="done", progress=100)
+
+        queue = InMemoryTaskQueue("space", runner)
+        queue.enqueue({"mid": "1", "owner_ref": "1"})
+        self.assertTrue(started.wait(1))
+
+        # The in-flight task is not killed, so the first join has to time out.
+        self.assertFalse(queue.shutdown(timeout=0.1))
+        release.set()
+        self.assertTrue(queue.shutdown(timeout=2))
+
+        queue.enqueue({"mid": "2", "owner_ref": "2"})
+        time.sleep(0.05)
+
+        self.assertEqual(events, ["1"], "shutdown 之后不应再启动 worker")

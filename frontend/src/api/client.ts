@@ -74,8 +74,7 @@ export async function importDatabaseFiles(files: File[]) {
 export async function fetchCommentData(bvid?: string, dbId = "main", options: { limit?: number; offset?: number; signal?: AbortSignal } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
-  if (options.limit) query.set("limit", String(options.limit));
-  if (options.offset) query.set("offset", String(options.offset));
+  setPaging(query, options.limit, options.offset);
   appendDbId(query, dbId);
   return requestJson<CommentData>(`/api/comments?${query.toString()}`, { cache: "no-store", signal: options.signal });
 }
@@ -92,8 +91,7 @@ export async function fetchVideos(
   } = {},
 ) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
-  if (options.limit) query.set("limit", String(options.limit));
-  if (options.offset) query.set("offset", String(options.offset));
+  setPaging(query, options.limit, options.offset);
   if (options.includeMeta === false) query.set("include_meta", "0");
   if (options.query) query.set("q", options.query);
   if (options.ownerKey && options.ownerKey !== "all") query.set("owner", options.ownerKey);
@@ -104,17 +102,20 @@ export async function fetchVideos(
 export async function fetchDanmakuData(bvid?: string, dbId = "main", options: { limit?: number | null; offset?: number; signal?: AbortSignal } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
-  if (options.limit !== undefined && options.limit !== null) query.set("limit", String(options.limit));
-  if (options.offset) query.set("offset", String(options.offset));
+  setPaging(query, options.limit, options.offset);
   appendDbId(query, dbId);
   return requestJson<DanmakuData>(`/api/danmaku?${query.toString()}`, { cache: "no-store", signal: options.signal });
 }
 
-export async function refreshDanmakuData(bvid?: string, dbId = "main") {
+export async function refreshDanmakuData(bvid?: string, dbId = "main", options: { signal?: AbortSignal } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
   appendDbId(query, dbId);
-  return requestJson<DanmakuData>(`/api/danmaku/refresh?${query.toString()}`, { ...POST_REQUEST, timeoutMs: NO_TIMEOUT });
+  return requestJson<DanmakuData>(`/api/danmaku/refresh?${query.toString()}`, {
+    ...POST_REQUEST,
+    timeoutMs: NO_TIMEOUT,
+    signal: options.signal,
+  });
 }
 
 export async function parseVideo(url: string, delay: number, dbId = "main") {
@@ -149,11 +150,16 @@ export async function stopRunningTask(kind: "comments" | "danmaku" | "all" = "al
   return requestJson<{ ok: boolean; kind: string; message: string }>(`/api/tasks/stop?ts=${Date.now()}`, postJsonInit({ kind }));
 }
 
-export async function refreshCommentData(bvid?: string, dbId = "main") {
+export async function refreshCommentData(bvid?: string, dbId = "main", options: { signal?: AbortSignal; force?: boolean } = {}) {
   const query = new URLSearchParams({ ts: String(Date.now()) });
   if (bvid) query.set("bvid", bvid);
+  if (options.force) query.set("force", "1");
   appendDbId(query, dbId);
-  return requestJson<CommentData>(`/api/refresh?${query.toString()}`, { ...POST_REQUEST, timeoutMs: NO_TIMEOUT });
+  return requestJson<CommentData>(`/api/refresh?${query.toString()}`, {
+    ...POST_REQUEST,
+    timeoutMs: NO_TIMEOUT,
+    signal: options.signal,
+  });
 }
 
 export async function fetchProgress(signal?: AbortSignal) {
@@ -183,7 +189,18 @@ function withSignalTimeout(init?: RequestOptions): RequestOptions | undefined {
   if (typeof AbortSignal.any === "function") {
     return { ...rest, signal: AbortSignal.any([rest.signal, timeoutSignal]) };
   }
-  return rest;
+  // Older browsers: merge by hand instead of silently dropping the timeout signal.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  rest.signal.addEventListener("abort", abort, { once: true });
+  timeoutSignal.addEventListener("abort", abort, { once: true });
+  return { ...rest, signal: controller.signal };
+}
+
+/** Send limit/offset only when they are meaningful; 0 and junk values used to be dropped silently. */
+function setPaging(query: URLSearchParams, limit?: number | null, offset?: number | null) {
+  if (typeof limit === "number" && Number.isInteger(limit) && limit >= 0) query.set("limit", String(limit));
+  if (typeof offset === "number" && Number.isInteger(offset) && offset > 0) query.set("offset", String(offset));
 }
 
 function postJsonInit(body: unknown): RequestOptions {

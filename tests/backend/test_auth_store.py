@@ -30,6 +30,32 @@ class AuthStoreTests(unittest.TestCase):
             self.assertEqual(payload["status"], "unchecked")
             self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=secret-session; bili_jct=secret-csrf")
 
+    def test_cookie_store_saves_httponly_netscape_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
+            with mock.patch("auth_store.inspect_cookie_status") as status:
+                status.return_value = {"status": "unchecked", "exists": True}
+
+                store.save(
+                    "# Netscape HTTP Cookie File\n"
+                    "#HttpOnly_.bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tsecret-session\n"
+                    ".bilibili.com\tTRUE\t/\tFALSE\t0\tbili_jct\tsecret-csrf\n"
+                )
+
+            self.assertEqual(
+                store.cookie_path.read_text(encoding="utf-8").strip(),
+                "SESSDATA=secret-session; bili_jct=secret-csrf",
+            )
+
+    def test_normalize_cookie_text_strips_cookie_prefix_from_pasted_header(self):
+        self.assertEqual(
+            auth_store.normalize_cookie_text("Cookie: SESSDATA=abc; bili_jct=def"),
+            "SESSDATA=abc; bili_jct=def",
+        )
+
+    def test_normalize_cookie_text_rejects_lookalike_domains(self):
+        self.assertEqual(auth_store.normalize_cookie_text("evilbilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\tx"), "")
+
     def test_cookie_store_rejects_empty_cookie_and_clears_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
@@ -79,6 +105,42 @@ class AuthStoreTests(unittest.TestCase):
             backups = list(store.backup_dir.glob("cookie-*.txt"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "SESSDATA=old\n")
+            self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=new")
+
+    def test_backup_existing_returns_the_backup_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = auth_store.CookieStore(Path(tmpdir) / "cookie.txt")
+            store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            store.cookie_path.write_text("SESSDATA=old\n", encoding="utf-8")
+
+            backup_path, error = store.backup_existing()
+
+            self.assertEqual(error, "")
+            self.assertIsNotNone(backup_path)
+            self.assertEqual(backup_path.read_text(encoding="utf-8"), "SESSDATA=old\n")
+
+    def test_cookie_store_reports_backup_failure_but_still_saves(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            store = auth_store.CookieStore(root / "cookie.txt", backup_dir=root / "blocked-backup")
+            store.cookie_path.parent.mkdir(parents=True, exist_ok=True)
+            store.cookie_path.write_text("SESSDATA=old\n", encoding="utf-8")
+            # 用一个同名文件占住备份目录，mkdir 必然失败，模拟磁盘/权限问题。
+            store.backup_dir.write_text("not a directory", encoding="utf-8")
+
+            backup_path, error = store.backup_existing()
+            self.assertIsNone(backup_path)
+            self.assertTrue(error)
+
+            with mock.patch("auth_store.inspect_cookie_status") as status:
+                status.return_value = {"status": "unchecked", "exists": True}
+                with mock.patch("auth_store.log_event") as log_event:
+                    payload = store.save("SESSDATA=new")
+
+            self.assertEqual(payload["status"], "unchecked")
+            self.assertIn("backup_warning", payload)
+            self.assertTrue(payload["backup_warning"])
+            log_event.assert_called_once()
             self.assertEqual(store.cookie_path.read_text(encoding="utf-8").strip(), "SESSDATA=new")
 
     def test_qr_login_success_persists_response_cookies(self):

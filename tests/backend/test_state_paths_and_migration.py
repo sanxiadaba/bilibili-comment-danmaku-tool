@@ -9,7 +9,7 @@ from helpers import BVID, make_archive, make_comment
 from bilibili_comment_danmaku import paths, scraper  # noqa: E402
 from bilibili_comment_danmaku.storage import save_comments_to_sqlite  # noqa: E402
 from bilibili_comment_danmaku.wbi import default_wbi_cache_path  # noqa: E402
-from database_registry import find_video_database_path  # noqa: E402
+from database_registry import find_video_database_path, video_database_path  # noqa: E402
 from legacy_migration import list_legacy_videos, migrate_legacy_database  # noqa: E402
 
 OTHER_BVID = "BV1other1111"
@@ -106,6 +106,22 @@ class LegacyMigrationTests(unittest.TestCase):
 
             self.assertEqual(result["migrated"], 2)
             self.assertFalse(result["retired"])
+            self.assertTrue(legacy.exists())
+
+    def test_target_with_fewer_rows_keeps_the_legacy_file(self):
+        # A half-written per-video export used to count as "already migrated" and the complete
+        # legacy file was retired right after, losing every comment that never made it over.
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy, databases = self._seed(tmp)
+            save_comments_to_sqlite(legacy_archive(BVID, "42", "Owner", comments=4), legacy, replace=True)
+            truncated = video_database_path(BVID, databases, owner_mid="42", owner_name="Owner")
+            save_comments_to_sqlite(legacy_archive(BVID, "42", "Owner", comments=1), truncated, replace=True)
+
+            result = migrate_legacy_database(legacy, databases)
+
+            self.assertFalse(result["retired"])
+            self.assertGreaterEqual(result["failed"], 1)
+            self.assertIn(BVID, result["reason"])
             self.assertTrue(legacy.exists())
 
     def test_second_migration_run_is_idempotent(self):

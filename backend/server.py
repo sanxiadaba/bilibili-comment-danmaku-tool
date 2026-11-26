@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -28,6 +29,7 @@ from bilibili_comment_danmaku import (
     vacuum_database,
 )
 from bilibili_comment_danmaku import scraper
+from bilibili_comment_danmaku.storage import load_video_metadata
 from bilibili_comment_danmaku.paths import publish_data_dir
 from bilibili_comment_danmaku.scraper import ScrapeCancelled
 from legacy_migration import migrate_legacy_database
@@ -50,7 +52,7 @@ from database_registry import (
 )
 from errors import BadRequestError, RequestTooLargeError
 from http_utils import JsonStaticRequestHandler, first_query_int, parse_content_length, parse_optional_int, safe_print
-from local_server import DEFAULT_PORT, create_threading_server
+from local_server import DEFAULT_PORT, create_threading_server, ensure_ipv4_bind_host
 from progress_state import (
     clear_stop,
     fail_progress,
@@ -84,6 +86,9 @@ DEFAULT_COMMENT_PAGE_SIZE = 500
 DEFAULT_DANMAKU_PAGE_SIZE = 2000
 LOCAL_BROWSER_REQUEST_HEADER = "X-Bilibili-Tool-Request"
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
+SINGLE_INSTANCE_NAME = "bilibili-comment-danmaku-tool"
+SINGLE_INSTANCE_MUTEX_ALREADY_EXISTS = 183
+EXPORT_LOCK_TIMEOUT_SECONDS = 5.0
 refresh_lock = threading.Lock()
 maintenance_lock = threading.Lock()
 auth_cookie_store = CookieStore(DEFAULT_COOKIE_FILE)
@@ -121,7 +126,7 @@ def configure_task_services(cookie_file=DEFAULT_COOKIE_FILE, space_cache_dir=DEF
 
 def combined_queue_snapshot():
     if not space_archive_service or not video_parse_service or not archive_delete_service:
-        return {"active": None, "queued": [], "recent": []}
+        return {"active": None, "queued": [], "recent": [], "persist_pending": False}
     space = space_archive_service.snapshot()
     video = video_parse_service.snapshot()
     delete = archive_delete_service.snapshot()
@@ -137,7 +142,8 @@ def combined_queue_snapshot():
     queued = [{**task, "queue_position": index + 1} for index, task in enumerate(queued)]
     recent = [*(space.get("recent") or []), *(video.get("recent") or []), *(delete.get("recent") or [])]
     recent.sort(key=lambda task: task.get("updated_at", ""), reverse=True)
-    return {"active": active, "queued": queued, "recent": recent[:10]}
+    persist_pending = any(bool(snapshot.get("persist_pending")) for snapshot in (space, video, delete))
+    return {"active": active, "queued": queued, "recent": recent[:10], "persist_pending": persist_pending}
 
 
 def bilibili_api_error_response(exc):
@@ -150,9 +156,18 @@ def bilibili_api_error_response(exc):
     return api_error_response(exc, cookie_status=cookie_status)
 
 
+def text_field(body, *keys):
+    """Read the first non-empty string-ish field; JSON numbers/objects must not raise 500."""
+    for key in keys:
+        value = body.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
 def parse_archive_delete_request(body):
-    bvid = (body.get("bvid") or "").strip()
-    owner_mid = (body.get("owner_mid") or "").strip()
+    bvid = text_field(body, "bvid")
+    owner_mid = text_field(body, "owner_mid")
     raw_bvids = body.get("bvids")
     bvids = [str(item).strip() for item in raw_bvids if str(item).strip()] if isinstance(raw_bvids, list) else []
     if bvid:
@@ -710,7 +725,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_parse_video_api(self):
         body = self.read_json_body()
-        video_ref = (body.get("url") or body.get("video_ref") or body.get("bvid") or "").strip()
+        video_ref = text_field(body, "url", "video_ref", "bvid")
         if not video_ref:
             log_event(
                 "task.parse.invalid_input",
@@ -728,7 +743,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         task = video_parse_service.enqueue(
             database_dir=self.database_dir,
             video_ref=video_ref,
-            delay=parse_float(body.get("delay"), 0.35),
+            # Same clamp as the refresh entry points: an out-of-range delay must not turn
+            # into hours of waiting inside a queued task.
+            delay=clamp_delay(parse_float(body.get("delay"), 0.35)),
             request_id=getattr(self, "request_id", ""),
         )
         log_event(
@@ -753,7 +770,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_space_archive_api(self):
         body = self.read_json_body()
-        owner_ref = (body.get("mid") or body.get("url") or body.get("owner_ref") or "").strip()
+        owner_ref = text_field(body, "mid", "url", "owner_ref")
         mid = extract_space_mid(owner_ref)
         if not mid:
             log_event(
@@ -836,15 +853,33 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         self.send_json(payload)
 
     def handle_database_export_api(self):
+        # Read the request body before taking the archive lock: a slow client must not be able to
+        # hold every comment/danmaku refresh at 409 while it dribbles its body in.
         body = self.read_json_body()
+        # Exporting copies a whole database; never wait forever behind an archive task.
+        if not refresh_lock.acquire(timeout=EXPORT_LOCK_TIMEOUT_SECONDS):
+            log_event(
+                "api.database_export.busy",
+                "export rejected because another task holds the archive lock",
+                request_id=getattr(self, "request_id", ""),
+                level="warning",
+            )
+            self.send_json({"error": "已有任务正在读写数据库，暂时无法导出，请稍后再试"}, status=409)
+            return
+        try:
+            payload, status = self.export_archive_response(body)
+        finally:
+            refresh_lock.release()
+        self.send_json(payload, status=status)
+
+    def export_archive_response(self, body):
         bvids = body.get("bvids")
-        bvid = (body.get("bvid") or "").strip()
-        owner_mid = (body.get("owner_mid") or "").strip()
-        label = (body.get("label") or body.get("owner_name") or bvid or owner_mid or "archive").strip()
+        bvid = text_field(body, "bvid")
+        owner_mid = text_field(body, "owner_mid")
+        label = text_field(body, "label", "owner_name") or bvid or owner_mid or "archive"
         export_format = str(body.get("format") or "sqlite").strip().lower()
         if export_format not in {"sqlite", "json"}:
-            self.send_json({"error": "导出格式只支持 sqlite 或 json"}, status=400)
-            return
+            return {"error": "导出格式只支持 sqlite 或 json"}, 400
         if isinstance(bvids, list):
             selected_bvids = [str(item).strip() for item in bvids if str(item).strip()]
         else:
@@ -852,8 +887,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
         if bvid:
             selected_bvids = [bvid]
         if not selected_bvids and not owner_mid:
-            self.send_json({"error": "请选择要导出的 UP 或视频"}, status=400)
-            return
+            return {"error": "请选择要导出的 UP 或视频"}, 400
         if owner_mid and not bvid:
             selected_bvids = []
 
@@ -873,22 +907,16 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     fallback_db_path=self.db_path,
                 )
                 if missing_bvids:
-                    self.send_json(
-                        {"error": f"这些视频还没有本地档案：{', '.join(missing_bvids)}"},
-                        status=404,
-                    )
-                    return
+                    return {"error": f"这些视频还没有本地档案：{', '.join(missing_bvids)}"}, 404
             if not sources:
-                self.send_json({"error": "没有可导出的本地视频档案，请先归档视频"}, status=404)
-                return
+                return {"error": "没有可导出的本地视频档案，请先归档视频"}, 404
             found_bvids = {item for _path, group in sources for item in group}
             selected_bvids = [item for item in selected_bvids if item in found_bvids]
             export_video_count = sum(len(group) for _path, group in sources)
         else:
             db_path = self.resolve_db_path_from_body(body)
             if owner_mid and not selected_bvids:
-                with refresh_lock:
-                    export_video_count = count_owner_export_videos(db_path, owner_mid)
+                export_video_count = count_owner_export_videos(db_path, owner_mid)
 
         archive_kind = "up" if owner_mid and not bvid else "video" if len(selected_bvids) == 1 else "collection"
         export_label = build_export_label(
@@ -898,29 +926,34 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             owner_mid=owner_mid,
             video_count=export_video_count,
         )
-        target_path = export_database_path(export_label, self.database_dir, suffix=".json" if export_format == "json" else ".db")
+        # Exports are copies for the user, not archives: they belong in the export directory so
+        # the database catalog never lists them as new archives.
+        target_path = export_database_path(
+            export_label,
+            DEFAULT_EXPORT_DIR,
+            suffix=".json" if export_format == "json" else ".db",
+        )
         try:
-            with refresh_lock:
-                if aggregate:
-                    result = export_archive_from_databases(
-                        sources,
-                        target_path,
-                        archive_kind=archive_kind,
-                        label=label,
-                        owner_mid=owner_mid or None,
-                        export_format=export_format,
-                    )
-                else:
-                    exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
-                    result = exporter(
-                        db_path,
-                        target_path,
-                        bvids=selected_bvids or None,
-                        owner_mid=owner_mid or None,
-                        archive_kind=archive_kind,
-                        label=label,
-                    )
-                exported_path = ensure_export_result_file(result)
+            if aggregate:
+                result = export_archive_from_databases(
+                    sources,
+                    target_path,
+                    archive_kind=archive_kind,
+                    label=label,
+                    owner_mid=owner_mid or None,
+                    export_format=export_format,
+                )
+            else:
+                exporter = export_archive_to_json if export_format == "json" else export_archive_to_sqlite
+                result = exporter(
+                    db_path,
+                    target_path,
+                    bvids=selected_bvids or None,
+                    owner_mid=owner_mid or None,
+                    archive_kind=archive_kind,
+                    label=label,
+                )
+            exported_path = ensure_export_result_file(result)
         except LookupError as exc:
             log_event(
                 "api.database_export.not_found",
@@ -930,11 +963,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=bvid,
                 level="warning",
             )
-            self.send_json({"error": str(exc)}, status=404)
-            return
+            return {"error": str(exc)}, 404
         except ValueError as exc:
-            self.send_json({"error": str(exc)}, status=400)
-            return
+            return {"error": str(exc)}, 400
         except Exception as exc:
             log_exception(
                 "api.database_export.error",
@@ -943,8 +974,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 owner_mid=owner_mid,
                 bvid=bvid,
             )
-            self.send_json({"error": str(exc)}, status=500)
-            return
+            return {"error": str(exc)}, 500
 
         log_event(
             "api.database_export.finish",
@@ -959,28 +989,26 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             size_bytes=result["size_bytes"],
             counts=result["counts"],
         )
-        self.send_json(
-            {
-                "ok": True,
-                "path": str(exported_path),
-                "relative_path": relative_to_root(exported_path),
-                "file_name": exported_path.name,
-                "directory_path": str(exported_path.parent),
-                "directory_relative_path": relative_to_root(exported_path.parent),
-                "format": export_format,
-                "json_path": result.get("json_path", ""),
-                "json_relative_path": relative_to_root(result["json_path"]) if result.get("json_path") else "",
-                "json_file_name": Path(result["json_path"]).name if result.get("json_path") else "",
-                "database": public_database_info(database_info_for_path(exported_path, self.db_path, self.database_dir))
-                if export_format == "sqlite"
-                else None,
-                "video_count": len(result["bvids"]),
-                "bvids": result["bvids"],
-                "counts": result["counts"],
-                "manifest": result.get("manifest") or {},
-                "size_bytes": result["size_bytes"],
-            }
-        )
+        return {
+            "ok": True,
+            "path": str(exported_path),
+            "relative_path": relative_to_root(exported_path),
+            "file_name": exported_path.name,
+            "directory_path": str(exported_path.parent),
+            "directory_relative_path": relative_to_root(exported_path.parent),
+            "format": export_format,
+            "json_path": result.get("json_path", ""),
+            "json_relative_path": relative_to_root(result["json_path"]) if result.get("json_path") else "",
+            "json_file_name": Path(result["json_path"]).name if result.get("json_path") else "",
+            "database": public_database_info(database_info_for_path(exported_path, self.db_path, self.database_dir))
+            if export_format == "sqlite"
+            else None,
+            "video_count": len(result["bvids"]),
+            "bvids": result["bvids"],
+            "counts": result["counts"],
+            "manifest": result.get("manifest") or {},
+            "size_bytes": result["size_bytes"],
+        }, 200
 
     def handle_open_path_api(self):
         body = self.read_json_body()
@@ -1084,7 +1112,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
 
     def handle_database_import_api(self):
         body = self.read_json_body()
-        source_value = (body.get("path") or body.get("source_path") or "").strip()
+        source_value = text_field(body, "path", "source_path")
         if not source_value:
             self.send_json({"error": "请输入要导入的 SQLite 数据库或 JSON 归档路径"}, status=400)
             return
@@ -1251,13 +1279,25 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             self.send_json({"error": "已有刷新任务正在进行，请稍后再试"}, status=409)
             return
-
-        query = parse_qs(parsed.query)
-        requested_bvid = query.get("bvid", [None])[0]
-        delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
-        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+        # Every branch only assembles (payload, status); the reply is written after the lock is
+        # released so a stopped/skipped/404 branch cannot block other work while sending.
         try:
-            current = load_comment_data(db_path, bvid=requested_bvid)
+            payload, status = self.refresh_comments_payload(parsed)
+        finally:
+            refresh_lock.release()
+        self.send_json(payload, status=status)
+
+    def refresh_comments_payload(self, parsed):
+        requested_bvid = None
+        try:
+            query = parse_qs(parsed.query)
+            requested_bvid = query.get("bvid", [None])[0]
+            delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
+            db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+            # Clear the previous stop flag before doing any work: a Stop that arrives while the
+            # archive is being loaded must not be wiped by a clear_stop further down.
+            clear_stop("comments")
+            current = load_video_metadata(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
             log_event(
@@ -1273,7 +1313,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             logs = []
             log = make_progress_logger("comments", current["metadata"]["bvid"], logs)
 
-            clear_stop("comments")
             try:
                 output_data = scrape_comments(
                     video_ref,
@@ -1283,7 +1322,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     stop_checker=lambda: is_stop_requested("comments"),
                 )
             except ScrapeCancelled:
-                payload = current
+                payload = load_comment_data(
+                    db_path,
+                    bvid=current["metadata"]["bvid"],
+                    limit=DEFAULT_COMMENT_PAGE_SIZE,
+                    offset=0,
+                )
                 payload["refresh"] = {
                     "before_count": before_count,
                     "scraped_count": 0,
@@ -1303,8 +1347,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     bvid=current["metadata"]["bvid"],
                     before_count=before_count,
                 )
-                self.send_json(payload)
-                return
+                return payload, 200
             finally:
                 clear_stop("comments")
             scraped_count = output_data["metadata"]["comment_total_count"]
@@ -1315,7 +1358,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             if summary.get("skipped"):
                 # A blocked or partial scrape must not turn the archive into "everything deleted".
-                payload = current
+                payload = load_comment_data(
+                    db_path,
+                    bvid=current["metadata"]["bvid"],
+                    limit=DEFAULT_COMMENT_PAGE_SIZE,
+                    offset=0,
+                )
                 payload["refresh"] = {
                     "before_count": before_count,
                     "scraped_count": scraped_count,
@@ -1337,8 +1385,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     scraped_count=scraped_count,
                     level="warning",
                 )
-                self.send_json(payload)
-                return
+                return payload, 200
             # Return one page plus the refresh summary: serialising the whole archive here used to
             # build tens of MB of JSON on every refresh.
             payload = load_comment_data(
@@ -1368,6 +1415,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 active_count=payload["metadata"].get("active_comment_count"),
                 deleted_count=payload["metadata"].get("deleted_comment_count"),
             )
+            return payload, 200
         except LookupError as exc:
             fail_progress("comments", requested_bvid or "", str(exc))
             log_event(
@@ -1377,8 +1425,10 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=requested_bvid or "",
                 level="warning",
             )
-            self.send_json({"error": str(exc)}, status=404)
-            return
+            return {"error": str(exc)}, 404
+        except BadRequestError:
+            # do_POST turns this into a 400 after the lock is released here.
+            raise
         except Exception as exc:
             payload, status = bilibili_api_error_response(exc)
             fail_progress("comments", requested_bvid or "", payload["error"])
@@ -1389,12 +1439,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=requested_bvid or "",
                 status=status,
             )
-            self.send_json(payload, status=status)
-            return
-        finally:
-            refresh_lock.release()
-
-        self.send_json(payload)
+            return payload, status
 
     def handle_danmaku_refresh_api(self, parsed):
         if not refresh_lock.acquire(blocking=False):
@@ -1407,12 +1452,21 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
             return
-
-        query = parse_qs(parsed.query)
-        requested_bvid = query.get("bvid", [None])[0]
-        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+        # Same contract as the comment refresh: assemble the reply inside the lock, send after.
         try:
-            current = load_comment_data(db_path, bvid=requested_bvid)
+            payload, status = self.refresh_danmaku_payload(parsed)
+        finally:
+            refresh_lock.release()
+        self.send_json(payload, status=status)
+
+    def refresh_danmaku_payload(self, parsed):
+        requested_bvid = None
+        try:
+            query = parse_qs(parsed.query)
+            requested_bvid = query.get("bvid", [None])[0]
+            db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+            clear_stop("danmaku")
+            current = load_video_metadata(db_path, bvid=requested_bvid)
             log_event(
                 "task.danmaku_refresh.start",
                 "danmaku refresh started",
@@ -1429,7 +1483,6 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=current["metadata"]["bvid"],
                 limit=0,
             )["metadata"]["total_count"]
-            clear_stop("danmaku")
             warning = ""
             try:
                 danmaku_result = scrape_danmaku(
@@ -1440,7 +1493,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     stop_checker=lambda: is_stop_requested("danmaku"),
                 )
             except ScrapeCancelled:
-                payload = current
+                payload = load_danmaku_data(
+                    db_path,
+                    bvid=current["metadata"]["bvid"],
+                    limit=DEFAULT_DANMAKU_PAGE_SIZE,
+                    offset=0,
+                )
                 payload["refresh"] = {
                     "before_count": before_count,
                     "after_count": before_count,
@@ -1457,8 +1515,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                     bvid=current["metadata"]["bvid"],
                     before_count=before_count,
                 )
-                self.send_json(payload)
-                return
+                return payload, 200
             finally:
                 clear_stop("danmaku")
             scraped_count = len(danmaku_result.get("items") or [])
@@ -1503,6 +1560,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 after_count=payload["metadata"]["total_count"],
                 warning=warning,
             )
+            return payload, 200
         except LookupError as exc:
             fail_progress("danmaku", requested_bvid or "", str(exc))
             log_event(
@@ -1512,8 +1570,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=requested_bvid or "",
                 level="warning",
             )
-            self.send_json({"error": str(exc)}, status=404)
-            return
+            return {"error": str(exc)}, 404
+        except BadRequestError:
+            raise
         except Exception as exc:
             payload, status = bilibili_api_error_response(exc)
             fail_progress("danmaku", requested_bvid or "", payload["error"])
@@ -1524,12 +1583,7 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
                 bvid=requested_bvid or "",
                 status=status,
             )
-            self.send_json(payload, status=status)
-            return
-        finally:
-            refresh_lock.release()
-
-        self.send_json(payload)
+            return payload, status
 
 
 
@@ -1543,15 +1597,196 @@ def write_port_hint(path, host, port):
         pass
 
 
+def process_is_alive(pid):
+    """Best-effort liveness check used by the single-instance lock file fallback."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            process_query_limited_information = 0x1000
+            handle = kernel32.OpenProcess(process_query_limited_information, 0, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return False
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+class SingleInstanceLock:
+    """Keep a second copy of the service or the packaged app from starting.
+
+    A named Windows mutex also covers the exe; when ctypes/CreateMutex is unavailable this
+    falls back to an owner-pid lock file so a stale file cannot block the next start.
+    """
+
+    def __init__(self, name=SINGLE_INSTANCE_NAME, lock_dir=None):
+        safe_name = "".join(char if (char.isalnum() or char in "-_.") else "-" for char in str(name))
+        self.name = safe_name or SINGLE_INSTANCE_NAME
+        self.lock_dir = Path(lock_dir) if lock_dir else Path(tempfile.gettempdir())
+        self.acquired = False
+        self._mutex_handle = None
+        self._mutex_kernel32 = None
+        self._lock_file = None
+
+    @property
+    def lock_path(self):
+        return self.lock_dir / f".{self.name}.lock"
+
+    def acquire(self):
+        if self.acquired:
+            return True
+        if os.name == "nt":
+            mutex_result = self._acquire_windows_mutex()
+            if mutex_result is False:
+                return False
+            if mutex_result:
+                self.acquired = True
+                return True
+        if self._acquire_lock_file():
+            self.acquired = True
+            return True
+        return False
+
+    def release(self):
+        if self._mutex_handle is not None:
+            try:
+                self._mutex_kernel32.ReleaseMutex(self._mutex_handle)
+            except Exception:
+                pass
+            try:
+                self._mutex_kernel32.CloseHandle(self._mutex_handle)
+            except Exception:
+                pass
+            self._mutex_handle = None
+            self._mutex_kernel32 = None
+        if self._lock_file is not None:
+            try:
+                self._lock_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._lock_file = None
+        self.acquired = False
+
+    def _acquire_windows_mutex(self):
+        """True = acquired, False = another instance owns it, None = mechanism unavailable."""
+        try:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+            handle = kernel32.CreateMutexW(None, 0, f"Local\\{self.name}-single-instance")
+        except Exception:
+            return None
+        if not handle:
+            return None
+        if ctypes.get_last_error() == SINGLE_INSTANCE_MUTEX_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return False
+        self._mutex_handle = handle
+        self._mutex_kernel32 = kernel32
+        return True
+
+    def _acquire_lock_file(self):
+        path = self.lock_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        for _attempt in range(2):
+            try:
+                descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                if self._lock_file_owner_is_alive(path):
+                    return False
+                try:
+                    path.unlink()
+                except OSError:
+                    return False
+                continue
+            except OSError:
+                return False
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"pid": os.getpid(), "name": self.name}))
+            except OSError:
+                return False
+            self._lock_file = path
+            return True
+        return False
+
+    def _lock_file_owner_is_alive(self, path):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        try:
+            pid = int(payload.get("pid") or 0)
+        except (TypeError, ValueError):
+            return False
+        if pid == os.getpid():
+            return False
+        return process_is_alive(pid)
+
+
+def single_instance_name(root):
+    """Scope the lock to one install so a dev server and a packaged copy do not block each other."""
+    return f"{SINGLE_INSTANCE_NAME}-{Path(root).resolve()}"
+
+
+def acquire_single_instance_lock(name=SINGLE_INSTANCE_NAME, lock_dir=None):
+    lock = SingleInstanceLock(name=name, lock_dir=lock_dir)
+    return lock if lock.acquire() else None
+
+
+def shutdown_task_services(timeout=5):
+    for service in (space_archive_service, video_parse_service, archive_delete_service):
+        queue = getattr(service, "queue", None) if service is not None else None
+        if queue is None:
+            continue
+        try:
+            queue.shutdown(timeout=timeout)
+        except Exception as exc:
+            log_exception("task.queue.shutdown_error", str(exc), kind=getattr(queue, "kind", ""))
+
+
 def validate_bind_host(host):
     """Refuse to expose this unauthenticated local tool on anything but the loopback."""
     normalized = str(host or "").strip().lower()
     if not normalized:
         return "127.0.0.1"
+    try:
+        ensure_ipv4_bind_host(normalized)
+    except ValueError as exc:
+        raise SystemExit(f"拒绝绑定 {host}：{exc}。") from exc
     if normalized in LOCAL_HOSTNAMES:
         return normalized
     raise SystemExit(
-        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具，只允许 127.0.0.1 / localhost / ::1。"
+        f"拒绝绑定 {host}：这是只做本机防护、没有鉴权的工具，只允许 127.0.0.1 或 localhost。"
     )
 
 
@@ -1570,6 +1805,12 @@ def main():
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
     validate_bind_host(args.host)
+    # Keep the fallback lock next to the data it protects: %TEMP% is per-user, so two accounts
+    # could otherwise start two servers over the same data/ directory.
+    instance_lock = acquire_single_instance_lock(name=single_instance_name(ROOT), lock_dir=ROOT / "data")
+    if instance_lock is None:
+        safe_print("已经有一个 Bilibili 评论/弹幕归档工具实例在运行；本次启动已退出。")
+        raise SystemExit(0)
     configure_logging(
         args.log_dir,
         max_bytes=args.log_max_bytes,
@@ -1623,8 +1864,10 @@ def main():
         log_event("service.stop", "service stopped by keyboard interrupt")
         raise
     finally:
+        shutdown_task_services()
         server.server_close()
         shutdown_logging()
+        instance_lock.release()
 
 
 if __name__ == "__main__":

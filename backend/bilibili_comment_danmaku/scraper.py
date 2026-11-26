@@ -50,6 +50,8 @@ REQUEST_INTERVAL_JITTER_SECONDS = (0.05, 0.45)
 CHILD_REQUEST_SPACING_FACTOR = 0.65
 MAX_CHILD_PAGES = 500
 MAX_CHILD_PAGES_WITHOUT_GROWTH = 3
+MAX_MAIN_PAGES = 2000
+MAX_MAIN_PAGES_WITHOUT_GROWTH = 3
 SLOW_REQUEST_WARN_SECONDS = 12
 VERY_SLOW_REQUEST_SECONDS = 60
 VERY_SLOW_REQUEST_COOLDOWN_SECONDS = (30, 90)
@@ -141,6 +143,117 @@ def default_backoff_state_path():
     if configured:
         return Path(configured)
     return paths.state_file("bilibili_backoff_state.json")
+
+
+def _backoff_lock_path(state_path):
+    return Path(state_path).with_name(f"{Path(state_path).name}.lock")
+
+
+def _read_backoff_state_file(state_path):
+    """读磁盘上的退避状态；文件损坏或过期时按空状态处理。"""
+    try:
+        payload = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    try:
+        updated_at = float(payload.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if updated_at and time.time() - updated_at > BACKOFF_STATE_MAX_AGE_SECONDS:
+        return {}
+    return payload
+
+
+def _merge_backoff_blocked_until(payload, disk_state):
+    """跨进程合并：磁盘上更晚的 blocked_until 不能被后写的进程改小。"""
+    def as_epoch(value):
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    payload["blocked_until"] = max(as_epoch(payload.get("blocked_until")), as_epoch(disk_state.get("blocked_until")))
+
+
+def _acquire_backoff_state_lock(state_path):
+    """拿进程间文件锁，返回 (handle, locked)；拿不到锁也不阻塞保存。"""
+    state_path = Path(state_path)
+    handle = None
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(_backoff_lock_path(state_path), "a+b")
+        # msvcrt.locking 锁的是字节区间，空文件先补一个字节再锁。
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            for _ in range(50):
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    return handle, True
+                except OSError:
+                    time.sleep(0.02)
+            return handle, False
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle, True
+    except OSError:
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        return None, False
+
+
+def _release_backoff_state_lock(handle, locked):
+    if handle is None:
+        return
+    if locked:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
+def _write_backoff_state(state_path, payload):
+    """读改写：在文件锁内合并磁盘现值（blocked_until 取最大）后原子落盘。"""
+    state_path = Path(state_path)
+    lock_handle, locked = _acquire_backoff_state_lock(state_path)
+    temp_path = None
+    try:
+        _merge_backoff_blocked_until(payload, _read_backoff_state_file(state_path))
+        temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(state_path)
+        return True
+    except OSError:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        return False
+    finally:
+        _release_backoff_state_lock(lock_handle, locked)
 
 
 class RequestBackoff:
@@ -323,15 +436,11 @@ class RequestBackoff:
             "last_slow_limit_at": max(monotonic_to_epoch(self.last_slow_limit_at), 0),
             "fast_request_count": self.fast_request_count,
         }
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self.state_path.with_name(
-                f"{self.state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            temp_path.replace(self.state_path)
-        except OSError:
+        if _write_backoff_state(self.state_path, payload):
             return
+        # 落盘失败（Windows 换名/锁冲突等）：重新读磁盘合并后只重试一次。
+        _merge_backoff_blocked_until(payload, _read_backoff_state_file(self.state_path))
+        _write_backoff_state(self.state_path, payload)
 
 
 GLOBAL_REQUEST_BACKOFF = RequestBackoff()
@@ -443,6 +552,10 @@ class BilibiliClient:
                         f"cooling down for {delay:.0f}s before retry (attempt {attempt}/{retries})"
                     )
                 sleep_interruptible(delay, self.stop_checker)
+            except ScrapeCancelled:
+                # The user asked to stop while waiting for a cooldown; never turn that into a
+                # generic request failure, or the UI shows a 500 instead of a clean stop.
+                raise
             except Exception as exc:
                 if request_elapsed == 0 and "started_at" in locals():
                     request_elapsed = time.perf_counter() - started_at
@@ -497,25 +610,48 @@ class BilibiliClient:
                 return
 
 
+COOKIE_DOMAIN = "bilibili.com"
+HTTPONLY_LINE_PREFIX = "#HttpOnly_"
+
+
+def cookie_header_from_text(text):
+    """Normalize a Netscape cookie export or a plain `k=v; k=v` header into one header string.
+
+    Browser extensions write HttpOnly cookies (SESSDATA and friends) as `#HttpOnly_<domain>`
+    lines inside the Netscape file. Those lines are real cookies, not comments, so the prefix
+    is removed before parsing; skipping every `#` line silently dropped the login cookie.
+    """
+    netscape_cookies = []
+    plain_parts = []
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(HTTPONLY_LINE_PREFIX):
+            line = line[len(HTTPONLY_LINE_PREFIX) :]
+        elif line.startswith("#"):
+            continue
+        columns = line.split("\t")
+        if len(columns) >= 7:
+            domain = columns[0].strip().lstrip(".").lower()
+            if domain == COOKIE_DOMAIN or domain.endswith("." + COOKIE_DOMAIN):
+                if columns[5]:
+                    netscape_cookies.append(f"{columns[5]}={columns[6]}")
+            continue
+        # A pasted header often keeps the `Cookie:` prefix browsers show in devtools.
+        if line.lower().startswith("cookie:"):
+            line = line.split(":", 1)[1].strip()
+        plain_parts.extend(part.strip() for part in line.split(";") if part.strip())
+
+    if netscape_cookies:
+        return "; ".join(netscape_cookies)
+    return "; ".join(plain_parts)
+
+
 def load_cookie_file(path):
     if not path or not Path(path).exists():
         return ""
-    text = Path(path).read_text(encoding="utf-8", errors="ignore").strip()
-    if not text:
-        return ""
-
-    cookies = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        columns = line.split("\t")
-        if len(columns) >= 7 and "bilibili.com" in columns[0]:
-            cookies.append(f"{columns[5]}={columns[6]}")
-
-    if cookies:
-        return "; ".join(cookies)
-    return text.replace("\r", "").replace("\n", "; ")
+    return cookie_header_from_text(Path(path).read_text(encoding="utf-8", errors="ignore"))
 
 
 def inspect_cookie_status(path, *, check_remote=True):
@@ -732,6 +868,9 @@ def retry_delay_seconds(attempt, status=None, api_code=None):
     return min(2 * attempt, 8)
 
 
+MAX_RETRY_AFTER_SECONDS = 300
+
+
 def retry_after_seconds(error):
     headers = getattr(error, "headers", None)
     if not headers:
@@ -740,7 +879,8 @@ def retry_after_seconds(error):
     if not value:
         return None
     try:
-        return max(int(value), 0)
+        # A bogus/hostile Retry-After must not park the client (and the queue) for a year.
+        return min(max(int(value), 0), MAX_RETRY_AFTER_SECONDS)
     except ValueError:
         return None
 
@@ -908,7 +1048,9 @@ def get_wbi_mixin_key(client, log, force_refresh=False):
     img_url = wbi_img.get("img_url")
     sub_url = wbi_img.get("sub_url")
     if not img_url or not sub_url:
-        raise RuntimeError(f"Could not get WBI image keys from nav API: code={nav_code} message={nav.get('message')}")
+        raise WbiSignatureUnavailableError(
+            f"Could not get WBI image keys from nav API: code={nav_code} message={nav.get('message')}"
+        )
 
     log(f"login: isLogin={data.get('isLogin')} nav_code={nav_code}")
     mixin_key = get_mixin_key(filename_stem(img_url), filename_stem(sub_url))
@@ -927,17 +1069,23 @@ def normalize_reply(reply, level):
     content = reply.get("content") or {}
     control = reply.get("reply_control") or {}
     # "123" and 123 both appear in the API; a missing id must stay NULL rather than the string
-    # "None", which would violate the users(mid) foreign key when the archive is written.
+    # "None": comments.rpid is a global primary key, so two videos missing the field would
+    # overwrite each other, and a NULL users(mid) keeps the foreign key happy.
     user_mid = reply.get("mid_str") or reply.get("mid")
+
+    def id_value(raw_key, str_key):
+        value = reply.get(str_key) or reply.get(raw_key)
+        return str(value) if value not in (None, "") else None
+
     return {
         "level": level,
-        "rpid": reply.get("rpid_str") or str(reply.get("rpid")),
-        "oid": reply.get("oid_str") or str(reply.get("oid")),
+        "rpid": id_value("rpid", "rpid_str"),
+        "oid": id_value("oid", "oid_str"),
         "type": reply.get("type"),
         "mid": str(user_mid) if user_mid not in (None, "") else None,
-        "root": reply.get("root_str") or str(reply.get("root")),
-        "parent": reply.get("parent_str") or str(reply.get("parent")),
-        "dialog": reply.get("dialog_str") or str(reply.get("dialog")),
+        "root": id_value("root", "root_str"),
+        "parent": id_value("parent", "parent_str"),
+        "dialog": id_value("dialog", "dialog_str"),
         "ctime": reply.get("ctime"),
         "time_iso": unix_to_iso(reply.get("ctime"), CHINA_TZ),
         "time_iso_utc": unix_to_iso(reply.get("ctime"), timezone.utc),
@@ -982,6 +1130,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_
     replies = []
     seen_rpids = set()
     seen_cursors = set()
+    stagnant_pages = 0
     next_cursor = 0
     page_index = 0
     api_comment_count = None
@@ -1019,6 +1168,7 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_
         cursor = data.get("cursor") or {}
         api_comment_count = cursor.get("all_count", api_comment_count)
 
+        previous_total = len(replies)
         for reply in page_replies:
             rpid = reply.get("rpid_str") or str(reply.get("rpid"))
             if rpid not in seen_rpids:
@@ -1032,6 +1182,17 @@ def fetch_main_replies(oid, client, mixin_key, delay, log, max_pages=None, stop_
 
         if isinstance(max_pages, int) and max_pages > 0 and page_index >= max_pages:
             log(f"main page limit reached: max_pages={max_pages} unique={len(replies)}")
+            break
+        if not page_replies:
+            log(f"main page {page_index} returned no comments; stop paging")
+            break
+        stagnant_pages = 0 if len(replies) > previous_total else stagnant_pages + 1
+        if stagnant_pages >= MAX_MAIN_PAGES_WITHOUT_GROWTH:
+            # A cursor that keeps advancing while returning only duplicates must not page forever.
+            log(f"main page {page_index}: {stagnant_pages} pages without new comments; stop paging")
+            break
+        if page_index >= MAX_MAIN_PAGES:
+            log(f"main page cap reached: max_pages={MAX_MAIN_PAGES} unique={len(replies)}")
             break
         if cursor.get("is_end"):
             break
@@ -1407,6 +1568,7 @@ def scrape_comments_to_sqlite(
     logger=None,
     max_main_pages=None,
     fetch_children=True,
+    force=False,
 ):
     output_data = scrape_comments(
         video_ref,
@@ -1418,4 +1580,6 @@ def scrape_comments_to_sqlite(
         max_main_pages=max_main_pages,
         fetch_children=fetch_children,
     )
-    return save_comments_to_sqlite(output_data, db_path)
+    # Public helper: keep the documented shrink guard unless the caller explicitly forces a
+    # small result over the stored archive.
+    return save_comments_to_sqlite(output_data, db_path, guard_shrink=True, force=force)

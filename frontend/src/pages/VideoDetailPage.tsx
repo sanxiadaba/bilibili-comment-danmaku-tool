@@ -21,7 +21,7 @@ import {
   Users,
 } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { fetchCommentData,refreshCommentData, stopRunningTask } from "../api/client";
+import { fetchCommentData, refreshCommentData, stopRunningTask } from "../api/client";
 import { AuthorList, LocationChart, TimeChart } from "../components/comments/CommentCharts";
 import { DeletedBadge } from "../components/comments/CommentBadges";
 import { CommentDetail } from "../components/comments/CommentDetail";
@@ -37,15 +37,17 @@ import { useProgressPolling } from "../hooks/useProgressPolling";
 import { csvCell } from "../lib/csv";
 import { dbPath } from "../lib/videoLibrary";
 import {
+  bucketGranularity,
   cn,
+  coarsenBuckets,
   filterComments,
   flattenThread,
   formatFullDateTime,
   formatNumber,
-  coarsenBuckets,
   getCommentAuthor,
   getCommentAvatar,
   getMaxLike,
+  HOUR_BUCKET_LIMIT,
   hourlyBuckets,
   locationBuckets,
   normalizeImageUrl,
@@ -56,6 +58,26 @@ import {
 import type { CommentData, CommentNode, LevelFilter, SortMode } from "../types";
 
 const COMMENT_PAGE_SIZE = 500;
+const EXPORT_BATCH_SIZE = 2000;
+
+function getCommentKey(comment: CommentNode) {
+  return comment.normalized.rpid;
+}
+
+function isAbortError(reason: unknown) {
+  return reason instanceof DOMException && reason.name === "AbortError";
+}
+
+/** Yield between CSV batches so a 50k-row export does not block the main thread. */
+function yieldToMainThread() {
+  return new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+}
 
 export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const dbId = useMemo(() => new URLSearchParams(window.location.search).get("db_id") || "main", []);
@@ -71,8 +93,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   const [minLikes, setMinLikes] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
   const loadAbortRef = useRef<AbortController | null>(null);
+  const refreshAbortRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef(0);
   const deferredQuery = useDeferredValue(query);
   const commentProgress = useProgressPolling(isRefreshing, "comments");
@@ -108,15 +132,20 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }, []);
 
   const refreshComments = useCallback(async () => {
-    requestSeqRef.current += 1;
     loadAbortRef.current?.abort();
     loadMoreAbortRef.current?.abort();
+    refreshAbortRef.current?.abort();
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
+    const seq = ++requestSeqRef.current;
     setIsRefreshing(true);
     setError("");
     setRefreshMessage("正在重新抓取评论，评论较多时可能需要几十秒");
     try {
-      const payload = await refreshCommentData(data?.metadata.bvid || bvid, dbId);
-      applyPayload(payload);
+      const payload = await refreshCommentData(data?.metadata.bvid || bvid, dbId, { signal: controller.signal });
+      if (seq !== requestSeqRef.current || controller.signal.aborted) return;
+      // A stopped/skipped refresh returns the first local page; applying it would silently
+      // truncate the rows the user already loaded.
       if (payload.refresh?.stopped) {
         setRefreshMessage(payload.refresh.reason || "已停止抓取，本地档案未改动");
         return;
@@ -125,6 +154,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
         setRefreshMessage(payload.refresh.reason || "远端返回数量异常，已保留本地档案");
         return;
       }
+      applyPayload(payload);
       const added = payload.refresh?.added_count ?? 0;
       const after = payload.refresh?.after_count ?? payload.metadata.comment_total_count;
       const active = payload.refresh?.active_count ?? payload.metadata.active_comment_count ?? after;
@@ -139,10 +169,15 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
         );
       }
     } catch (reason: unknown) {
+      if (isAbortError(reason) || controller.signal.aborted) return;
+      if (seq !== requestSeqRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
       setRefreshMessage("");
     } finally {
-      setIsRefreshing(false);
+      if (refreshAbortRef.current === controller) {
+        refreshAbortRef.current = null;
+        setIsRefreshing(false);
+      }
     }
   }, [applyPayload, bvid, data?.metadata.bvid, dbId]);
 
@@ -158,7 +193,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       applyPayload(payload);
       setRefreshMessage("");
     } catch (reason: unknown) {
-      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (isAbortError(reason)) return;
       if (seq !== requestSeqRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -168,6 +203,8 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     void loadComments();
     return () => {
       loadAbortRef.current?.abort();
+      loadMoreAbortRef.current?.abort();
+      refreshAbortRef.current?.abort();
     };
   }, [loadComments]);
 
@@ -189,7 +226,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
       if (seq !== requestSeqRef.current) return;
       applyPayload(payload, "append");
     } catch (reason: unknown) {
-      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (isAbortError(reason)) return;
       if (seq !== requestSeqRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -207,8 +244,18 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     () => sortComments(filterComments(allComments, deferredQuery, levelFilter, location, minLikes), sortMode),
     [allComments, deferredQuery, levelFilter, location, minLikes, sortMode],
   );
-  const hourly = useMemo(() => coarsenBuckets(hourlyBuckets(allComments)), [allComments]);
-  const filteredHourly = useMemo(() => coarsenBuckets(hourlyBuckets(filteredComments)), [filteredComments]);
+  const rawHourly = useMemo(() => hourlyBuckets(allComments), [allComments]);
+  // The filtered chart must use the all-buckets granularity, otherwise one chart can be hourly
+  // while the other is daily and the bars no longer line up.
+  const hourlyGranularity = bucketGranularity(rawHourly.length);
+  const hourly = useMemo(
+    () => coarsenBuckets(rawHourly, HOUR_BUCKET_LIMIT, hourlyGranularity),
+    [hourlyGranularity, rawHourly],
+  );
+  const filteredHourly = useMemo(
+    () => coarsenBuckets(hourlyBuckets(filteredComments), HOUR_BUCKET_LIMIT, hourlyGranularity),
+    [filteredComments, hourlyGranularity],
+  );
   const authors = useMemo(() => topAuthors(allComments).slice(0, 6), [allComments]);
   const likedComments = useMemo(() => topLiked(allComments), [allComments]);
   const maxLike = useMemo(() => getMaxLike(allComments), [allComments]);
@@ -226,14 +273,25 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
   }, [topLevelComments]);
 
   const selectedComment =
-    (selectedId && idToComment.get(selectedId)) || filteredComments[0] || allComments[0] || null;
+    filteredComments.length === 0
+      ? null
+      : (selectedId && idToComment.get(selectedId)) || filteredComments[0] || null;
   const selectedThread =
     selectedComment?.normalized.level === 1
       ? idToThread.get(selectedComment.normalized.rpid)
       : idToThread.get(selectedComment?.normalized.root || "");
 
-  const peakHour = [...hourly].sort((a, b) => b.count - a.count)[0];
-  const totalLikes = allComments.reduce((sum, comment) => sum + (comment.normalized.like || 0), 0);
+  const peakHour = useMemo(() => {
+    let best = hourly[0];
+    for (const bucket of hourly) {
+      if (!best || bucket.count > best.count) best = bucket;
+    }
+    return best;
+  }, [hourly]);
+  const totalLikes = useMemo(
+    () => allComments.reduce((sum, comment) => sum + (comment.normalized.like || 0), 0),
+    [allComments],
+  );
   const activeThreadItems = selectedThread ? flattenThread(selectedThread) : [];
   function resetFilters() {
     setQuery("");
@@ -243,46 +301,61 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
     setMinLikes(0);
   }
 
-  function exportFiltered() {
-    const header = [
-      "level",
-      "rpid",
-      "root",
-      "parent",
-      "ctime",
-      "time_iso",
-      "like",
-      "rcount",
-      "ip_location",
-      "mid",
-      "uname",
-      "message",
-    ];
-    const rows = filteredComments.map((comment) => {
-      const item = comment.normalized;
-      return [
-        item.level,
-        item.rpid,
-        item.root,
-        item.parent,
-        item.ctime,
-        item.time_iso,
-        item.like,
-        item.rcount,
-        item.ip_location,
-        item.mid,
-        item.user?.uname,
-        item.message,
+  async function exportFiltered() {
+    if (isExporting) return;
+    setIsExporting(true);
+    setError("");
+    try {
+      const exportBvid = data?.metadata.bvid || "bilibili";
+      const header = [
+        "level",
+        "rpid",
+        "root",
+        "parent",
+        "ctime",
+        "time_iso",
+        "like",
+        "rcount",
+        "ip_location",
+        "mid",
+        "uname",
+        "message",
       ];
-    });
-    const csv = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
-    const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `filtered-comments-${data?.metadata.bvid || "bilibili"}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+      const lines = [header.map(csvCell).join(",")];
+      for (let index = 0; index < filteredComments.length; index += 1) {
+        const item = filteredComments[index].normalized;
+        lines.push(
+          [
+            item.level,
+            item.rpid,
+            item.root,
+            item.parent,
+            item.ctime,
+            item.time_iso,
+            item.like,
+            item.rcount,
+            item.ip_location,
+            item.mid,
+            item.user?.uname,
+            item.message,
+          ]
+            .map(csvCell)
+            .join(","),
+        );
+        if ((index + 1) % EXPORT_BATCH_SIZE === 0) await yieldToMainThread();
+      }
+      const blob = new Blob([`\ufeff${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `filtered-comments-${exportBvid}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setIsExporting(false);
+    }
   }
 
   if (error && !data) {
@@ -463,12 +536,13 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                 重置
               </button>
               <button
-                className="btn-quiet inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted"
+                className="btn-quiet inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted disabled:opacity-60"
                 type="button"
-                onClick={exportFiltered}
+                onClick={() => void exportFiltered()}
+                disabled={isExporting}
               >
                 <Download size={15} aria-hidden="true" />
-                导出
+                {isExporting ? "导出中" : "导出"}
               </button>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -502,6 +576,10 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
                 </select>
               </label>
             </div>
+            <p className="mt-3 text-xs leading-5 text-muted">
+              排序/筛选仅覆盖已加载的 {formatNumber(allComments.length)} 条（档案共{" "}
+              {formatNumber(data.metadata.comment_total_count)} 条）
+            </p>
             <label className="mt-3 block text-sm text-muted">
               <span className="mb-2 flex items-center justify-between">
                 <span className="inline-flex items-center gap-2">
@@ -533,7 +611,7 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
             empty={<div className="p-6 text-center text-sm text-muted">没有匹配的评论</div>}
             estimateSize={124}
-            getKey={(comment) => comment.normalized.rpid}
+            getKey={getCommentKey}
             items={filteredComments}
             renderItem={(comment) => (
               <CommentRow
@@ -620,7 +698,9 @@ export function VideoDetailPage({ bvid }: { bvid?: string }) {
               onSelect={(id) => setSelectedId(id)}
             />
           ) : (
-            <div className="p-6 text-sm text-muted">暂无选中评论</div>
+            <div className="p-6 text-sm text-muted">
+              {allComments.length > 0 ? "没有匹配的评论" : "暂无选中评论"}
+            </div>
           )}
         </aside>
       </section>

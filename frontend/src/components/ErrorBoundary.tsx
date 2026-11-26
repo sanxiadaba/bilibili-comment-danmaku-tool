@@ -24,6 +24,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   private reset = () => {
+    // A deterministic render error (bad payload shape) throws again on the next render, so a
+    // state reset alone only flickers the error page. Reload the app instead; the data layer
+    // then refetches from the local backend.
+    if (typeof window !== "undefined") {
+      window.location.reload();
+      return;
+    }
     this.setState({ error: null });
   };
 
@@ -45,7 +52,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           </pre>
           <div className="mt-4 flex gap-2">
             <button className="btn-primary h-10 rounded-md px-4 text-sm font-medium" type="button" onClick={this.reset}>
-              重试
+              重新加载
             </button>
             <button className="btn-quiet h-10 rounded-md px-4 text-sm font-medium" type="button" onClick={this.goHome}>
               返回视频库

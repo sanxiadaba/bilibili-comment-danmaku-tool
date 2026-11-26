@@ -5,11 +5,11 @@ import time
 
 from app_logging import log_event, log_exception
 from bilibili_comment_danmaku import delete_owner_from_sqlite, delete_videos_from_sqlite
+from progress_state import fail_progress, finish_progress, start_progress, update_progress
 from space_archive import TaskCancelled
 from task_queue import InMemoryTaskQueue
 
 PAUSE_POLL_SECONDS = 0.2
-MAX_PAUSE_SECONDS = 3600.0
 
 
 def utc_now():
@@ -50,6 +50,9 @@ class ArchiveDeleteTaskService:
     def can_retry_task(self, task):
         return bool(task.get("db_path") and (task.get("owner_mid") or task.get("bvids")))
 
+    def progress_target(self, task):
+        return str(task.get("bvid") or task.get("owner_ref") or task.get("id") or "")
+
     def run_queue_task(self, task):
         if task.get("stop_requested"):
             self.queue.update(
@@ -82,6 +85,7 @@ class ArchiveDeleteTaskService:
                 )
                 return
             self.queue.update(task, status="running", message="正在删除本地档案", progress=12)
+            start_progress("delete", self.progress_target(task), "正在删除本地档案")
             self.run_delete_task(task)
         finally:
             self.refresh_lock.release()
@@ -102,6 +106,7 @@ class ArchiveDeleteTaskService:
                 bvid_count=len(bvids),
             )
             self.queue.update(task, message="正在删除评论、弹幕和视频记录", progress=35)
+            update_progress("delete", self.progress_target(task), "正在删除评论、弹幕和视频记录")
             progress = self.delete_progress_callback(task)
             result = (
                 delete_owner_from_sqlite(db_path, owner_mid, vacuum=False, progress_callback=progress)
@@ -111,10 +116,11 @@ class ArchiveDeleteTaskService:
             deleted_videos = result.get("deleted_videos", 0)
             deleted_bvids = result.get("deleted_bvids") or []
             counts = result.get("counts") or {}
+            message = f"已删除 {deleted_videos} 个视频"
             self.queue.update(
                 task,
                 status="finished",
-                message=f"已删除 {deleted_videos} 个视频",
+                message=message,
                 finished_at=utc_now(),
                 total=deleted_videos or len(bvids),
                 complete=deleted_videos,
@@ -126,6 +132,7 @@ class ArchiveDeleteTaskService:
                 pause_requested=False,
                 stop_requested=False,
             )
+            finish_progress("delete", self.progress_target(task), message)
             log_event(
                 "task.archive_delete.finish",
                 "archive delete task finished",
@@ -144,14 +151,16 @@ class ArchiveDeleteTaskService:
             if self.vacuum_scheduler:
                 self.vacuum_scheduler(db_path, request_id)
         except TaskCancelled:
+            message = "删除任务已停止，已删除的部分可重新发起删除完成"
             self.queue.update(
                 task,
                 status="stopped",
-                message="删除任务已停止，已删除的部分可重新发起删除完成",
+                message=message,
                 finished_at=utc_now(),
                 pause_requested=False,
                 stop_requested=False,
             )
+            finish_progress("delete", self.progress_target(task), message)
             log_event(
                 "task.archive_delete.cancelled",
                 "archive delete task stopped by user",
@@ -159,6 +168,38 @@ class ArchiveDeleteTaskService:
                 task_id=task.get("id", ""),
                 db=str(db_path),
                 owner_mid=owner_mid,
+            )
+        except LookupError as exc:
+            # The previous attempt already committed the last batch (or another path removed
+            # the rows), so nothing is left to delete: that is success, not a failure.
+            # Retrying a finished delete used to land here and be reported as failed.
+            message = "目标已不存在，删除视为已完成"
+            target_total = len(bvids) or (1 if owner_mid else 0)
+            self.queue.update(
+                task,
+                status="finished",
+                message=message,
+                finished_at=utc_now(),
+                total=target_total,
+                complete=0,
+                archived=0,
+                skipped=target_total,
+                failed=0,
+                progress=100,
+                pause_requested=False,
+                stop_requested=False,
+            )
+            finish_progress("delete", self.progress_target(task), message)
+            log_event(
+                "task.archive_delete.already_gone",
+                "delete target no longer exists; treated as finished",
+                request_id=request_id,
+                task_id=task.get("id", ""),
+                db=str(db_path),
+                owner_mid=owner_mid,
+                bvid_count=len(bvids),
+                reason=str(exc),
+                level="warning",
             )
         except Exception as exc:
             self.queue.update(
@@ -170,6 +211,7 @@ class ArchiveDeleteTaskService:
                 pause_requested=False,
                 stop_requested=False,
             )
+            fail_progress("delete", self.progress_target(task), str(exc))
             log_exception(
                 "task.archive_delete.error",
                 str(exc),
@@ -186,41 +228,37 @@ class ArchiveDeleteTaskService:
             "danmaku": "正在分批删除弹幕",
             "videos": "正在删除视频记录",
         }
-        state = {"paused_for": 0.0}
 
         def progress(payload):
-            self.wait_while_paused(task, state)
+            self.wait_while_paused(task)
             if task.get("stop_requested"):
                 raise TaskCancelled("stop")
             stage = payload.get("stage", "delete")
             chunks = int(payload.get("chunks") or 0)
             wal_peak = int(payload.get("wal_peak") or 0)
             wal_after = int(payload.get("wal_after") or 0)
+            message = f"{labels.get(stage, '正在删除')}，已处理 {chunks} 批，WAL 峰值 {format_bytes(wal_peak)}，当前 {format_bytes(wal_after)}"
             self.queue.update(
                 task,
-                message=f"{labels.get(stage, '正在删除')}，已处理 {chunks} 批，WAL 峰值 {format_bytes(wal_peak)}，当前 {format_bytes(wal_after)}",
+                message=message,
                 progress=min(92, 35 + chunks),
             )
+            update_progress("delete", self.progress_target(task), message)
 
         return progress
 
-    def wait_while_paused(self, task, state):
-        """Pause between delete batches instead of ignoring the request.
+    def wait_while_paused(self, task):
+        """Pause between delete batches until the user resumes or stops.
 
-        The wait is bounded so a forgotten pause cannot block the archive lock forever.
+        Deleting is destructive, so unlike archiving it never resumes itself after a
+        timeout: a forgotten pause keeps waiting (the user can still resume or stop).
         """
         if not task.get("pause_requested"):
-            state["paused_for"] = 0.0
             return
         self.queue.update(task, status="paused", message="删除任务已暂停，等待继续")
         while task.get("pause_requested") and not task.get("stop_requested"):
-            if state["paused_for"] >= MAX_PAUSE_SECONDS:
-                self.queue.update(task, status="running", message="暂停超时，删除任务已自动继续")
-                break
             time.sleep(PAUSE_POLL_SECONDS)
-            state["paused_for"] += PAUSE_POLL_SECONDS
-        else:
-            state["paused_for"] = 0.0
+        if not task.get("stop_requested"):
             self.queue.update(task, status="running", message="正在删除本地档案")
 
 

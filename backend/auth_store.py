@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from pathlib import Path
 
-from bilibili_comment_danmaku.scraper import inspect_cookie_status, load_cookie_file
+from app_logging import log_event
+from bilibili_comment_danmaku.scraper import cookie_header_from_text, inspect_cookie_status, load_cookie_file
 
 
 QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
@@ -68,13 +69,24 @@ class CookieStore:
         cookie = normalize_cookie_text(raw_cookie)
         if not cookie:
             raise ValueError("Cookie 内容为空")
-        self.backup_existing()
+        _backup_path, backup_error = self.backup_existing()
         self.cookie_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.cookie_path.with_name(f"{self.cookie_path.name}.{secrets.token_hex(4)}.tmp")
         temp_path.write_text(cookie + "\n", encoding="utf-8")
         temp_path.replace(self.cookie_path)
         self._remote_cache = (0.0, None)
-        return self.status(check_remote=True)
+        status = self.status(check_remote=True)
+        if backup_error:
+            # 备份失败不能阻断用户换 Cookie，但必须让界面/日志知道旧 Cookie 没有留底。
+            status["backup_warning"] = f"旧 Cookie 备份失败，已继续保存新 Cookie：{backup_error}"
+            log_event(
+                "auth.cookie.backup_failed",
+                "旧 Cookie 备份失败，已继续覆盖",
+                level="warning",
+                cookie_path=str(self.cookie_path),
+                error=backup_error,
+            )
+        return status
 
     def clear(self):
         # Explicit logout must actually remove the credential; keeping a plaintext backup of the
@@ -87,18 +99,22 @@ class CookieStore:
         return self.status(check_remote=False)
 
     def backup_existing(self):
-        """Back up a cookie before it is replaced (never used when clearing)."""
+        """Back up a cookie before it is replaced (never used when clearing).
+
+        返回 ``(backup_path, error)``：没有旧 Cookie 或备份成功时 error 为空串；
+        备份失败时 backup_path 为 None，让调用方决定是否继续而不是静默覆盖。
+        """
         if not self.cookie_path.exists():
-            return None
+            return None, ""
         try:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             backup_path = self.backup_dir / f"cookie-{timestamp}-{secrets.token_hex(3)}.txt"
             backup_path.write_text(self.cookie_path.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
             prune_cookie_backups(self.backup_dir)
-            return backup_path
-        except OSError:
-            return None
+            return backup_path, ""
+        except OSError as exc:
+            return None, str(exc)
 
 
 COOKIE_BACKUP_LIMIT = 5
@@ -198,20 +214,8 @@ class BilibiliQrLoginService:
 
 
 def normalize_cookie_text(raw_cookie):
-    text = str(raw_cookie or "").strip()
-    if not text:
-        return ""
-    cookies = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        columns = line.split("\t")
-        if len(columns) >= 7 and columns[5] and "bilibili.com" in columns[0]:
-            cookies.append(f"{columns[5]}={columns[6]}")
-        elif "=" in line and "\t" not in line:
-            cookies.append(line.rstrip(";"))
-    return "; ".join(cookies).replace("\r", "").strip()
+    """Accept a pasted header or a browser cookie export, including HttpOnly lines."""
+    return cookie_header_from_text(str(raw_cookie or "")).strip()
 
 
 def request_json_with_cookies(url, timeout=10):

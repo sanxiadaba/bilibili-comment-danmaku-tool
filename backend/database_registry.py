@@ -1,7 +1,9 @@
 """数据库目录：解析 db_id、扫描 catalog、聚合视频列表、导入/导出路径。"""
 
+import os
 import re
-import shutil
+import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ from bilibili_comment_danmaku.storage import (
     connect_readonly,
     ensure_schema_if_needed,
     list_video_summaries_page,
+    schema_is_current,
 )
 from errors import BadRequestError
 
@@ -19,7 +22,9 @@ from errors import BadRequestError
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "data" / "comment_danmaku.db"
 DEFAULT_DATABASE_DIR = ROOT / "data" / "databases"
-DEFAULT_EXPORT_DIR = DEFAULT_DATABASE_DIR
+# 导出目录必须和扫描根分开：导出副本落在 data/databases 下会被 catalog 当成一份新档案，
+# 聚合视图里同一个视频因此出现两次，导出文件也会被 find_video_database_path 抢走。
+DEFAULT_EXPORT_DIR = ROOT / "data" / "exports"
 DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 IMPORT_EXTENSIONS = DATABASE_EXTENSIONS | {".json"}
 
@@ -83,16 +88,74 @@ def video_database_path_from_archive(archive, database_dir=DEFAULT_DATABASE_DIR)
     )
 
 
-def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
-    filename = video_database_filename(bvid)
+def iter_database_files(database_dir, filename=None):
+    """Yield .db-style files under database_dir without following junctions or symlinks.
+
+    A junction inside data/databases used to be scanned as if it were part of the archive, so a
+    file outside the tree was listed as a hot-plug database (and migrated/refreshed in place).
+    """
     database_dir = Path(database_dir).resolve()
     if not database_dir.exists():
+        return
+    # 导出目录如果被配置到扫描根里面，它的副本不是归档，不能参与 catalog 和查找。
+    export_dir = _current_export_dir()
+    exclude_export = export_dir != database_dir and is_path_inside(export_dir, database_dir)
+    wanted = filename.lower() if filename else None
+    for root, dirs, files in os.walk(database_dir):
+        kept = []
+        for name in sorted(dirs):
+            candidate = Path(root) / name
+            if candidate.is_symlink():
+                continue
+            if hasattr(os.path, "isjunction") and os.path.isjunction(candidate):
+                continue
+            kept.append(name)
+        dirs[:] = kept
+        for name in sorted(files):
+            if wanted is not None and name.lower() != wanted:
+                continue
+            path = Path(root) / name
+            if path.suffix.lower() not in DATABASE_EXTENSIONS:
+                continue
+            if path.is_symlink():
+                continue
+            resolved = path.resolve()
+            if not is_path_inside(resolved, database_dir):
+                continue
+            if exclude_export and is_path_inside(resolved, export_dir):
+                continue
+            yield resolved, f"db:{resolved.relative_to(database_dir).as_posix()}"
+
+
+def _current_export_dir():
+    """读取当前导出目录；测试可以替换 DEFAULT_EXPORT_DIR 而不必重载模块。"""
+    try:
+        return Path(DEFAULT_EXPORT_DIR).resolve()
+    except OSError:
+        return Path(DEFAULT_EXPORT_DIR)
+
+
+def newest_database_path(matches):
+    """Pick the most recently written database among duplicate archive copies."""
+    candidates = []
+    for item in matches or []:
+        path = Path(item)
+        try:
+            if not path.is_file():
+                continue
+            candidates.append((path.stat().st_mtime_ns, path.resolve()))
+        except OSError:
+            continue
+    if not candidates:
         return None
-    matches = sorted(database_dir.rglob(filename), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
-    for match in matches:
-        if match.is_file() and match.suffix.lower() in DATABASE_EXTENSIONS:
-            return match.resolve()
-    return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
+    filename = video_database_filename(bvid)
+    matches = [path for path, _db_id in iter_database_files(database_dir, filename)]
+    return newest_database_path(matches)
 
 
 VIDEO_SOURCE_STAT_SQL = """
@@ -165,11 +228,15 @@ def video_database_sources(bvids, database_dir=DEFAULT_DATABASE_DIR, fallback_db
     grouped = {}
     missing = []
     legacy_only = []
+    # 一次扫描建好 {文件名小写: [路径]} 索引；按 bvid 逐个 find 会把整棵树走 N 遍。
+    file_index = {}
+    for path, _db_id in iter_database_files(database_dir):
+        file_index.setdefault(path.name.lower(), []).append(path)
     for raw in bvids or []:
         bvid = str(raw).strip()
         if not bvid:
             continue
-        path = find_video_database_path(bvid, database_dir)
+        path = newest_database_path(file_index.get(video_database_filename(bvid).lower(), ()))
         if path is None:
             legacy_only.append(bvid)
             continue
@@ -227,20 +294,25 @@ def database_id_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_DAT
 
 
 def iter_catalog_database_paths(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE_DIR):
-    database_dir = Path(database_dir).resolve()
-    if not database_dir.exists():
-        return
-    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
-        if path.is_file() and path.suffix.lower() in DATABASE_EXTENSIONS:
-            yield path.resolve(), f"db:{path.relative_to(database_dir).as_posix()}"
+    for path, db_id in iter_database_files(database_dir):
+        yield path, db_id
+
+
+def owner_key(owner_mid="", owner_name=""):
+    """UP 主 owner key 的唯一构造规则：有 mid 用 mid，否则用清洗后的名字。
+
+    storage.VIDEO_OWNER_KEY_SQL（SQL）和 owner_summaries_from_videos（Python）都必须走这里，
+    否则同一个「没有 mid、名字为空」的 UP 会同时出现 ``name:`` 和 ``name:Unknown`` 两组。
+    """
+    owner_mid = str(owner_mid or "").strip()
+    if owner_mid:
+        return f"mid:{owner_mid}"
+    return f"name:{str(owner_name or '').strip() or 'Unknown'}"
 
 
 def video_owner_key(video):
     """Mirror of storage.VIDEO_OWNER_KEY_SQL for videos that came from several databases."""
-    owner_mid = str(video.get("owner_mid") or "").strip()
-    if owner_mid:
-        return f"mid:{owner_mid}"
-    return f"name:{str(video.get('owner_name') or '').strip() or 'Unknown'}"
+    return owner_key(video.get("owner_mid"), video.get("owner_name"))
 
 
 def video_matches_filters(video, query="", owner_key=""):
@@ -257,6 +329,89 @@ def video_matches_filters(video, query="", owner_key=""):
     return True
 
 
+# 聚合视频列表的进程内缓存：单库按 (mtime, size) 命中，目录签名变化时回收旧条目。
+# 每个请求都全量读所有库的视频是 P2-17 的开销来源；库文件没变就直接复用上一次的结果。
+VIDEO_SUMMARY_CACHE_LOCK = threading.Lock()
+_VIDEO_SUMMARY_CACHE = {}
+_SUMMARY_DIRECTORY_SIGNATURES = {}
+
+
+def database_file_token(path):
+    """缓存令牌：主库和 WAL/journal 的时间戳与大小都要看。
+
+    SQLite 的写入先落在 WAL 里，只比较主库 mtime 会把刚归档的视频当成旧缓存。
+    """
+    path = Path(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    token = [stat.st_mtime_ns, stat.st_size]
+    for suffix in ("-wal", "-journal"):
+        sidecar = path.with_name(f"{path.name}{suffix}")
+        try:
+            sidecar_stat = sidecar.stat()
+        except OSError:
+            token.extend([0, 0])
+        else:
+            # 只读连接也会建出 0 字节的 -wal/-shm；空的 sidecar 不代表数据变化。
+            if sidecar_stat.st_size > 0:
+                token.extend([sidecar_stat.st_mtime_ns, sidecar_stat.st_size])
+            else:
+                token.extend([0, 0])
+    return tuple(token)
+
+
+def _update_summary_directory_signature(database_dir, entries):
+    """目录签名（文件列表 + 每个库的令牌）一旦变化，就先清掉该目录下失效的缓存。"""
+    directory = str(Path(database_dir).resolve())
+    signature = tuple((db_id, token) for _path, db_id, token in entries)
+    current_paths = {str(Path(path).resolve()) for path, _db_id, _token in entries}
+    with VIDEO_SUMMARY_CACHE_LOCK:
+        if _SUMMARY_DIRECTORY_SIGNATURES.get(directory) == signature:
+            return
+        _SUMMARY_DIRECTORY_SIGNATURES[directory] = signature
+        stale_keys = [
+            key
+            for key in _VIDEO_SUMMARY_CACHE
+            if is_path_inside(key, directory) and key not in current_paths
+        ]
+        for key in stale_keys:
+            _VIDEO_SUMMARY_CACHE.pop(key, None)
+
+
+def _cached_database_videos(db_path, token=None):
+    """单库视频列表缓存；``token`` 由调用方传入，避免同一请求重复 stat。"""
+    key = str(Path(db_path).resolve())
+    if token is None:
+        token = database_file_token(db_path)
+    if token is not None:
+        with VIDEO_SUMMARY_CACHE_LOCK:
+            cached = _VIDEO_SUMMARY_CACHE.get(key)
+            if cached is not None and cached["token"] == token:
+                return cached["videos"]
+    # limit=None reads every video in the database; the per-request page size is applied
+    # after merging, otherwise large databases silently lose everything past row 200.
+    page = list_video_summaries_page(
+        db_path,
+        limit=None,
+        offset=0,
+        include_owners=False,
+    )
+    videos = list(page.get("videos") or [])
+    if token is not None:
+        with VIDEO_SUMMARY_CACHE_LOCK:
+            _VIDEO_SUMMARY_CACHE[key] = {"token": token, "videos": videos}
+    return videos
+
+
+def clear_video_summary_cache():
+    """清空聚合列表缓存（测试和需要强制重读的维护操作使用）。"""
+    with VIDEO_SUMMARY_CACHE_LOCK:
+        _VIDEO_SUMMARY_CACHE.clear()
+        _SUMMARY_DIRECTORY_SIGNATURES.clear()
+
+
 def list_all_video_summaries_page(
     main_db_path=DEFAULT_DB,
     database_dir=DEFAULT_DATABASE_DIR,
@@ -269,21 +424,22 @@ def list_all_video_summaries_page(
     limit = max(1, min(int(limit or 40), 200))
     offset = max(0, int(offset or 0))
     by_bvid = {}
+    failed_databases = []
+    entries = []
     for db_path, db_id in iter_catalog_database_paths(main_db_path, database_dir):
         if not Path(db_path).exists():
             continue
+        entries.append((db_path, db_id, database_file_token(db_path)))
+    _update_summary_directory_signature(database_dir, entries)
+    for db_path, db_id, token in entries:
         try:
-            # limit=None reads every video in the database; the per-request page size is applied
-            # after merging, otherwise large databases silently lose everything past row 200.
-            page = list_video_summaries_page(
-                db_path,
-                limit=None,
-                offset=0,
-                include_owners=False,
-            )
-        except Exception:
+            videos = _cached_database_videos(db_path, token)
+        except Exception as exc:
+            # Keep going, but never pretend the aggregate is complete: the empty/partial list
+            # used to look identical to "this database has no videos".
+            failed_databases.append({"id": db_id, "error": str(exc)})
             continue
-        for video in page.get("videos") or []:
+        for video in videos:
             item = {**video, "db_id": db_id}
             current = by_bvid.get(item["bvid"])
             if current is None or video_summary_rank(item, db_id) > video_summary_rank(current, current.get("db_id")):
@@ -300,6 +456,8 @@ def list_all_video_summaries_page(
         "limit": limit,
         "offset": offset,
         "has_more": offset + limit < total,
+        "failed_databases": failed_databases,
+        "complete": not failed_databases,
     }
     if include_owners:
         payload["owners"] = owner_summaries_from_videos(videos)
@@ -322,7 +480,7 @@ def owner_summaries_from_videos(videos):
     for video in videos:
         owner_mid = str(video.get("owner_mid") or "")
         owner_name = str(video.get("owner_name") or "")
-        key = f"mid:{owner_mid}" if owner_mid else f"name:{owner_name}"
+        key = owner_key(owner_mid, owner_name)
         current = owners.setdefault(
             key,
             {
@@ -350,23 +508,24 @@ def list_database_catalog(main_db_path=DEFAULT_DB, database_dir=DEFAULT_DATABASE
     databases = []
     seen = set()
 
-    for path in sorted(database_dir.rglob("*"), key=lambda item: str(item.relative_to(database_dir)).lower()):
-        if not path.is_file() or path.suffix.lower() not in DATABASE_EXTENSIONS:
-            continue
+    for path, db_id in iter_database_files(database_dir):
         resolved = path.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
-        databases.append(
-            database_info_for_path(
-                resolved,
-                main_db_path,
-                database_dir,
-                db_id=f"db:{path.relative_to(database_dir).as_posix()}",
-                role="hotplug",
-                include_details=include_details,
-            )
+        info = database_info_for_path(
+            resolved,
+            main_db_path,
+            database_dir,
+            db_id=db_id,
+            role="hotplug",
+            include_details=include_details,
         )
+        if not info.get("ok"):
+            # An unreadable archive must not look like a healthy one in the list.
+            info["coverage_status"] = "unreadable"
+            info["coverage_message"] = info.get("error") or "数据库无法读取"
+        databases.append(info)
     if include_details:
         annotate_database_coverage(databases)
     return [public_database_info(database) for database in databases]
@@ -420,6 +579,12 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
     if not path.exists():
         info["error"] = "文件不存在"
         return info
+    if include_details and path.stat().st_size == 0:
+        # Reading the catalog must not create a schema in an empty file; report it instead.
+        info["error"] = "空文件（0 字节），不是有效的归档库"
+        info["coverage_status"] = "unreadable"
+        info["coverage_message"] = info["error"]
+        return info
     try:
         conn = connect(path) if include_details else connect_readonly(path)
         try:
@@ -427,9 +592,24 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
                 ensure_schema_if_needed(conn)
                 conn.commit()
             archive_meta = read_archive_meta(conn)
+            if not include_details:
+                # 轻量模式只 stat + 单条 COUNT：聚合视图只需要 video_count，
+                # comment/danmaku/owner 全量计数和 bvid_stats/top_owners 都不查。
+                light_row = conn.execute("SELECT COUNT(*) FROM videos").fetchone()
+                info.update(
+                    {
+                        "video_count": int((light_row[0] if light_row else 0) or 0),
+                        "archive_kind": archive_kind_from_meta_or_stats(archive_meta, [], info["role"]),
+                        "archive_label": archive_label_from_meta_or_stats(archive_meta, [], path, db_id),
+                        "owner_mid": str(archive_meta.get("owner_mid") or ""),
+                        "owner_name": str(archive_meta.get("owner_name") or ""),
+                        "ok": True,
+                    }
+                )
+                return info
             storage = database_storage_info(conn, path)
             row = database_counts(conn)
-            bvid_rows = list_database_bvid_stats(conn) if include_details else list_database_bvid_stats_light(conn)
+            bvid_rows = list_database_bvid_stats(conn)
             bvid_stats = [
                 {
                     "bvid": item["bvid"],
@@ -442,7 +622,7 @@ def database_info_for_path(path, main_db_path=DEFAULT_DB, database_dir=DEFAULT_D
                 }
                 for item in bvid_rows
             ]
-            top_owners = list_database_top_owners(conn) if include_details else []
+            top_owners = list_database_top_owners(conn)
             archive_kind = archive_kind_from_meta_or_stats(archive_meta, bvid_stats, info["role"])
             info.update(
                 {
@@ -494,19 +674,6 @@ def list_database_bvid_stats(conn):
     ).fetchall()
 
 
-def list_database_bvid_stats_light(conn):
-    return conn.execute(
-        """
-        SELECT bvid, title, owner_mid, owner_name, fetched_at,
-               0 AS comment_count,
-               0 AS danmaku_count
-        FROM videos
-        ORDER BY fetched_at DESC, bvid
-        LIMIT 50
-        """
-    ).fetchall()
-
-
 def database_storage_info(conn, path):
     page_count = pragma_int(conn, "page_count")
     page_size = pragma_int(conn, "page_size")
@@ -536,7 +703,7 @@ def list_database_top_owners(conn, limit=6):
             SELECT
                 CASE
                     WHEN owner_mid IS NOT NULL AND owner_mid <> '' THEN 'mid:' || owner_mid
-                    ELSE 'name:' || COALESCE(owner_name, '')
+                    ELSE 'name:' || COALESCE(NULLIF(owner_name, ''), 'Unknown')
                 END AS owner_key,
                 COALESCE(owner_mid, '') AS owner_mid,
                 COALESCE(owner_name, '') AS owner_name,
@@ -684,6 +851,60 @@ def database_video_score(item):
     return int(item.get("comment_count") or 0) * 10 + int(item.get("danmaku_count") or 0)
 
 
+def inspect_importable_database(source_path):
+    """只读校验一个待导入的数据库，返回 ``(ok, needs_migration, error)``。
+
+    校验绝不能顺手迁移/改写源库：用户可能从只读目录或别的工具正在使用的文件导入。
+    旧 schema 只报告 ``needs_migration``，由调用方在副本上迁移。
+    """
+    path = Path(source_path)
+    if not path.exists() or not path.is_file():
+        return False, False, "导入文件不存在"
+    try:
+        if path.stat().st_size == 0:
+            return False, False, "空文件（0 字节），不是有效的归档库"
+    except OSError as exc:
+        return False, False, str(exc)
+    conn = None
+    try:
+        conn = connect_readonly(path)
+        if not schema_is_current(conn):
+            return True, True, ""
+        read_archive_meta(conn)
+        conn.execute("SELECT COUNT(*) FROM videos").fetchone()
+        return True, False, ""
+    except Exception as exc:
+        return False, False, str(exc)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def copy_database_file(source_path, target_path):
+    """用 SQLite backup 复制数据库，确保 WAL 里尚未 checkpoint 的数据也进入副本。"""
+    source_conn = connect_readonly(source_path)
+    target_conn = sqlite3.connect(target_path)
+    try:
+        source_conn.backup(target_conn)
+        target_conn.commit()
+    finally:
+        target_conn.close()
+        source_conn.close()
+
+
+def migrate_database_copy(db_path):
+    """迁移一个副本（调用方保证它不是用户的源文件）。"""
+    conn = connect(db_path)
+    try:
+        ensure_schema_if_needed(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def import_database_file(source_path, database_dir=DEFAULT_DATABASE_DIR):
     source_path = Path(source_path).expanduser().resolve()
     database_dir = Path(database_dir).resolve()
@@ -696,14 +917,25 @@ def import_database_file(source_path, database_dir=DEFAULT_DATABASE_DIR):
         target_path = unique_database_path(database_dir / normalize_database_filename(source_path.with_suffix(".db").name))
         import_archive_json_to_sqlite(source_path, target_path)
         return target_path
-    info = database_info_for_path(source_path)
-    if not info["ok"]:
-        raise ValueError(f"不是可用的归档数据库：{info['error']}")
+    ok, needs_migration, error = inspect_importable_database(source_path)
+    if not ok:
+        raise ValueError(f"不是可用的归档数据库：{error}")
     database_dir.mkdir(parents=True, exist_ok=True)
     if is_path_inside(source_path, database_dir):
+        # 已经在归档目录里：不动源文件，旧 schema 交给后续 catalog 打开时按需迁移。
         return source_path
     target_path = unique_database_path(database_dir / normalize_database_filename(source_path.name))
-    shutil.copy2(source_path, target_path)
+    try:
+        copy_database_file(source_path, target_path)
+        if needs_migration:
+            # 只迁移副本，源库保持原样。
+            migrate_database_copy(target_path)
+            migrated_ok, _still_stale, migrated_error = inspect_importable_database(target_path)
+            if not migrated_ok:
+                raise ValueError(f"数据库迁移失败：{migrated_error}")
+    except Exception:
+        remove_file_quietly(target_path)
+        raise
     return target_path
 
 

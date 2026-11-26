@@ -5,8 +5,10 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from helpers import BVID, make_archive, make_comment
+import server as server_module  # noqa: E402
 
 from bilibili_comment_danmaku import (  # noqa: E402
     export_archive_from_databases,
@@ -184,6 +186,9 @@ class AggregateScopeHttpTests(unittest.TestCase):
         self.databases, self.first_database, self.second_database = build_two_database_layout(self.root)
         self.legacy = self.root / "comment_danmaku.db"
         save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", []), self.legacy, replace=True)
+        # Exports must never be written into the real install directory during tests.
+        self.export_dir_patch = mock.patch.object(server_module, "DEFAULT_EXPORT_DIR", self.root / "exports")
+        self.export_dir_patch.start()
         handler = type(
             "ReviewServer",
             (CommentDanmakuServer,),
@@ -200,6 +205,7 @@ class AggregateScopeHttpTests(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self):
+        self.export_dir_patch.stop()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)

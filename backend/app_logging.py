@@ -304,26 +304,35 @@ def sanitize_value(value):
         return [sanitize_value(item) for item in value[:50]]
     if isinstance(value, str):
         if len(value) > 500:
-            return value[:500] + "...[truncated]"
-        return value
+            return redact_text(value[:500]) + "...[truncated]"
+        return redact_text(value)
     return value
 
 
 def is_sensitive_key(key):
-    lowered = str(key).lower()
-    return any(marker in lowered for marker in ("cookie", "token", "password", "secret", "credential"))
+    """状态键（如 cookie_status）要保留，只丢弃真正装着凭据的键。"""
+    lowered = str(key).strip().lower()
+    if any(marker in lowered for marker in ("token", "password", "secret", "credential")):
+        return True
+    # cookie 不能再按子串匹配：cookie_status / cookie_expires_at 只是状态字段。
+    return lowered in {"cookie", "cookies", "set-cookie"} or lowered.endswith("_cookie")
 
 
 SENSITIVE_VALUE_PATTERN = re.compile(
     r"(?i)\b("
     r"sessdata|sessdata_buvid|bili_jct|dedeuserid|dedeuserid__ckmd5|"
-    r"buvid3|buvid4|ac_time_value|bili_ticket|access_key|refresh_token"
-    r")\s*=\s*([^&;\s\"']+)"
+    r"buvid3|buvid4|ac_time_value|bili_ticket|access_key|refresh_token|"
+    r"password|passwd|secret|token|authorization|bearer"
+    r")\s*[=:]\s*([^&;\s\"']+)"
 )
+
+
+BEARER_TOKEN_PATTERN = re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9._~+/=-]{4,})")
 
 
 def redact_text(text):
     """Remove credential values from free-form text such as log messages or tracebacks."""
     if not text:
         return text
-    return SENSITIVE_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}=***", str(text))
+    redacted = BEARER_TOKEN_PATTERN.sub(lambda match: f"{match.group(1)} ***", str(text))
+    return SENSITIVE_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}=***", redacted)

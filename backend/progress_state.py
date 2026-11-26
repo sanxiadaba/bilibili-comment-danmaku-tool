@@ -192,6 +192,12 @@ def progress_stage(kind, message):
         return "跳过失败视频"
     if "失败" in message:
         return "失败"
+    if kind == "delete":
+        if "已删除" in message or "不存在" in message or "已完成" in message:
+            return "删除完成"
+        if "暂停" in message:
+            return "删除暂停"
+        return "删除档案"
     if "保存" in message:
         return "保存档案"
     if "likes" in message or "点赞" in message:
@@ -233,10 +239,19 @@ def progress_percent(kind, message, current=0):
         if total:
             return max(current, min(99, 5 + int((index / total) * 94)))
         return max(current, 8)
+    if kind == "delete":
+        if "已删除" in message or "不存在" in message or "完成" in message:
+            return 100
+        if "暂停" in message:
+            return max(current, 12)
+        if "正在删除" in message:
+            return max(current, 35)
+        return max(current, 8)
+    if "保存" in message:
+        # "...抓取完成，正在保存档案" still has work left; only a final result is 100%.
+        return max(current, 92)
     if "完成" in message:
         return 100
-    if "保存" in message:
-        return max(current, 92)
     if kind == "danmaku":
         if "fetching xml" in message:
             return max(current, 20)
@@ -322,6 +337,10 @@ def progress_stats(kind, message, current):
         if batch:
             stats["点赞批次"] = batch.group(1)
             stats["本批 dmid"] = batch.group(2)
+    if kind == "delete":
+        batch = re.search(r"已处理\s+(\d+)\s+批", message)
+        if batch:
+            stats["删除批次"] = batch.group(1)
     if kind == "space":
         list_done = re.search(r"UP视频列表完成 total=(\d+) complete=(\d+) archived=(\d+) skipped=(\d+)(?: failed=(\d+))?", message)
         if list_done:
@@ -384,7 +403,7 @@ def parse_float(value, default):
         return default
     try:
         return float(value)
-    except ValueError:
+    except (TypeError, ValueError):
         return default
 
 

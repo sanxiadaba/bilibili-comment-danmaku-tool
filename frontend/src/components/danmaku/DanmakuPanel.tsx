@@ -3,7 +3,7 @@ import type { DanmakuData, DanmakuItem } from "../../types";
 import { OwnerBadge } from "../common";
 import { VirtualList } from "../ui/VirtualList";
 import { ColorSwatch } from "./ColorSwatch";
-import { formatProgress } from "./danmakuUtils";
+import { formatProgress, getDanmakuKey } from "./danmakuUtils";
 
 type DanmakuPanelProps = {
   danmaku: DanmakuData | null;
@@ -26,7 +26,7 @@ export function DanmakuPanel({ danmaku, items: panelItems }: DanmakuPanelProps) 
       className="surface-muted max-h-[640px] overflow-y-auto rounded-md p-2"
       empty={<div className="p-6 text-center text-sm text-muted">没有匹配的弹幕</div>}
       estimateSize={72}
-      getKey={(item) => item.dmid}
+      getKey={getDanmakuKey}
       items={items}
       renderItem={(item) => <DanmakuRow item={item} />}
     />

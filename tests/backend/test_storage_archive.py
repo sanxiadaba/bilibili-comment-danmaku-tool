@@ -55,6 +55,60 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
 import bilibili_comment_danmaku.storage as storage  # noqa: E402
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 class StorageTests(unittest.TestCase):
+    def test_renamed_owner_is_still_one_owner_row(self):
+        # Same mid, new display name: the sidebar used to show two rows with the full counts each.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            first = make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "a", mid="42")])
+            save_comments_to_sqlite(first, db_path, replace=True)
+            second = make_archive("2024-02-01T00:00:00+00:00", [make_comment("2", 1, "b", mid="42")])
+            second["metadata"] = {
+                **second["metadata"],
+                "bvid": "BV2222222222",
+                "aid": 2,
+                "source_url": "https://www.bilibili.com/video/BV2222222222",
+            }
+            second["video_raw"] = {**second["video_raw"], "owner": {"mid": "42", "name": "new name", "face": ""}}
+            save_comments_to_sqlite(second, db_path, replace=True)
+
+            owners = list_video_summaries_page(db_path, limit=10)["owners"]
+
+            self.assertEqual(len(owners), 1)
+            self.assertEqual(owners[0]["video_count"], 2)
+            self.assertEqual(owners[0]["comment_count"], 2)
+            self.assertEqual(owners[0]["name"], "new name")
+
+    def test_connection_restores_wal_mode_after_a_killed_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "a", mid="42")]), db_path, replace=True)
+            # Simulate a process that died inside the chunked delete (journal_mode=DELETE).
+            storage.set_database_journal_mode(db_path, "DELETE")
+            storage._WAL_CONFIRMED.discard(str(db_path.resolve()))
+
+            conn = storage.connect(db_path)
+            try:
+                mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            finally:
+                conn.close()
+
+            self.assertEqual(str(mode).lower(), "wal")
+
+    def test_archive_row_counts_do_not_double_count_duplicate_bvids(self):
+        # The delete scope is staged in batches; duplicates used to be counted once per batch.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "t", mid="42")]), db_path, replace=True)
+
+            conn = storage.connect(db_path)
+            try:
+                counts = storage.count_archive_rows(conn, [BVID] * 5000 + [BVID] + ["BV2222222222"])
+            finally:
+                conn.close()
+
+            self.assertEqual(counts["videos"], 2)
+            self.assertEqual(counts["comments"], 1)
+
     def test_comment_refresh_keeps_missing_comments_as_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"
@@ -372,17 +426,14 @@ class StorageTests(unittest.TestCase):
             )
             original_comment_batch = storage.DELETE_COMMENT_BATCH_SIZE
             original_danmaku_batch = storage.DELETE_DANMAKU_BATCH_SIZE
-            original_threshold = storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES
             progress = []
             try:
                 storage.DELETE_COMMENT_BATCH_SIZE = 5
                 storage.DELETE_DANMAKU_BATCH_SIZE = 4
-                storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = 1
                 result = delete_videos_from_sqlite(db_path, [BVID], vacuum=False, progress_callback=progress.append)
             finally:
                 storage.DELETE_COMMENT_BATCH_SIZE = original_comment_batch
                 storage.DELETE_DANMAKU_BATCH_SIZE = original_danmaku_batch
-                storage.DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES = original_threshold
 
             self.assertEqual(result["deleted_videos"], 1)
             self.assertGreater(result["chunks"], 1)
@@ -430,7 +481,9 @@ class StorageTests(unittest.TestCase):
             task = service.enqueue(db_path, bvids=[BVID], request_id="req-1")
             self.assertTrue(task["id"].startswith("delete-"))
             self.assertEqual(task["queue_position"], 1)
-            self.assertTrue(service.queue.wait_until_idle(timeout=2))
+            # Deleting is a real background thread doing SQLite work; on a busy Windows box two
+            # seconds is not enough (CI-independent flake), so wait longer instead of racing.
+            self.assertTrue(service.queue.wait_until_idle(timeout=20))
 
             snapshot = service.snapshot()
             self.assertIsNone(snapshot["active"])
@@ -506,6 +559,42 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(result["manifest"]["bvids"], [BVID])
             self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
 
+    def test_json_import_rejects_items_without_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "broken.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "format": "bilibili-comment-danmaku-json-data",
+                        "schema_version": 2,
+                        "videos": [{"comments": [{"rpid": "1"}]}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            target = Path(tmp) / "target.db"
+
+            with self.assertRaises(ValueError):
+                import_archive_json_to_sqlite(source, target)
+            self.assertFalse(target.exists())
+
+    def test_json_import_drops_a_stale_target_journal(self):
+        # A hot rollback journal left by a crash must not be replayed into the imported file.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            json_path = Path(tmp) / "exports" / "one.json"
+            imported_db = Path(tmp) / "imported.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "top", mid="42")]), db_path, replace=True)
+            export_archive_to_json(db_path, json_path, bvids=[BVID])
+            imported_db.write_bytes(b"stale")
+            journal = imported_db.with_name(f"{imported_db.name}-journal")
+            journal.write_bytes(b"stale-journal")
+
+            import_archive_json_to_sqlite(json_path, imported_db)
+
+            self.assertFalse(journal.exists())
+            self.assertEqual(load_comment_data(imported_db, bvid=BVID)["metadata"]["comment_total_count"], 1)
+
     def test_export_archive_to_json_can_be_imported_back_to_sqlite(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"
@@ -558,6 +647,45 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(imported["bvids"], [BVID])
             self.assertEqual(comments["metadata"]["bvid"], BVID)
             self.assertEqual(danmaku["metadata"]["total_count"], 1)
+
+    def test_export_archive_to_json_refuses_to_overwrite_the_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(
+                make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "keep me", mid="42")]),
+                db_path,
+                replace=True,
+            )
+
+            with self.assertRaises(ValueError):
+                export_archive_to_json(db_path, db_path, bvids=[BVID])
+
+            self.assertEqual(
+                load_comment_data(db_path, bvid=BVID)["comment_items"][0]["normalized"]["message"],
+                "keep me",
+            )
+
+    def test_failed_json_import_leaves_no_partial_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            json_path = Path(tmp) / "archive.json"
+            target = Path(tmp) / "imports" / "imported.db"
+            save_comments_to_sqlite(
+                make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "top", mid="42")]),
+                db_path,
+                replace=True,
+            )
+            export_archive_to_json(db_path, json_path, bvids=[BVID])
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            # The second video is invalid, so the import fails after the first one was written.
+            payload["videos"].append({"bvid": "BV1broken0001", "metadata": "not an object"})
+            json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                import_archive_json_to_sqlite(json_path, target)
+
+            self.assertFalse(target.exists())
+            self.assertEqual([path.name for path in target.parent.iterdir()], [])
 
     def test_export_archive_to_sqlite_filters_by_owner(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -670,7 +798,9 @@ class StorageTests(unittest.TestCase):
 
             self.assertTrue(database["ok"])
             self.assertEqual(database["video_count"], 1)
-            self.assertEqual(database["comment_count"], 1)
+            # Light mode deliberately skips the comment/danmaku COUNTs: the aggregate view only
+            # needs video_count, and the detailed counts come from the include_details path.
+            self.assertEqual(database["comment_count"], 0)
             self.assertEqual(database["top_owners"], [])
             self.assertEqual(database["coverage_status"], "unique")
 

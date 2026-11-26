@@ -1,7 +1,5 @@
 """弹幕抓取与点赞数批量查询。"""
 
-import html
-import gzip
 import json
 import os
 import time
@@ -25,6 +23,12 @@ from .scraper import (
     retry_after_seconds,
     retry_delay_seconds,
 )
+
+
+# The XML endpoint can return whatever the CDN hands us. Cap both the compressed download and the
+# inflated document so a hostile or broken response cannot exhaust memory (gzip bombs).
+DANMAKU_XML_MAX_BYTES = 64 * 1024 * 1024
+DANMAKU_XML_MAX_MB = DANMAKU_XML_MAX_BYTES // (1024 * 1024)
 
 
 def sleep_with_stop(seconds, stop_checker=None):
@@ -70,7 +74,7 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None, stop_chec
         started_at = time.perf_counter()
         try:
             with opener.open(req, timeout=30) as resp:
-                body = decode_response_body(resp.read(), resp.headers.get("Content-Encoding"))
+                body = decode_response_body(read_limited_response(resp), resp.headers.get("Content-Encoding"))
             log_slow_request(log, req.full_url, time.perf_counter() - started_at, attempt, 3, GLOBAL_REQUEST_BACKOFF)
             return body
         except urllib.error.HTTPError as exc:
@@ -94,19 +98,45 @@ def fetch_danmaku_xml(cid, headers=None, use_proxy=False, logger=None, stop_chec
     raise BilibiliRequestError(f"danmaku XML request failed cid={cid}")
 
 
-def decode_response_body(body, content_encoding):
-    encoding = (content_encoding or "").lower()
-    if "gzip" in encoding:
-        return gzip.decompress(body)
-    if "deflate" in encoding:
-        try:
-            return zlib.decompress(body)
-        except zlib.error:
-            return zlib.decompress(body, -zlib.MAX_WBITS)
+def read_limited_response(resp, limit=None):
+    limit = DANMAKU_XML_MAX_BYTES if limit is None else limit
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError(f"弹幕响应超过 {DANMAKU_XML_MAX_MB}MB 上限，已拒绝")
     return body
 
 
+def decode_response_body(body, content_encoding):
+    if len(body) > DANMAKU_XML_MAX_BYTES:
+        raise ValueError(f"弹幕响应超过 {DANMAKU_XML_MAX_MB}MB 上限，已拒绝")
+    encoding = (content_encoding or "").lower()
+    if "gzip" in encoding:
+        return _decompress_limited(body, 16 + zlib.MAX_WBITS)
+    if "deflate" in encoding:
+        try:
+            return _decompress_limited(body, zlib.MAX_WBITS)
+        except zlib.error:
+            return _decompress_limited(body, -zlib.MAX_WBITS)
+    return body
+
+
+def _decompress_limited(body, wbits, limit=None):
+    limit = DANMAKU_XML_MAX_BYTES if limit is None else limit
+    decompressor = zlib.decompressobj(wbits)
+    data = decompressor.decompress(body, limit + 1)
+    if len(data) > limit or decompressor.unconsumed_tail:
+        raise ValueError(f"弹幕 XML 解压后超过 {DANMAKU_XML_MAX_MB}MB 上限，已拒绝")
+    data += decompressor.flush()
+    if len(data) > limit:
+        raise ValueError(f"弹幕 XML 解压后超过 {DANMAKU_XML_MAX_MB}MB 上限，已拒绝")
+    return data
+
+
 def parse_danmaku_xml(xml_bytes, bvid, cid):
+    # ElementTree expands internal entities, so a <!DOCTYPE ... [ <!ENTITY ...> ]> block is a
+    # billion-laughs bomb. Bilibili's XML never carries a DTD; reject it before parsing.
+    if b"<!DOCTYPE" in xml_bytes.upper():
+        raise ValueError("弹幕 XML 包含被拒绝的 <!DOCTYPE 声明")
     root = ET.fromstring(xml_bytes)
     fetched_at = datetime.now(timezone.utc).isoformat()
     rows = []
@@ -127,7 +157,9 @@ def parse_danmaku_xml(xml_bytes, bvid, cid):
                 "pool": parse_int(attrs[5], 0),
                 "user_hash": attrs[6],
                 "weight": parse_int(attrs[8], None) if len(attrs) > 8 else None,
-                "content": html.unescape(node.text or ""),
+                # ElementTree already decodes XML entities; unescaping again turned a literal
+                # "&lt;script&gt;" in the danmaku into "<script>".
+                "content": node.text or "",
                 "fetched_at": fetched_at,
                 "like_count": 0,
             }
@@ -215,12 +247,23 @@ def fetch_danmaku_like_counts(cid, dmids, headers=None, use_proxy=False, logger=
             continue
         data = payload.get("data") or {}
         for dmid, value in data.items():
-            if isinstance(value, dict):
-                counts[str(dmid)] = parse_int(value.get("likes") or value.get("like"), 0)
-            else:
-                counts[str(dmid)] = parse_int(value, 0)
+            # Only record counts the API actually reported. A dmid that is absent from a
+            # successful batch must stay unknown (None at the call site), not become 0.
+            like_count = like_count_from_value(value)
+            if like_count is not None:
+                counts[str(dmid)] = like_count
         time.sleep(0.05)
     return counts
+
+
+def like_count_from_value(value):
+    if isinstance(value, dict):
+        raw = value.get("likes")
+        if raw is None:
+            raw = value.get("like")
+    else:
+        raw = value
+    return parse_int(raw, None)
 
 
 def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, fetch_likes=True, stop_checker=None):
@@ -253,8 +296,8 @@ def scrape_danmaku(bvid, video_raw, headers=None, use_proxy=False, logger=None, 
         log("danmaku likes: skipped by fast archive mode")
     for item in items:
         # None means "unknown": saving must keep whatever like count is already stored instead
-        # of overwriting it with 0 when the like API was skipped or failed.
-        item["like_count"] = None if like_counts is None else like_counts.get(item["dmid"], 0)
+        # of overwriting it with 0. A dmid missing from a successful batch is unknown too.
+        item["like_count"] = None if like_counts is None else like_counts.get(item["dmid"])
     log(f"danmaku: cid={cid} got={len(items)}")
     time.sleep(0.05)
     return {"bvid": bvid, "cid": str(cid), "items": items}
