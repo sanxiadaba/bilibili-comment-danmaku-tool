@@ -553,6 +553,10 @@ def import_archive_json_to_sqlite(source_path, target_path):
                 }
             if not isinstance(comments.get("metadata"), dict) or not isinstance(comments.get("video_raw"), dict):
                 raise ValueError("JSON 归档中的视频数据不完整")
+            required_metadata = ("bvid", "fetched_at", "title", "aid", "source_url")
+            missing_keys = [key for key in required_metadata if not (comments.get("metadata") or {}).get(key)]
+            if missing_keys:
+                raise ValueError(f"JSON 归档中的视频数据不完整（缺少 {', '.join(missing_keys)}）")
             save_comments_to_sqlite(comments, temp_path, replace=True)
             danmaku = item.get("danmaku")
             if isinstance(danmaku, dict):

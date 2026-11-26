@@ -559,6 +559,25 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(result["manifest"]["bvids"], [BVID])
             self.assertFalse(export_path.with_name(f"{export_path.name}-wal").exists())
 
+    def test_json_import_rejects_items_without_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "broken.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "format": "bilibili-comment-danmaku-json-data",
+                        "schema_version": 2,
+                        "videos": [{"comments": [{"rpid": "1"}]}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            target = Path(tmp) / "target.db"
+
+            with self.assertRaises(ValueError):
+                import_archive_json_to_sqlite(source, target)
+            self.assertFalse(target.exists())
+
     def test_json_import_drops_a_stale_target_journal(self):
         # A hot rollback journal left by a crash must not be replayed into the imported file.
         with tempfile.TemporaryDirectory() as tmp:

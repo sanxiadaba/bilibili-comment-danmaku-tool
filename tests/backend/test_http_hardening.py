@@ -72,14 +72,21 @@ class LocalHttpTestCase(unittest.TestCase):
         self._tmp.cleanup()
 
     def request(self, method, path, body=None, headers=None):
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
-        try:
-            connection.request(method, path, body=body, headers=headers or {})
-            response = connection.getresponse()
-            payload = response.read()
-            return response.status, response.getheader("Content-Type") or "", payload
-        finally:
-            connection.close()
+        # Windows occasionally aborts a loopback connection when the server closes first
+        # (WinError 10053); retry once instead of failing a security assertion on a socket race.
+        last_error = None
+        for _attempt in range(2):
+            connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+            try:
+                connection.request(method, path, body=body, headers=headers or {})
+                response = connection.getresponse()
+                payload = response.read()
+                return response.status, response.getheader("Content-Type") or "", payload
+            except (ConnectionAbortedError, ConnectionResetError) as exc:
+                last_error = exc
+            finally:
+                connection.close()
+        raise last_error
 
     def json_body(self, payload):
         try:
