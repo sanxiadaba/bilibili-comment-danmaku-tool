@@ -505,7 +505,7 @@ class TaskQueueTests(unittest.TestCase):
         original_timeout = space_archive.scraper.call_with_hard_timeout
 
         class FakeBackoff:
-            def wait(self, include_spacing=True, spacing_factor=1.0):
+            def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
                 calls.append(("wait", include_spacing, spacing_factor))
                 return 12
 
@@ -546,7 +546,7 @@ class TaskQueueTests(unittest.TestCase):
         original_delay = space_archive.retry_delay
 
         class FakeBackoff:
-            def wait(self, include_spacing=True, spacing_factor=1.0):
+            def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
                 return 0
 
         class FakeClient:
@@ -593,7 +593,7 @@ class TaskQueueTests(unittest.TestCase):
         original_delay = space_archive.retry_delay
 
         class FakeBackoff:
-            def wait(self, include_spacing=True, spacing_factor=1.0):
+            def wait(self, include_spacing=True, spacing_factor=1.0, stop_checker=None):
                 return 0
 
         class FakeClient:
