@@ -233,10 +233,11 @@ def progress_percent(kind, message, current=0):
         if total:
             return max(current, min(99, 5 + int((index / total) * 94)))
         return max(current, 8)
+    if "保存" in message:
+        # "...抓取完成，正在保存档案" still has work left; only a final result is 100%.
+        return max(current, 92)
     if "完成" in message:
         return 100
-    if "保存" in message:
-        return max(current, 92)
     if kind == "danmaku":
         if "fetching xml" in message:
             return max(current, 20)
@@ -384,7 +385,7 @@ def parse_float(value, default):
         return default
     try:
         return float(value)
-    except ValueError:
+    except (TypeError, ValueError):
         return default
 
 

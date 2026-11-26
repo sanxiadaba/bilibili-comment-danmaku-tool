@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from helpers import BVID
 
@@ -65,6 +66,51 @@ class SpaceCacheTests(unittest.TestCase):
         self.assertTrue(cache_is_stale(""))
         self.assertTrue(cache_is_stale("not-a-date"))
         self.assertFalse(cache_is_stale(datetime.now(timezone.utc).isoformat()))
+
+
+class SpaceListFetchTests(unittest.TestCase):
+    """The UP video list must not be cut short silently and must honour stop requests."""
+
+    def setUp(self):
+        self._original_page = scraper.fetch_space_page if hasattr(scraper, "fetch_space_page") else None
+        self._original_sleep = scraper.sleep_interruptible
+        scraper.sleep_interruptible = lambda seconds, stop_checker=None: None
+
+    def tearDown(self):
+        scraper.sleep_interruptible = self._original_sleep
+
+    def test_truncated_listing_is_cached_as_partial(self):
+        import space_archive
+
+        repeated_page = {
+            "data": {
+                "list": {"vlist": [{"bvid": BVID}]},
+                "page": {"count": 100},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "space_cache" / "42_videos.json"
+            with mock.patch.object(space_archive, "fetch_space_page", side_effect=lambda *args, **kwargs: (repeated_page, "mixin")):
+                items = space_archive.fetch_space_videos("42", "", cache_path=cache_path, use_cache=False)
+
+            self.assertEqual(len(items), 1)
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertTrue(cached["partial"])
+            self.assertIsNone(read_space_cache(cache_path, "42"))
+
+    def test_stop_checker_aborts_the_listing(self):
+        import space_archive
+
+        page = {"data": {"list": {"vlist": [{"bvid": BVID}]}, "page": {"count": 100}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "space_cache" / "42_videos.json"
+            calls = []
+            with mock.patch.object(space_archive, "fetch_space_page", side_effect=lambda *args, **kwargs: (calls.append(1), (page, "mixin"))[1]):
+                with self.assertRaises(space_archive.TaskCancelled):
+                    space_archive.fetch_space_videos("42", "", cache_path=cache_path, use_cache=False, stop_checker=lambda: True)
+
+            self.assertEqual(calls, [])
+            self.assertFalse(cache_path.exists())
 
 
 class ChildReplyLoopTests(unittest.TestCase):
