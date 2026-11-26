@@ -161,15 +161,21 @@ def connect(db_path, readonly=False):
         conn = sqlite3.connect(uri, uri=True)
     else:
         conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 60000")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA temp_store = MEMORY")
-    conn.execute(f"PRAGMA cache_size = {-SQLITE_CACHE_SIZE_KB}")
-    conn.execute(f"PRAGMA mmap_size = {SQLITE_MMAP_SIZE_BYTES}")
-    conn.execute("PRAGMA wal_autocheckpoint = 512")
-    conn.execute(f"PRAGMA journal_size_limit = {DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES}")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 60000")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute(f"PRAGMA cache_size = {-SQLITE_CACHE_SIZE_KB}")
+        conn.execute(f"PRAGMA mmap_size = {SQLITE_MMAP_SIZE_BYTES}")
+        conn.execute("PRAGMA wal_autocheckpoint = 512")
+        conn.execute(f"PRAGMA journal_size_limit = {DEFAULT_WAL_JOURNAL_SIZE_LIMIT_BYTES}")
+    except Exception:
+        # A corrupt/unreadable file fails on the first pragma; close it or Windows keeps the
+        # handle (and the file lock) until the process exits.
+        conn.close()
+        raise
     return conn
 
 
@@ -462,7 +468,12 @@ def save_comments_to_sqlite(output_data, db_path, replace=True, guard_shrink=Fal
                     user.get("level"),
                 )
 
-            rpid = str(normalized.get("rpid"))
+            raw_rpid = normalized.get("rpid")
+            # rpid is the global PRIMARY KEY: a missing one must be dropped, not written as the
+            # string "None" (two videos with that literal would overwrite each other).
+            if raw_rpid in (None, "", "None"):
+                continue
+            rpid = str(raw_rpid)
             scraped_rpids.append(rpid)
             comment_rows.append(
                 (

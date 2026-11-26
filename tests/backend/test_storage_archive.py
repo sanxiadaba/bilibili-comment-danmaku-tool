@@ -55,6 +55,21 @@ from bilibili_comment_danmaku.storage import (  # noqa: E402
 import bilibili_comment_danmaku.storage as storage  # noqa: E402
 from bilibili_comment_danmaku.url_utils import extract_bvid  # noqa: E402
 class StorageTests(unittest.TestCase):
+    def test_archive_row_counts_do_not_double_count_duplicate_bvids(self):
+        # The delete scope is staged in batches; duplicates used to be counted once per batch.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "comment_danmaku.db"
+            save_comments_to_sqlite(make_archive("2024-01-01T00:00:00+00:00", [make_comment("1", 1, "t", mid="42")]), db_path, replace=True)
+
+            conn = storage.connect(db_path)
+            try:
+                counts = storage.count_archive_rows(conn, [BVID] * 5000 + [BVID] + ["BV2222222222"])
+            finally:
+                conn.close()
+
+            self.assertEqual(counts["videos"], 2)
+            self.assertEqual(counts["comments"], 1)
+
     def test_comment_refresh_keeps_missing_comments_as_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "comment_danmaku.db"

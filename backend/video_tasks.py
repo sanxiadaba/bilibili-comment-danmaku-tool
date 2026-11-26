@@ -77,6 +77,10 @@ class VideoParseTaskService:
         finally:
             self.refresh_lock.release()
 
+    def task_stop_checker(self, task):
+        """Stop/pause flags as seen by the scraper's cooldown and page sleeps."""
+        return lambda: bool(task.get("stop_requested") or task.get("pause_requested"))
+
     def stop_or_pause_requested(self, task, bvid, progress):
         if task.get("stop_requested"):
             self.queue.update(
@@ -166,6 +170,9 @@ class VideoParseTaskService:
                 cookie_file=str(self.cookie_file),
                 delay=delay,
                 logger=log,
+                # Without this, a stop/pause during a cooldown waits up to hours and the task
+                # keeps holding the global refresh lock.
+                stop_checker=self.task_stop_checker(task),
             )
             bvid = output_data["metadata"]["bvid"]
             task["bvid"] = bvid
@@ -204,6 +211,7 @@ class VideoParseTaskService:
                 output_data["video_raw"],
                 headers=make_headers(bvid, load_cookie_file(self.cookie_file)),
                 logger=danmaku_log,
+                stop_checker=self.task_stop_checker(task),
             )
             if len(danmaku_result.get("items") or []) > 0:
                 self.queue.update(task, message="正在保存弹幕", progress=94)

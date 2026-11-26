@@ -99,6 +99,8 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
     if cookie:
         headers["Cookie"] = cookie
     client = scraper.BilibiliClient(headers, use_proxy=False, backoff=space_request_backoff())
+    # Cooldown waits between pages must observe the task's stop/pause flags too.
+    client.stop_checker = stop_checker
     log = lambda message: update_progress("space", mid, message)
     mixin = scraper.get_wbi_mixin_key(client, log)
     endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
@@ -143,8 +145,10 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
 
     if cache_path and not max_items:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        # Never cache a truncated list as if it were the complete one: a later run would happily
-        # archive 20 of 100 videos and report success for six hours.
+        if total > 0 and len(items) < total:
+            # The API reported more videos than the pages delivered (over-reported count or an
+            # early empty page); never cache a shorter list as if it were complete.
+            truncated = True
         payload = {
             "mid": str(mid),
             "cached_at": utc_now(),
@@ -154,8 +158,11 @@ def fetch_space_videos(mid, cookie, cache_path=None, use_cache=True, max_items=0
         }
         temp_path = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
         try:
-            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
             temp_path.replace(cache_path)
+        except (OSError, ValueError) as exc:
+            # The cache is an optimisation; losing it must not fail the archive task.
+            log_event("task.space_archive.cache_write_failed", "could not write UP video cache", mid=mid, level="warning")
         finally:
             temp_path.unlink(missing_ok=True)
     return items

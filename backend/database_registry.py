@@ -84,7 +84,7 @@ def video_database_path_from_archive(archive, database_dir=DEFAULT_DATABASE_DIR)
     )
 
 
-def iter_database_files(database_dir):
+def iter_database_files(database_dir, filename=None):
     """Yield .db-style files under database_dir without following junctions or symlinks.
 
     A junction inside data/databases used to be scanned as if it were part of the archive, so a
@@ -93,6 +93,7 @@ def iter_database_files(database_dir):
     database_dir = Path(database_dir).resolve()
     if not database_dir.exists():
         return
+    wanted = filename.lower() if filename else None
     for root, dirs, files in os.walk(database_dir):
         kept = []
         for name in sorted(dirs):
@@ -104,6 +105,8 @@ def iter_database_files(database_dir):
             kept.append(name)
         dirs[:] = kept
         for name in sorted(files):
+            if wanted is not None and name.lower() != wanted:
+                continue
             path = Path(root) / name
             if path.suffix.lower() not in DATABASE_EXTENSIONS:
                 continue
@@ -117,7 +120,7 @@ def iter_database_files(database_dir):
 
 def find_video_database_path(bvid, database_dir=DEFAULT_DATABASE_DIR):
     filename = video_database_filename(bvid)
-    matches = [path for path, _db_id in iter_database_files(database_dir) if path.name.lower() == filename.lower()]
+    matches = [path for path, _db_id in iter_database_files(database_dir, filename)]
     matches.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
     for match in matches:
         if match.is_file() and match.suffix.lower() in DATABASE_EXTENSIONS:

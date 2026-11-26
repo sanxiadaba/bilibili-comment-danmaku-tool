@@ -16,6 +16,11 @@ describe("csvCell", () => {
     expect(csvCell("@cmd")).toBe("\"'@cmd\"");
   });
 
+  it("keeps numbers numeric even when negative", () => {
+    expect(csvCell(-5)).toBe('"-5"');
+    expect(csvCell(0)).toBe('"0"');
+  });
+
   it("keeps newlines quoted so one record stays on one row", () => {
     expect(csvCell("line1\nline2")).toBe('"line1\nline2"');
   });

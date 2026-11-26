@@ -45,6 +45,39 @@ def archive_for(bvid, owner_mid, owner_name, fetched_at, comments=None):
 
 
 class DatabaseRegistryArchitectureTests(unittest.TestCase):
+    def test_empty_database_file_is_reported_and_not_migrated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            empty = database_dir / "z.db"
+            empty.parent.mkdir(parents=True)
+            empty.write_bytes(b"")
+
+            catalog = list_database_catalog(root / "main.db", database_dir)
+
+            self.assertEqual(empty.stat().st_size, 0)
+            self.assertFalse(catalog[0]["ok"])
+            self.assertEqual(catalog[0]["coverage_status"], "unreadable")
+
+    def test_corrupt_database_is_reported_instead_of_disappearing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_dir = root / "databases"
+            good = database_dir / "Owner_42" / f"{BVID}.db"
+            good.parent.mkdir(parents=True)
+            save_comments_to_sqlite(archive_for(BVID, "42", "Owner", "2024-01-01T00:00:00+00:00"), good, replace=True)
+            broken = database_dir / "Owner_42" / "BV2222222222.db"
+            broken.write_bytes(b"not a database")
+
+            page = list_all_video_summaries_page(root / "main.db", database_dir, limit=10)
+            catalog = list_database_catalog(root / "main.db", database_dir)
+
+            self.assertFalse(page["complete"])
+            self.assertEqual([item["id"] for item in page["failed_databases"]], ["db:Owner_42/BV2222222222.db"])
+            statuses = {item["id"]: item["ok"] for item in catalog}
+            self.assertTrue(statuses[f"db:Owner_42/{BVID}.db"])
+            self.assertFalse(statuses["db:Owner_42/BV2222222222.db"])
+
     def test_catalog_does_not_list_legacy_main_database_even_when_it_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
