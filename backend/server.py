@@ -1252,11 +1252,12 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": "已有刷新任务正在进行，请稍后再试"}, status=409)
             return
 
-        query = parse_qs(parsed.query)
-        requested_bvid = query.get("bvid", [None])[0]
-        delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
-        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+        requested_bvid = None
         try:
+            query = parse_qs(parsed.query)
+            requested_bvid = query.get("bvid", [None])[0]
+            delay = clamp_delay(parse_float(query.get("delay", [None])[0], 0.35))
+            db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
             current = load_comment_data(db_path, bvid=requested_bvid)
             video_ref = current["metadata"]["source_url"] or current["metadata"]["bvid"]
             before_count = current["metadata"]["comment_total_count"]
@@ -1379,6 +1380,9 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             self.send_json({"error": str(exc)}, status=404)
             return
+        except BadRequestError:
+            # do_POST turns this into a 400 after the lock is released here.
+            raise
         except Exception as exc:
             payload, status = bilibili_api_error_response(exc)
             fail_progress("comments", requested_bvid or "", payload["error"])
@@ -1408,10 +1412,11 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             self.send_json({"error": "已有抓取任务正在进行，请稍后再试"}, status=409)
             return
 
-        query = parse_qs(parsed.query)
-        requested_bvid = query.get("bvid", [None])[0]
-        db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
+        requested_bvid = None
         try:
+            query = parse_qs(parsed.query)
+            requested_bvid = query.get("bvid", [None])[0]
+            db_path = self.resolve_archive_db_path_from_query(parsed, requested_bvid)
             current = load_comment_data(db_path, bvid=requested_bvid)
             log_event(
                 "task.danmaku_refresh.start",
@@ -1514,6 +1519,8 @@ class CommentDanmakuServer(JsonStaticRequestHandler):
             )
             self.send_json({"error": str(exc)}, status=404)
             return
+        except BadRequestError:
+            raise
         except Exception as exc:
             payload, status = bilibili_api_error_response(exc)
             fail_progress("danmaku", requested_bvid or "", payload["error"])

@@ -165,6 +165,23 @@ class RefreshControlHttpTests(unittest.TestCase):
         self.assertEqual(payload["refresh"]["after_count"], 5)
         self.assertEqual(payload["metadata"]["comment_total_count"], 5)
 
+    def test_invalid_db_id_does_not_leak_the_refresh_lock(self):
+        # Regression: the lock was taken before the db_id was resolved, so a 400 skipped the
+        # finally block and every later refresh/task was rejected with 409 until a restart.
+        status, payload = self.post(f"/api/refresh?bvid={BVID}&db_id=db:missing.db")
+
+        self.assertEqual(status, 400, payload)
+        self.assertFalse(server_module.refresh_lock.locked())
+
+        refreshed = make_archive(
+            "2024-02-01T00:00:00+00:00",
+            [make_comment("1", 1, "refreshed", mid="42")],
+        )
+        with mock.patch.object(server_module, "scrape_comments", return_value=refreshed):
+            status, payload = self.post(f"/api/refresh?bvid={BVID}")
+
+        self.assertEqual(status, 200, payload)
+
     def test_stop_flag_is_cleared_after_a_refresh(self):
         refreshed = make_archive(
             "2024-02-01T00:00:00+00:00",
