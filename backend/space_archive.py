@@ -185,7 +185,8 @@ def make_space_page_params(mid, page):
 
 def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
     log = log or (lambda message: update_progress("space", mid, message))
-    backoff_wait = client.backoff.wait(include_spacing=True, spacing_factor=1.0)
+    stop_checker = getattr(client, "stop_checker", None)
+    backoff_wait = client.backoff.wait(include_spacing=True, spacing_factor=1.0, stop_checker=stop_checker)
     if backoff_wait >= 5:
         log(f"等待 Bilibili 请求冷却 {backoff_wait:.0f}s 后读取 page={page}")
 
@@ -213,7 +214,7 @@ def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
             log(f"UP视频列表 page={page} 遇到风控校验，等待 {delay:.0f}s 后刷新签名重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
             mixin_key = scraper.get_wbi_mixin_key(client, log, force_refresh=True)
             request_url = scraper.build_url(endpoint, scraper.sign_wbi_params(params, mixin_key))
-            time.sleep(delay)
+            scraper.sleep_interruptible(delay, stop_checker)
         except TimeoutError:
             if attempt >= SPACE_PAGE_RETRIES:
                 raise
@@ -221,7 +222,7 @@ def fetch_space_page(client, endpoint, params, page, mid, mixin_key, log=None):
             cache_buster = urlencode({"_": int(time.time() * 1000), "retry": attempt})
             request_url = f"{url}&{cache_buster}"
             log(f"UP视频列表 page={page} 超时，等待 {delay:.0f}s 后重试 {attempt + 1}/{SPACE_PAGE_RETRIES}")
-            time.sleep(delay)
+            scraper.sleep_interruptible(delay, stop_checker)
 
 
 def retry_delay(delays, attempt, jitter=(0.0, 0.0)):
